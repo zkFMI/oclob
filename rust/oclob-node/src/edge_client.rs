@@ -2,11 +2,16 @@
 
 use crate::executor::{NodeExecutionReceipt, RoundPlan};
 use crate::network::{
-    ClientTlsConfig, ClusterPublicConfig, NetworkError, NodeAdmissionReceipt, NodeRpcClient,
+    ClientTlsConfig, ClusterPublicConfig, NetworkError, NodeAdmissionReceipt,
+    NodeCapabilityRelease, NodeRpcClient,
 };
 use ed25519_dalek::VerifyingKey;
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment};
-use oclob_edge::{EdgeOrderBundle, EdgeOrderManifest, MPC_PARTIES};
+use oclob_edge::{
+    reconstruct_settlement_capability_key, EdgeOrderBundle, EdgeOrderManifest,
+    SealedSettlementCapability, SettlementCapabilityKey, VerifiedSettlementCapability, MPC_PARTIES,
+    SETTLEMENT_KEY_THRESHOLD,
+};
 use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderVote};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +24,8 @@ pub struct EdgeAdmissionReceipt {
     pub version: u16,
     pub manifest: EdgeOrderManifest,
     pub node_generations: [u64; MPC_PARTIES],
+    pub order_share_digests: [Digest32; MPC_PARTIES],
+    pub capability_key_share_digests: [Digest32; MPC_PARTIES],
     pub node_receipts: Vec<NodeAdmissionReceipt>,
     pub receipt_digest: Digest32,
 }
@@ -30,12 +37,20 @@ impl EdgeAdmissionReceipt {
 
     pub fn verify(&self, cluster: &ClusterPublicConfig, now: u64) -> Result<(), EdgeClientError> {
         cluster.validate()?;
-        if self.version != 1
+        if self.version != 2
             || self.manifest.market_id != cluster.market_id
             || self.node_generations.contains(&0)
+            || self.order_share_digests.contains(&[0; 32])
+            || self.capability_key_share_digests.contains(&[0; 32])
             || self.node_receipts.len() != MPC_PARTIES
             || self.receipt_digest
-                != receipt_digest(&self.manifest, &self.node_generations, &self.node_receipts)
+                != receipt_digest(
+                    &self.manifest,
+                    &self.node_generations,
+                    &self.order_share_digests,
+                    &self.capability_key_share_digests,
+                    &self.node_receipts,
+                )
         {
             return Err(EdgeClientError::Receipt);
         }
@@ -46,7 +61,13 @@ impl EdgeAdmissionReceipt {
             let signer = VerifyingKey::from_bytes(&node.receipt_verifying_key)
                 .map_err(|_| EdgeClientError::Receipt)?;
             receipt
-                .verify(&self.manifest, party as u16, &signer)
+                .verify(
+                    &self.manifest,
+                    party as u16,
+                    self.order_share_digests[party],
+                    self.capability_key_share_digests[party],
+                    &signer,
+                )
                 .map_err(|_| EdgeClientError::Receipt)?;
             if receipt.generation != self.node_generations[party] {
                 return Err(EdgeClientError::Receipt);
@@ -89,38 +110,61 @@ impl EdgeDistributor {
         let handles = deliveries
             .into_iter()
             .zip(self.cluster.nodes.iter().cloned())
-            .map(|((party, sealed), node)| {
+            .map(|((party, sealed, sealed_capability_key_share), node)| {
                 let manifest = manifest.clone();
                 let tls = self.tls.clone();
                 let timeout = self.timeout;
                 thread::spawn(
-                    move || -> Result<(usize, NodeAdmissionReceipt), NetworkError> {
+                    move || -> Result<
+                        (usize, NodeAdmissionReceipt, Digest32, Digest32),
+                        NetworkError,
+                    > {
                         if party != node.party {
                             return Err(NetworkError::Configuration);
                         }
+                        let order_share_digest = sealed.wire_digest();
+                        let capability_key_share_digest = sealed_capability_key_share.wire_digest();
                         let client = NodeRpcClient::new(node.endpoint(), tls, timeout)?;
-                        let receipt = client.ingest(manifest, sealed)?;
-                        Ok((usize::from(party), receipt))
+                        let receipt =
+                            client.ingest(manifest, sealed, sealed_capability_key_share)?;
+                        Ok((
+                            usize::from(party),
+                            receipt,
+                            order_share_digest,
+                            capability_key_share_digest,
+                        ))
                     },
                 )
             })
             .collect::<Vec<_>>();
         let mut generations = [0_u64; MPC_PARTIES];
+        let mut order_share_digests = [[0_u8; 32]; MPC_PARTIES];
+        let mut capability_key_share_digests = [[0_u8; 32]; MPC_PARTIES];
         let mut node_receipts = Vec::with_capacity(MPC_PARTIES);
         for handle in handles {
-            let (party, node_receipt) = handle
+            let (party, node_receipt, order_share_digest, capability_key_share_digest) = handle
                 .join()
                 .map_err(|_| EdgeClientError::Worker)?
                 .map_err(EdgeClientError::Network)?;
             generations[party] = node_receipt.generation;
+            order_share_digests[party] = order_share_digest;
+            capability_key_share_digests[party] = capability_key_share_digest;
             node_receipts.push(node_receipt);
         }
         node_receipts.sort_by_key(|receipt| receipt.party);
         let receipt = EdgeAdmissionReceipt {
-            version: 1,
-            receipt_digest: receipt_digest(&manifest, &generations, &node_receipts),
+            version: 2,
+            receipt_digest: receipt_digest(
+                &manifest,
+                &generations,
+                &order_share_digests,
+                &capability_key_share_digests,
+                &node_receipts,
+            ),
             manifest,
             node_generations: generations,
+            order_share_digests,
+            capability_key_share_digests,
             node_receipts,
         };
         let now = unix_seconds().ok_or(EdgeClientError::Configuration)?;
@@ -134,6 +178,35 @@ impl EdgeDistributor {
 pub struct AgreedRoundExecution {
     pub receipts: Vec<NodeExecutionReceipt>,
     pub result: MpcBatchResult,
+}
+
+/// Settlement-side holder for a reconstructed one-order key. It cannot be
+/// serialized or printed. The clear order becomes available only through
+/// `open` after three node releases have been verified.
+pub struct ThresholdCapabilityRelease {
+    releases: Vec<NodeCapabilityRelease>,
+    key: SettlementCapabilityKey,
+}
+
+impl ThresholdCapabilityRelease {
+    pub fn release_count(&self) -> usize {
+        self.releases.len()
+    }
+
+    pub fn releasing_parties(&self) -> Vec<u16> {
+        self.releases.iter().map(|release| release.party).collect()
+    }
+
+    pub fn open(
+        &self,
+        envelope: &SealedSettlementCapability,
+        manifest: &EdgeOrderManifest,
+        now: u64,
+    ) -> Result<VerifiedSettlementCapability, EdgeClientError> {
+        envelope
+            .open(&self.key, manifest, now)
+            .map_err(|_| EdgeClientError::SettlementThreshold)
+    }
 }
 
 /// Ask the seven independently authenticated node services to order one
@@ -290,6 +363,116 @@ pub fn execute_agreed_round(
     })
 }
 
+/// Collect node-local capability-key shares only after a completed, agreed MPC
+/// round authorizes this order. Up to two unavailable or corrupt nodes reveal
+/// nothing and cannot fabricate the third participant-signed share.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_threshold_capability_release(
+    cluster: &ClusterPublicConfig,
+    settlement_tls: &ClientTlsConfig,
+    plan: &RoundPlan,
+    execution: &AgreedRoundExecution,
+    manifest: &EdgeOrderManifest,
+    order_commitment: OrderCommitment,
+    timeout: Duration,
+) -> Result<ThresholdCapabilityRelease, EdgeClientError> {
+    if timeout.is_zero() || timeout > Duration::from_secs(120) {
+        return Err(EdgeClientError::Configuration);
+    }
+    cluster.validate()?;
+    let now = unix_seconds().ok_or(EdgeClientError::Configuration)?;
+    manifest
+        .verify(now)
+        .map_err(|_| EdgeClientError::SettlementThreshold)?;
+    plan.verify_ordering(
+        CommitteePolicy::seven_node(),
+        &cluster.ordering_verifying_keys()?,
+        now,
+    )
+    .map_err(|_| EdgeClientError::SettlementThreshold)?;
+    if manifest.commitment != order_commitment
+        || plan.market_id != manifest.market_id
+        || execution.receipts.len() != cluster.nodes.len()
+        || !capability_release_permitted(plan, &execution.result, order_commitment)
+    {
+        return Err(EdgeClientError::SettlementThreshold);
+    }
+    let first = execution
+        .receipts
+        .first()
+        .ok_or(EdgeClientError::SettlementThreshold)?;
+    for (party, (node, receipt)) in cluster.nodes.iter().zip(&execution.receipts).enumerate() {
+        let signer = VerifyingKey::from_bytes(&node.receipt_verifying_key)
+            .map_err(|_| EdgeClientError::SettlementThreshold)?;
+        receipt
+            .verify(plan, party as u16, &signer)
+            .map_err(|_| EdgeClientError::SettlementThreshold)?;
+        if receipt.result != execution.result
+            || receipt.public_output_sha256 != first.public_output_sha256
+            || receipt.program_sha256 != first.program_sha256
+            || receipt.artifact_sha256 != first.artifact_sha256
+        {
+            return Err(EdgeClientError::SettlementThreshold);
+        }
+    }
+    let expected_output = first.public_output_sha256;
+    let handles = cluster
+        .nodes
+        .iter()
+        .cloned()
+        .map(|node| {
+            let tls = settlement_tls.clone();
+            let plan = plan.clone();
+            let manifest = manifest.clone();
+            thread::spawn(move || {
+                NodeRpcClient::new(node.endpoint(), tls, timeout)?.release_capability_key_share(
+                    &manifest,
+                    plan,
+                    order_commitment,
+                    expected_output,
+                    now,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut releases = Vec::with_capacity(MPC_PARTIES);
+    for handle in handles {
+        if let Ok(Ok(release)) = handle.join() {
+            releases.push(release);
+        }
+    }
+    releases.sort_by_key(|release| release.party);
+    releases.dedup_by_key(|release| release.party);
+    if releases.len() < cluster.settlement_release_threshold
+        || releases.len() < SETTLEMENT_KEY_THRESHOLD
+    {
+        return Err(EdgeClientError::SettlementThreshold);
+    }
+    let shares = releases
+        .iter()
+        .map(|release| release.capability_key_share.clone())
+        .collect::<Vec<_>>();
+    let key = reconstruct_settlement_capability_key(manifest, &shares, now)
+        .map_err(|_| EdgeClientError::SettlementThreshold)?;
+    Ok(ThresholdCapabilityRelease { releases, key })
+}
+
+fn capability_release_permitted(
+    plan: &RoundPlan,
+    result: &MpcBatchResult,
+    order_commitment: OrderCommitment,
+) -> bool {
+    if order_commitment == plan.arriving {
+        result.arriving_remaining > 0 || result.slots.iter().any(|slot| slot.matched)
+    } else {
+        plan.resting
+            .iter()
+            .position(|commitment| *commitment == order_commitment)
+            .and_then(|position| result.slots.get(position))
+            .is_some_and(|slot| slot.matched)
+    }
+}
+
 fn unix_seconds() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -300,21 +483,27 @@ fn unix_seconds() -> Option<u64> {
 fn receipt_digest(
     manifest: &EdgeOrderManifest,
     generations: &[u64; MPC_PARTIES],
+    order_share_digests: &[Digest32; MPC_PARTIES],
+    capability_key_share_digests: &[Digest32; MPC_PARTIES],
     node_receipts: &[NodeAdmissionReceipt],
 ) -> Digest32 {
     let mut hash = Sha256::new();
-    hash.update(b"OCLOB:EDGE-ADMISSION-RECEIPT:v1");
+    hash.update(b"OCLOB:EDGE-ADMISSION-RECEIPT:v2");
     hash.update(manifest.commitment.0);
     hash.update(manifest.signer);
     for (party, generation) in generations.iter().enumerate() {
         hash.update((party as u16).to_be_bytes());
         hash.update(generation.to_be_bytes());
+        hash.update(order_share_digests[party]);
+        hash.update(capability_key_share_digests[party]);
     }
     hash.update((node_receipts.len() as u64).to_be_bytes());
     for receipt in node_receipts {
         hash.update(receipt.party.to_be_bytes());
         hash.update(receipt.order_commitment.0);
         hash.update(receipt.manifest_signer);
+        hash.update(receipt.order_share_digest);
+        hash.update(receipt.capability_key_share_digest);
         hash.update(receipt.generation.to_be_bytes());
         hash.update(receipt.state_digest);
         hash.update(receipt.signer);
@@ -334,6 +523,8 @@ pub enum EdgeClientError {
     Receipt,
     #[error("five valid ordering votes were not obtained")]
     OrderingQuorum,
+    #[error("three valid post-match capability releases were not obtained")]
+    SettlementThreshold,
     #[error(transparent)]
     Network(#[from] NetworkError),
 }

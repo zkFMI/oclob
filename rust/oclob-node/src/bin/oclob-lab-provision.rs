@@ -4,7 +4,7 @@
 //! their private keys independently and submit CSRs to an offline authority.
 
 use ed25519_dalek::SigningKey;
-use oclob_edge::{NodeDecryptionKey, SettlementDecryptionKey, MPC_PARTIES};
+use oclob_edge::{NodeDecryptionKey, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD};
 use oclob_node::network::{
     certificate_fingerprint, ClientIdentityConfig, ClusterNodePublic, ClusterPublicConfig,
     PeerRole, Principal,
@@ -83,10 +83,13 @@ fn provision(root: &Path) -> Result<(), String> {
     let maker_app = SigningKey::generate(&mut rand::rngs::OsRng);
     let taker_app = SigningKey::generate(&mut rand::rngs::OsRng);
     let coordinator_app = SigningKey::generate(&mut rand::rngs::OsRng);
+    let settlement_app = SigningKey::generate(&mut rand::rngs::OsRng);
     let (maker_tls_key, maker_cert) = issue_leaf(&ca_key, &ca_cert, "oclob-maker", &[], false)?;
     let (taker_tls_key, taker_cert) = issue_leaf(&ca_key, &ca_cert, "oclob-taker", &[], false)?;
     let (coordinator_tls_key, coordinator_cert) =
         issue_leaf(&ca_key, &ca_cert, "oclob-coordinator", &[], false)?;
+    let (settlement_tls_key, settlement_cert) =
+        issue_leaf(&ca_key, &ca_cert, "oclob-settlement", &[], false)?;
     write_identity(
         &maker_dir,
         "/identity",
@@ -108,9 +111,17 @@ fn provision(root: &Path) -> Result<(), String> {
         &coordinator_cert,
         coordinator_app.as_bytes(),
     )?;
+    write_identity(
+        &settlement_dir,
+        "/settlement",
+        &settlement_tls_key,
+        &settlement_cert,
+        settlement_app.as_bytes(),
+    )?;
     let maker_fingerprint = certificate_fingerprint(&maker_cert.to_der().map_err(err)?);
     let taker_fingerprint = certificate_fingerprint(&taker_cert.to_der().map_err(err)?);
     let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
+    let settlement_fingerprint = certificate_fingerprint(&settlement_cert.to_der().map_err(err)?);
     let principals = vec![
         Principal {
             certificate_sha256: maker_fingerprint,
@@ -127,19 +138,17 @@ fn provision(root: &Path) -> Result<(), String> {
             role: PeerRole::Coordinator,
             application_key: coordinator_app.verifying_key().to_bytes(),
         },
+        Principal {
+            certificate_sha256: settlement_fingerprint,
+            role: PeerRole::Settlement,
+            application_key: settlement_app.verifying_key().to_bytes(),
+        },
     ];
     let hosts = (0..MPC_PARTIES)
         .map(|party| format!("oclob-node-{party}:{MPC_PORT}"))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let settlement_key = SettlementDecryptionKey::generate().map_err(|error| error.to_string())?;
-    write_private(
-        &settlement_dir.join("capability-key.raw"),
-        &settlement_key
-            .raw_private_key()
-            .map_err(|error| error.to_string())?,
-    )?;
     let mut public_nodes = Vec::with_capacity(MPC_PARTIES);
     for party in 0..MPC_PARTIES {
         let name = format!("oclob-node-{party}");
@@ -193,12 +202,10 @@ fn provision(root: &Path) -> Result<(), String> {
         });
     }
     let public = ClusterPublicConfig {
-        version: 1,
+        version: 2,
         market_id: MARKET.into(),
         program: PROGRAM.into(),
-        settlement_encryption_key: settlement_key
-            .public_key()
-            .map_err(|error| error.to_string())?,
+        settlement_release_threshold: SETTLEMENT_KEY_THRESHOLD,
         nodes: public_nodes,
     };
     public.validate().map_err(|error| error.to_string())?;

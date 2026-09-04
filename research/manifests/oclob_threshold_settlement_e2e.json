@@ -1,0 +1,64 @@
+{
+  "manifest_id": "oclob-threshold-settlement-confirmation-001",
+  "contract_id": "oclob-threshold-settlement-v1",
+  "contract_path": "research/oclob_threshold_settlement_contract.json",
+  "contract_sha256": "50adef565d185ce8deba77ad3110e9f04bb0890a52a978432d56d2b3a515f5cf",
+  "stage": "CONFIRMATION",
+  "current_bottleneck": "The previously accepted integrated path protected each participant capability with one settlement-wide X25519 private key, so compromise or misuse of that key could reveal any submitted order before matching.",
+  "causal_hypothesis": "A fresh symmetric key per order, Shamir-shared 3-of-7 with participant signatures and Feldman verification, can remove the pre-match single-key failure while preserving automatic Maker reservation, Taker DvP, and the observed MPC result.",
+  "single_intended_change": "Replace the settlement-wide capability-decryption key with node-local encrypted one-order key shares and release them only after each node has durably recorded the exact authorized MPC result.",
+  "baseline": {
+    "artifact": "artifacts/oclob_distributed_avalanche_acceptance.json",
+    "artifact_sha256": "911fc7a025b56019f2f50b5db5e8978ab91df59976e1a22ce2ebd52c392ff2ea",
+    "verdict": "accepted",
+    "remaining_risk": "One laboratory settlement private key could open either participant capability before matching."
+  },
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "encrypted_capability_key_shares": 14,
+    "mpc_node_containers": 7,
+    "matching_rounds": 2,
+    "minimum_key_releases_per_open": 3,
+    "avalanche_validators": 5,
+    "canonical_transitions": 2,
+    "replay_attempts": 1,
+    "validator_restarts": 1
+  },
+  "primary_metric": "complete_threshold_gated_avalanche_settlement_path",
+  "point_prediction": {
+    "complete_threshold_gated_avalanche_settlement_path": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "expected_minimum_valid_releases_per_order": 3,
+    "elapsed_ms_excluding_image_build": 60000
+  },
+  "most_likely_prediction_error": "Serializing a fixed-size key-share response and contacting all seven nodes adds little cryptographic work, but shared-host MP-SPDZ and Avalanche startup variance may move elapsed time materially around 60000 ms.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "a settlement-wide capability private key is generated or loaded",
+    "two or fewer node shares open an order capability",
+    "a key share can be released before the exact completed matching receipt is durable",
+    "a non-settlement mutual-TLS role can request a key share",
+    "an unmatched IOC order can release its capability",
+    "either matching round returns fewer than seven valid agreeing receipts",
+    "the settlement capability or reconstructed key fails commitment and VSS binding",
+    "Maker reservation is not finalized before the Taker round",
+    "trade price is not 100 or quantity is not 40",
+    "Taker reservation and DvP do not finalize atomically",
+    "the same canonical transition is accepted twice",
+    "any validator returns a different root before or after restart",
+    "the artifact contains private order material or capability-key shares",
+    "the artifact claims a production property excluded by the contract"
+  ],
+  "promotion_rules": [
+    "every functional rejection rule remains false",
+    "unit and mutual-TLS tests prove the two-share, pre-result, unmatched-IOC, wrong-role, wrong-output and tamper rejection boundaries",
+    "the integrated artifact records the exact contract SHA-256 and manifest identifier",
+    "the integrated artifact records seven MPC receipts per round, at least three valid releases per opened order, and five agreeing validator roots",
+    "the integrated artifact preserves every contract non-claim",
+    "the observed elapsed time is reported only as one-host functional evidence"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}

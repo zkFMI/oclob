@@ -1,0 +1,107 @@
+{
+  "contract_id": "oclob-threshold-settlement-v1",
+  "objective": "Execute one complete OCLOB lifecycle in which no coordinator or settlement-wide static key can open a participant order before matching, each order capability key is held as 3-of-7 verifiable shares by the MPC nodes, and only an authorized public MPC result can release enough shares for zkPI construction and canonical DeFMI settlement on a five-validator non-EVM Avalanche L1.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "price_unit": "integer ticks",
+    "quantity_unit": "integer lots",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101"
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "max_corrupt_mpc_nodes": 2,
+    "capability_key_release_threshold": 3,
+    "ordering_quorum": 5,
+    "avalanche_validators": 5,
+    "operator_hosts_in_this_gate": 1,
+    "evm_used": false
+  },
+  "capability_key_protocol": {
+    "creation": "Each participant generates one independent random scalar per order and encrypts its fixed-size settlement capability directly under that one-order key.",
+    "distribution": "The participant creates a degree-two Shamir polynomial whose constant term is the one-order key, publishes three Feldman commitments in the signed manifest, and encrypts exactly one signed evaluation to each node's X25519 key.",
+    "custody": "Each node persists only its own encrypted order share and encrypted capability-key share; the coordinator receives neither clear shares nor a complete key.",
+    "release": "A node releases its participant-signed key share only over the settlement-role mutual-TLS channel after its durable receipt for the exact signed round authorizes that order as matched or as a published resting GTC order.",
+    "reconstruction": "The settlement process verifies three or more distinct node signatures and Feldman evaluations, reconstructs the one-order key in memory, opens the participant-signed capability, verifies DeKYX and VSS value binding, and constructs zkPI without another participant signature.",
+    "failure_policy": "Two or fewer shares fail closed; unmatched IOC orders are not released; mismatched order, round, output, node, signature, certificate, expiry, or commitment is rejected."
+  },
+  "privacy": {
+    "participant_edge": "The complete SecretOrder exists only inside its participant process before verifiable sharing.",
+    "coordinator": "The coordinator receives commitments, ordering certificates and signed public MPC outputs, but no complete order, complete capability key, or set of seven shares.",
+    "mpc_node": "One node can open only its own order share and one capability-key evaluation. Up to two colluding nodes remain below the reconstruction threshold.",
+    "settlement": "The laboratory settlement process learns the complete order only after an authorized round and a valid 3-of-7 release. It then uses that authority to reserve or settle without post-match discretion by the participant.",
+    "opened_after_match": [
+      "trade price",
+      "trade quantity",
+      "remaining quantity",
+      "the matched or admitted order only inside the settlement process",
+      "canonical transaction identifiers and state roots"
+    ],
+    "forbidden": [
+      "clear order at coordinator",
+      "settlement-wide static order-decryption private key",
+      "capability-key release before a durable authorized MPC result",
+      "reconstruction from two nodes",
+      "unmatched IOC capability release",
+      "plaintext matching fallback",
+      "post-match participant signature",
+      "private order fields or key shares in logs or public artifacts"
+    ]
+  },
+  "canonical_flow": [
+    "Maker and Taker independently create and distribute encrypted order shares and encrypted one-order capability-key shares",
+    "five of seven node signatures establish the Maker order position",
+    "seven malicious-shamir parties agree that the Maker rests without a fill",
+    "three or more nodes release the Maker key shares after persisting that result",
+    "the settlement process verifies Maker DeKYX evidence and finalizes the maximum inventory reservation on DeFMI",
+    "five of seven node signatures establish the Taker order position",
+    "seven malicious-shamir parties agree on the crossing Taker result",
+    "three or more nodes release both matched-order capabilities only after the agreed result",
+    "the settlement process verifies Taker DeKYX evidence and constructs threshold range-proven zkPI",
+    "Taker maximum cash reservation and all DvP legs finalize atomically",
+    "all five validators return the same state root",
+    "the identical transition is rejected as a replay",
+    "a restarted validator recovers the accepted state root"
+  ],
+  "acceptance": {
+    "required": [
+      "both participants receive signed admission receipts from all seven MPC nodes binding both encrypted payloads",
+      "two key shares cannot reconstruct the order capability and three valid shares can",
+      "participant, coordinator, and operator roles cannot request a capability-key release",
+      "settlement role cannot order, vote, execute, or query operator status",
+      "all seven nodes agree on the same program digest, artifact digest and public result for both rounds",
+      "each public release receipt binds the exact node, order, round, output digest and participant-signed key share",
+      "the Maker reservation finalizes before its order can be used by the Taker round",
+      "the Taker fills 40 lots at price 100 with no post-match signature",
+      "amount and price evidence in zkPI are threshold generated",
+      "Taker reservation and DvP finalize atomically",
+      "five validator roots agree before and after one validator restart",
+      "receipt-chain verification and replay refusal pass"
+    ],
+    "reject_if": [
+      "the contract SHA-256 does not match the preregistered manifest",
+      "a settlement-wide static order-decryption key exists",
+      "fewer than three distinct valid node releases open a capability",
+      "a node releases before persisting the exact authorized MPC result",
+      "an unmatched IOC order is released",
+      "any node is omitted or reports a different result",
+      "settlement values are not bound to the VSS commitments",
+      "Maker admission occurs before canonical reservation",
+      "Taker reserve exists without the corresponding DvP",
+      "a replay changes canonical state",
+      "validator roots diverge",
+      "the artifact exposes private order material or capability-key shares",
+      "the artifact claims independent operators, WAN evidence, HSM custody, collaborative zkPI proof generation, or account-free notes"
+    ]
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover.",
+    "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
+    "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
+    "One functional scenario is not throughput, security-attack or economic-effect evidence."
+  ]
+}

@@ -8,7 +8,9 @@ use crate::executor::{NodeExecutionReceipt, PartyExecutor, RoundPlan};
 use crate::{IngestOutcome, NodeShareStore, NodeStoreStatus};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
-use oclob_edge::{EdgeOrderManifest, SealedPartyShare};
+use oclob_edge::{
+    CapabilityKeyShare, EdgeOrderManifest, SealedCapabilityKeyShare, SealedPartyShare,
+};
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderVote};
 use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
@@ -33,7 +35,8 @@ pub const RESPONSE_RECORD_BYTES: usize = 16 * 1024;
 const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ1";
 const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS1";
 const ADMISSION_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-ADMISSION-RECEIPT:v1";
-const RECORD_VERSION: u16 = 1;
+const CAPABILITY_RELEASE_DOMAIN: &[u8] = b"OCLOB:NODE-CAPABILITY-RELEASE:v1";
+const RECORD_VERSION: u16 = 2;
 const RECORD_HEADER_BYTES: usize = 8 + 2 + 4 + 32;
 const MAX_TLS_KEY_BYTES: u64 = 128 * 1024;
 
@@ -42,6 +45,7 @@ const MAX_TLS_KEY_BYTES: u64 = 128 * 1024;
 pub enum PeerRole {
     Participant,
     Coordinator,
+    Settlement,
     Operator,
 }
 
@@ -72,6 +76,7 @@ enum NodeRequest {
     Ingest {
         manifest: Box<EdgeOrderManifest>,
         sealed: SealedPartyShare,
+        sealed_capability_key_share: SealedCapabilityKeyShare,
     },
     Vote {
         market_id: String,
@@ -83,6 +88,10 @@ enum NodeRequest {
     Execute {
         plan: RoundPlan,
     },
+    Release {
+        plan: Box<RoundPlan>,
+        order_commitment: OrderCommitment,
+    },
     Status,
 }
 
@@ -92,6 +101,7 @@ enum NodeResponse {
     Ingested { receipt: Box<NodeAdmissionReceipt> },
     Voted { vote: OrderVote },
     Executed { receipt: Box<NodeExecutionReceipt> },
+    Released { release: Box<NodeCapabilityRelease> },
     Status { status: NodeStoreStatus },
     Rejected { code: String },
 }
@@ -106,6 +116,8 @@ pub struct NodeAdmissionReceipt {
     pub party: u16,
     pub order_commitment: OrderCommitment,
     pub manifest_signer: Digest32,
+    pub order_share_digest: Digest32,
+    pub capability_key_share_digest: Digest32,
     pub generation: u64,
     pub state_digest: Digest32,
     pub signer: Digest32,
@@ -116,6 +128,8 @@ impl NodeAdmissionReceipt {
     fn sign(
         party: u16,
         manifest: &EdgeOrderManifest,
+        order_share_digest: Digest32,
+        capability_key_share_digest: Digest32,
         generation: u64,
         state_digest: Digest32,
         key: &SigningKey,
@@ -123,6 +137,8 @@ impl NodeAdmissionReceipt {
         if usize::from(party) >= oclob_edge::MPC_PARTIES
             || generation == 0
             || state_digest == [0; 32]
+            || order_share_digest == [0; 32]
+            || capability_key_share_digest == [0; 32]
         {
             return Err(NetworkError::State);
         }
@@ -131,6 +147,8 @@ impl NodeAdmissionReceipt {
             party,
             order_commitment: manifest.commitment,
             manifest_signer: manifest.signer,
+            order_share_digest,
+            capability_key_share_digest,
             generation,
             state_digest,
             signer: key.verifying_key().to_bytes(),
@@ -144,6 +162,8 @@ impl NodeAdmissionReceipt {
         &self,
         manifest: &EdgeOrderManifest,
         expected_party: u16,
+        expected_order_share_digest: Digest32,
+        expected_capability_key_share_digest: Digest32,
         expected_signer: &VerifyingKey,
     ) -> Result<(), NetworkError> {
         if self.version != RECORD_VERSION
@@ -151,6 +171,10 @@ impl NodeAdmissionReceipt {
             || usize::from(self.party) >= oclob_edge::MPC_PARTIES
             || self.order_commitment != manifest.commitment
             || self.manifest_signer != manifest.signer
+            || self.order_share_digest != expected_order_share_digest
+            || self.capability_key_share_digest != expected_capability_key_share_digest
+            || self.order_share_digest == [0; 32]
+            || self.capability_key_share_digest == [0; 32]
             || self.generation == 0
             || self.state_digest == [0; 32]
             || self.signer != expected_signer.to_bytes()
@@ -171,8 +195,111 @@ impl NodeAdmissionReceipt {
             &self.party.to_be_bytes(),
             &self.order_commitment.0,
             &self.manifest_signer,
+            &self.order_share_digest,
+            &self.capability_key_share_digest,
             &self.generation.to_be_bytes(),
             &self.state_digest,
+            &self.signer,
+        ]
+        .concat()
+    }
+}
+
+/// Sensitive fixed-record response released by one node only after its local
+/// durable MPC receipt authorizes this order. The key share is never included
+/// in logs or public acceptance artifacts; `Debug` deliberately redacts it.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodeCapabilityRelease {
+    pub version: u16,
+    pub party: u16,
+    pub order_commitment: OrderCommitment,
+    pub round_id: Digest32,
+    pub public_output_sha256: Digest32,
+    pub capability_key_share: CapabilityKeyShare,
+    pub signer: Digest32,
+    pub signature: Vec<u8>,
+}
+
+impl std::fmt::Debug for NodeCapabilityRelease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NodeCapabilityRelease")
+            .field("party", &self.party)
+            .field("order_commitment", &self.order_commitment.hex())
+            .field("round_id", &hex::encode(self.round_id))
+            .field("capability_key_share", &"[redacted]")
+            .finish()
+    }
+}
+
+impl NodeCapabilityRelease {
+    fn sign(
+        party: u16,
+        order_commitment: OrderCommitment,
+        plan: &RoundPlan,
+        public_output_sha256: Digest32,
+        capability_key_share: CapabilityKeyShare,
+        key: &SigningKey,
+    ) -> Result<Self, NetworkError> {
+        if usize::from(party) >= oclob_edge::MPC_PARTIES
+            || capability_key_share.party() != party
+            || capability_key_share.order_commitment() != order_commitment
+            || public_output_sha256 == [0; 32]
+        {
+            return Err(NetworkError::State);
+        }
+        let mut release = Self {
+            version: RECORD_VERSION,
+            party,
+            order_commitment,
+            round_id: plan.round_id,
+            public_output_sha256,
+            capability_key_share,
+            signer: key.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        };
+        release.signature = key.sign(&release.signature_body()).to_bytes().to_vec();
+        Ok(release)
+    }
+
+    pub fn verify(
+        &self,
+        manifest: &EdgeOrderManifest,
+        plan: &RoundPlan,
+        expected_output: Digest32,
+        expected_party: u16,
+        expected_signer: &VerifyingKey,
+        now: u64,
+    ) -> Result<(), NetworkError> {
+        if self.version != RECORD_VERSION
+            || self.party != expected_party
+            || self.order_commitment != manifest.commitment
+            || self.round_id != plan.round_id
+            || self.public_output_sha256 != expected_output
+            || self.public_output_sha256 == [0; 32]
+            || self.signer != expected_signer.to_bytes()
+        {
+            return Err(NetworkError::Protocol);
+        }
+        self.capability_key_share
+            .verify(manifest, expected_party, now)
+            .map_err(|_| NetworkError::Protocol)?;
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| NetworkError::Protocol)?;
+        expected_signer
+            .verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| NetworkError::Protocol)
+    }
+
+    fn signature_body(&self) -> Vec<u8> {
+        [
+            CAPABILITY_RELEASE_DOMAIN,
+            &self.version.to_be_bytes(),
+            &self.party.to_be_bytes(),
+            &self.order_commitment.0,
+            &self.round_id,
+            &self.public_output_sha256,
+            &self.capability_key_share.wire_digest(),
             &self.signer,
         ]
         .concat()
@@ -400,17 +527,17 @@ pub struct ClusterPublicConfig {
     pub version: u16,
     pub market_id: String,
     pub program: String,
-    pub settlement_encryption_key: oclob_edge::SettlementEncryptionKey,
+    pub settlement_release_threshold: usize,
     pub nodes: Vec<ClusterNodePublic>,
 }
 
 impl ClusterPublicConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 1
+        if self.version != 2
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
-            || self.settlement_encryption_key.0 == [0; 32]
+            || self.settlement_release_threshold != oclob_edge::SETTLEMENT_KEY_THRESHOLD
             || self.nodes.len() != oclob_edge::MPC_PARTIES
         {
             return Err(NetworkError::Configuration);
@@ -515,16 +642,22 @@ impl NodeRpcClient {
         &self,
         manifest: EdgeOrderManifest,
         sealed: SealedPartyShare,
+        sealed_capability_key_share: SealedCapabilityKeyShare,
     ) -> Result<NodeAdmissionReceipt, NetworkError> {
         let expected_manifest = manifest.clone();
+        let expected_order_share_digest = sealed.wire_digest();
+        let expected_capability_key_share_digest = sealed_capability_key_share.wire_digest();
         match self.call(NodeRequest::Ingest {
             manifest: Box::new(manifest),
             sealed,
+            sealed_capability_key_share,
         })? {
             NodeResponse::Ingested { receipt } if receipt.party == self.endpoint.party => {
                 receipt.verify(
                     &expected_manifest,
                     self.endpoint.party,
+                    expected_order_share_digest,
+                    expected_capability_key_share_digest,
                     &VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
                         .map_err(|_| NetworkError::Protocol)?,
                 )?;
@@ -539,6 +672,35 @@ impl NodeRpcClient {
         match self.call(NodeRequest::Execute { plan })? {
             NodeResponse::Executed { receipt } if receipt.party == self.endpoint.party => {
                 Ok(*receipt)
+            }
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
+    pub fn release_capability_key_share(
+        &self,
+        manifest: &EdgeOrderManifest,
+        plan: RoundPlan,
+        order_commitment: OrderCommitment,
+        expected_output: Digest32,
+        now: u64,
+    ) -> Result<NodeCapabilityRelease, NetworkError> {
+        match self.call(NodeRequest::Release {
+            plan: Box::new(plan.clone()),
+            order_commitment,
+        })? {
+            NodeResponse::Released { release } if release.party == self.endpoint.party => {
+                release.verify(
+                    manifest,
+                    &plan,
+                    expected_output,
+                    self.endpoint.party,
+                    &VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
+                        .map_err(|_| NetworkError::Protocol)?,
+                    now,
+                )?;
+                Ok(*release)
             }
             NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
             _ => Err(NetworkError::Protocol),
@@ -673,13 +835,19 @@ fn dispatch_checked(
 ) -> Result<NodeResponse, NetworkError> {
     let now = unix_seconds()?;
     match request {
-        NodeRequest::Ingest { manifest, sealed } => {
+        NodeRequest::Ingest {
+            manifest,
+            sealed,
+            sealed_capability_key_share,
+        } => {
             require_role(principal, PeerRole::Participant)?;
             let manifest = *manifest;
+            let order_share_digest = sealed.wire_digest();
+            let capability_key_share_digest = sealed_capability_key_share.wire_digest();
             let (generation, status) = {
                 let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
                 let outcome = store
-                    .ingest(manifest.clone(), sealed, now)
+                    .ingest(manifest.clone(), sealed, sealed_capability_key_share, now)
                     .map_err(|_| NetworkError::Admission)?;
                 let status = store.status().map_err(|_| NetworkError::State)?;
                 let generation = match outcome {
@@ -694,6 +862,8 @@ fn dispatch_checked(
             let receipt = NodeAdmissionReceipt::sign(
                 status.party,
                 &manifest,
+                order_share_digest,
+                capability_key_share_digest,
                 generation,
                 status.state_digest,
                 &runtime.receipt_signing_key,
@@ -808,6 +978,34 @@ fn dispatch_checked(
                 .map_err(|_| NetworkError::State)?;
             Ok(NodeResponse::Executed {
                 receipt: Box::new(receipt),
+            })
+        }
+        NodeRequest::Release {
+            plan,
+            order_commitment,
+        } => {
+            require_role(principal, PeerRole::Settlement)?;
+            let plan = *plan;
+            plan.verify_ordering(runtime.ordering_policy, &runtime.ordering_keys, now)
+                .map_err(|_| NetworkError::Plan)?;
+            let (party, capability_key_share, public_output_sha256) = {
+                let store = runtime.store.lock().map_err(|_| NetworkError::State)?;
+                let party = store.status().map_err(|_| NetworkError::State)?.party;
+                let (share, output) = store
+                    .release_capability_key_share(&plan, order_commitment, now)
+                    .map_err(|_| NetworkError::Release)?;
+                (party, share, output)
+            };
+            let release = NodeCapabilityRelease::sign(
+                party,
+                order_commitment,
+                &plan,
+                public_output_sha256,
+                capability_key_share,
+                &runtime.receipt_signing_key,
+            )?;
+            Ok(NodeResponse::Released {
+                release: Box::new(release),
             })
         }
         NodeRequest::Status => {
@@ -960,6 +1158,8 @@ pub enum NetworkError {
     RuntimeDisabled,
     #[error("party execution failed")]
     Execution,
+    #[error("settlement capability release is not authorized")]
+    Release,
     #[error("node state is unavailable")]
     State,
     #[error("system clock is invalid")]
@@ -982,6 +1182,7 @@ impl NetworkError {
             Self::RoundInput => "round_input_unavailable",
             Self::RuntimeDisabled => "runtime_disabled",
             Self::Execution => "execution_failed",
+            Self::Release => "capability_release_rejected",
             Self::State => "state_unavailable",
             Self::Clock => "clock_unavailable",
             Self::RecordSize | Self::Protocol => "invalid_request",
@@ -998,8 +1199,12 @@ impl NetworkError {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use oclob_core::{SecretOrder, Side, TimeInForce};
+    use oclob_core::{
+        MpcBatchResult, MpcSlotResult, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS,
+    };
     use oclob_edge::{EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey, MPC_PARTIES};
+    use oclob_mpc::public_output_digest;
+    use oclob_ordering::OrderingCommittee;
     use openssl::asn1::Asn1Time;
     use openssl::bn::{BigNum, MsbOption};
     use openssl::hash::MessageDigest;
@@ -1020,9 +1225,12 @@ mod tests {
         participant_key: PathBuf,
         coordinator_cert: PathBuf,
         coordinator_key: PathBuf,
+        settlement_cert: PathBuf,
+        settlement_key: PathBuf,
         server_fingerprint: Digest32,
         participant_fingerprint: Digest32,
         coordinator_fingerprint: Digest32,
+        settlement_fingerprint: Digest32,
     }
 
     impl Drop for Files {
@@ -1137,15 +1345,34 @@ mod tests {
             manifest.signer,
             participant_signer.verifying_key().to_bytes()
         );
-        let delivery = bundle.into_deliveries()[0].1.clone();
+        let deliveries = bundle.into_deliveries();
+        let delivery = deliveries[0].1.clone();
+        let capability_key_delivery = deliveries[0].2.clone();
+        let order_share_digest = delivery.wire_digest();
+        let capability_key_share_digest = capability_key_delivery.wire_digest();
         let first = participant
-            .ingest(manifest.clone(), delivery.clone())
+            .ingest(
+                manifest.clone(),
+                delivery.clone(),
+                capability_key_delivery.clone(),
+            )
             .unwrap();
         first
-            .verify(&manifest, 0, &receipt_signer.verifying_key())
+            .verify(
+                &manifest,
+                0,
+                order_share_digest,
+                capability_key_share_digest,
+                &receipt_signer.verifying_key(),
+            )
             .unwrap();
         assert_eq!(first.generation, 1);
-        assert_eq!(participant.ingest(manifest, delivery).unwrap(), first);
+        assert_eq!(
+            participant
+                .ingest(manifest, delivery, capability_key_delivery)
+                .unwrap(),
+            first
+        );
         assert_eq!(coordinator.status().unwrap().record_count, 1);
         let vote = coordinator
             .vote(
@@ -1158,6 +1385,171 @@ mod tests {
             .unwrap();
         assert_eq!(vote.node_id, 1);
         assert!(participant.status().is_err());
+    }
+
+    #[test]
+    fn settlement_role_releases_only_the_completed_rounds_bound_key_share() {
+        let files = tls_files();
+        let now = unix_seconds().unwrap();
+        let node_keys: [NodeDecryptionKey; MPC_PARTIES] =
+            std::array::from_fn(|_| NodeDecryptionKey::generate().unwrap());
+        let public_keys: [NodeEncryptionKey; MPC_PARTIES] =
+            std::array::from_fn(|party| node_keys[party].public_key().unwrap());
+        let participant_signer = SigningKey::from_bytes(&[51; 32]);
+        let coordinator_signer = SigningKey::from_bytes(&[52; 32]);
+        let settlement_signer = SigningKey::from_bytes(&[53; 32]);
+        let receipt_signer = SigningKey::from_bytes(&[1; 32]);
+        let order = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            40,
+            TimeInForce::GoodTilCancelled,
+            now + 600,
+            [54; 32],
+            [55; 32],
+            [56; 32],
+        )
+        .unwrap();
+        let bundle = EdgeOrderBundle::create(
+            &order,
+            [57; 32],
+            [58; 32],
+            &participant_signer,
+            &public_keys,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let manifest = bundle.manifest().clone();
+        let deliveries = bundle.into_deliveries();
+        let mut committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let certificate = committee
+            .certify("JGB10Y-JPY", manifest.commitment, now + 120, now)
+            .unwrap();
+        let plan =
+            RoundPlan::sign(certificate, vec![], now, now + 120, &coordinator_signer).unwrap();
+        let result = MpcBatchResult {
+            slots: vec![
+                MpcSlotResult {
+                    matched: false,
+                    trade_price: 0,
+                    trade_quantity: 0,
+                };
+                MAX_MATCH_SLOTS
+            ],
+            arriving_remaining: 40,
+        };
+        let output = public_output_digest(&result);
+        let store_path = files.root.join("release-shares.bin");
+        let mut store = NodeShareStore::open(&store_path, 0, node_keys[0].clone()).unwrap();
+        store
+            .ingest(
+                manifest.clone(),
+                deliveries[0].1.clone(),
+                deliveries[0].2.clone(),
+                now,
+            )
+            .unwrap();
+        let generation = store.status().unwrap().generation;
+        store
+            .record_completed_round(NodeExecutionReceipt {
+                version: 1,
+                party: 0,
+                round_id: plan.round_id,
+                generation,
+                round_commitment: [59; 32],
+                program_sha256: [60; 32],
+                artifact_sha256: [61; 32],
+                public_output_sha256: output,
+                result,
+                execution_ms: 1,
+                signer: receipt_signer.verifying_key().to_bytes(),
+                signature: vec![62; 64],
+            })
+            .unwrap();
+        let ordering_keys = committee.verifying_keys();
+        let principals = vec![
+            Principal {
+                certificate_sha256: files.coordinator_fingerprint,
+                role: PeerRole::Coordinator,
+                application_key: coordinator_signer.verifying_key().to_bytes(),
+            },
+            Principal {
+                certificate_sha256: files.settlement_fingerprint,
+                role: PeerRole::Settlement,
+                application_key: settlement_signer.verifying_key().to_bytes(),
+            },
+        ];
+        let server = NodeRpcServer::start(
+            "127.0.0.1:0".parse().unwrap(),
+            server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap(),
+            principals,
+            store,
+            receipt_signer.clone(),
+            CommitteePolicy::seven_node(),
+            ordering_keys,
+            None,
+            8,
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        let endpoint = NodeEndpoint {
+            party: 0,
+            host: "127.0.0.1".into(),
+            port: server.address().port(),
+            server_name: "localhost".into(),
+            certificate_sha256: files.server_fingerprint,
+            receipt_verifying_key: receipt_signer.verifying_key().to_bytes(),
+        };
+        let settlement = NodeRpcClient::new(
+            endpoint.clone(),
+            client_tls_context(&files.settlement_cert, &files.settlement_key, &files.ca).unwrap(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let coordinator = NodeRpcClient::new(
+            endpoint,
+            client_tls_context(&files.coordinator_cert, &files.coordinator_key, &files.ca).unwrap(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let release = settlement
+            .release_capability_key_share(&manifest, plan.clone(), manifest.commitment, output, now)
+            .unwrap();
+        release
+            .verify(
+                &manifest,
+                &plan,
+                output,
+                0,
+                &receipt_signer.verifying_key(),
+                now,
+            )
+            .unwrap();
+        assert!(settlement
+            .release_capability_key_share(
+                &manifest,
+                plan.clone(),
+                manifest.commitment,
+                [63; 32],
+                now,
+            )
+            .is_err());
+        assert!(
+            coordinator
+                .release_capability_key_share(
+                    &manifest,
+                    plan.clone(),
+                    manifest.commitment,
+                    output,
+                    now,
+                )
+                .is_err()
+        );
+        assert!(settlement.execute(plan).is_err());
+        assert!(settlement.status().is_err());
     }
 
     fn tls_files() -> Files {
@@ -1173,6 +1565,7 @@ mod tests {
             make_leaf(&ca_key, &ca_cert, "participant", false);
         let (coordinator_key, coordinator_cert) =
             make_leaf(&ca_key, &ca_cert, "coordinator", false);
+        let (settlement_key, settlement_cert) = make_leaf(&ca_key, &ca_cert, "settlement", false);
         let ca = root.join("ca.pem");
         let server_cert_path = root.join("server.pem");
         let server_key_path = root.join("server-key.pem");
@@ -1180,6 +1573,8 @@ mod tests {
         let participant_key_path = root.join("participant-key.pem");
         let coordinator_cert_path = root.join("coordinator.pem");
         let coordinator_key_path = root.join("coordinator-key.pem");
+        let settlement_cert_path = root.join("settlement.pem");
+        let settlement_key_path = root.join("settlement-key.pem");
         fs::write(&ca, ca_cert.to_pem().unwrap()).unwrap();
         write_private(&server_key_path, &server_key);
         fs::write(&server_cert_path, server_cert.to_pem().unwrap()).unwrap();
@@ -1187,6 +1582,8 @@ mod tests {
         fs::write(&participant_cert_path, participant_cert.to_pem().unwrap()).unwrap();
         write_private(&coordinator_key_path, &coordinator_key);
         fs::write(&coordinator_cert_path, coordinator_cert.to_pem().unwrap()).unwrap();
+        write_private(&settlement_key_path, &settlement_key);
+        fs::write(&settlement_cert_path, settlement_cert.to_pem().unwrap()).unwrap();
         Files {
             root,
             ca,
@@ -1196,9 +1593,12 @@ mod tests {
             participant_key: participant_key_path,
             coordinator_cert: coordinator_cert_path,
             coordinator_key: coordinator_key_path,
+            settlement_cert: settlement_cert_path,
+            settlement_key: settlement_key_path,
             server_fingerprint: certificate_fingerprint(&server_cert.to_der().unwrap()),
             participant_fingerprint: certificate_fingerprint(&participant_cert.to_der().unwrap()),
             coordinator_fingerprint: certificate_fingerprint(&coordinator_cert.to_der().unwrap()),
+            settlement_fingerprint: certificate_fingerprint(&settlement_cert.to_der().unwrap()),
         }
     }
 

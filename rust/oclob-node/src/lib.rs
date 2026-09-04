@@ -12,7 +12,11 @@ pub mod executor;
 pub mod network;
 
 use oclob_core::{Digest32, OrderCommitment, MAX_MATCH_SLOTS};
-use oclob_edge::{EdgeOrderManifest, NodeDecryptionKey, SealedPartyShare, MPC_PARTIES};
+use oclob_edge::{
+    CapabilityKeyShare, EdgeOrderManifest, NodeDecryptionKey, SealedCapabilityKeyShare,
+    SealedPartyShare, MPC_PARTIES,
+};
+use oclob_mpc::public_output_digest;
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderCertificate};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,14 +28,17 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 3;
-const LEGACY_STORE_VERSION: u16 = 2;
+const STORE_VERSION: u16 = 4;
+const LEGACY_STORE_VERSION_V3: u16 = 3;
+const LEGACY_STORE_VERSION_V2: u16 = 2;
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StoredRecord {
     manifest: EdgeOrderManifest,
     sealed: SealedPartyShare,
+    #[serde(default)]
+    sealed_capability_key_share: Option<SealedCapabilityKeyShare>,
     admitted_at: u64,
 }
 
@@ -168,19 +175,27 @@ impl NodeShareStore {
         &mut self,
         manifest: EdgeOrderManifest,
         sealed: SealedPartyShare,
+        sealed_capability_key_share: SealedCapabilityKeyShare,
         now: u64,
     ) -> Result<IngestOutcome, NodeError> {
         sealed
+            .open(&self.key, &manifest, self.state.party, now)
+            .map_err(|error| NodeError::Admission(error.to_string()))?;
+        sealed_capability_key_share
             .open(&self.key, &manifest, self.state.party, now)
             .map_err(|error| NodeError::Admission(error.to_string()))?;
         let key = manifest.commitment.hex();
         let incoming = StoredRecord {
             manifest,
             sealed,
+            sealed_capability_key_share: Some(sealed_capability_key_share),
             admitted_at: now,
         };
         if let Some(existing) = self.state.records.get(&key) {
-            return if existing == &incoming {
+            return if existing.manifest == incoming.manifest
+                && existing.sealed == incoming.sealed
+                && existing.sealed_capability_key_share == incoming.sealed_capability_key_share
+            {
                 Ok(IngestOutcome::AlreadyPresent {
                     generation: self.state.generation,
                 })
@@ -443,13 +458,22 @@ impl NodeShareStore {
     /// Persist the signed public receipt before acknowledging the coordinator.
     /// Retrying the same round returns the byte-identical receipt and cannot
     /// cause a second MPC execution.
-    pub fn record_completed_round(
+    pub(crate) fn record_completed_round(
         &mut self,
         receipt: executor::NodeExecutionReceipt,
     ) -> Result<(), NodeError> {
-        if receipt.party != self.state.party {
+        if receipt.party != self.state.party
+            || receipt.round_id == [0; 32]
+            || receipt.round_commitment == [0; 32]
+            || receipt.program_sha256 == [0; 32]
+            || receipt.artifact_sha256 == [0; 32]
+            || receipt.result.slots.len() != MAX_MATCH_SLOTS
+            || receipt.public_output_sha256 != public_output_digest(&receipt.result)
+            || receipt.signer == [0; 32]
+            || receipt.signature.len() != 64
+        {
             return Err(NodeError::Round(
-                "execution receipt belongs to another party".into(),
+                "execution receipt is not a complete party result".into(),
             ));
         }
         let key = hex::encode(receipt.round_id);
@@ -472,6 +496,48 @@ impl NodeShareStore {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Open this node's capability-key share only after the exact signed round
+    /// has completed and its public result authorizes settlement or book entry
+    /// for the requested order. An unmatched IOC is deliberately not released.
+    pub(crate) fn release_capability_key_share(
+        &self,
+        plan: &executor::RoundPlan,
+        order_commitment: OrderCommitment,
+        now: u64,
+    ) -> Result<(CapabilityKeyShare, Digest32), NodeError> {
+        let receipt = self
+            .completed_round(plan.round_id)
+            .ok_or_else(|| NodeError::Release("matching round is not complete".into()))?;
+        let authorized = if order_commitment == plan.arriving {
+            receipt.result.arriving_remaining > 0
+                || receipt.result.slots.iter().any(|slot| slot.matched)
+        } else {
+            plan.resting
+                .iter()
+                .position(|commitment| *commitment == order_commitment)
+                .and_then(|position| receipt.result.slots.get(position))
+                .is_some_and(|slot| slot.matched)
+        };
+        if !authorized {
+            return Err(NodeError::Release(
+                "public MPC result does not authorize capability release".into(),
+            ));
+        }
+        let record = self
+            .state
+            .records
+            .get(&order_commitment.hex())
+            .ok_or(NodeError::UnknownOrder)?;
+        let sealed = record
+            .sealed_capability_key_share
+            .as_ref()
+            .ok_or_else(|| NodeError::Release("legacy order has no capability-key share".into()))?;
+        let share = sealed
+            .open(&self.key, &record.manifest, self.state.party, now)
+            .map_err(|error| NodeError::Release(error.to_string()))?;
+        Ok((share, receipt.public_output_sha256))
     }
 
     pub fn prune_expired(&mut self, now: u64) -> Result<usize, NodeError> {
@@ -632,10 +698,21 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                 .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
             false,
         ),
-        LEGACY_STORE_VERSION => {
+        LEGACY_STORE_VERSION_V3 => {
+            let mut legacy: StoreState = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy v3 node store payload is invalid".into()))?;
+            if legacy.version != LEGACY_STORE_VERSION_V3 {
+                return Err(NodeError::State(
+                    "legacy v3 node store version is invalid".into(),
+                ));
+            }
+            legacy.version = STORE_VERSION;
+            (legacy, true)
+        }
+        LEGACY_STORE_VERSION_V2 => {
             let legacy: LegacyStoreStateV2 = serde_json::from_value(value)
                 .map_err(|_| NodeError::State("legacy node store payload is invalid".into()))?;
-            if legacy.version != LEGACY_STORE_VERSION {
+            if legacy.version != LEGACY_STORE_VERSION_V2 {
                 return Err(NodeError::State(
                     "legacy node store version is invalid".into(),
                 ));
@@ -679,9 +756,35 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
         if key != &record.manifest.commitment.hex()
             || record.manifest.commitment != record.sealed.commitment
             || record.sealed.party != expected_party
+            || record
+                .sealed_capability_key_share
+                .as_ref()
+                .is_some_and(|share| {
+                    share.order_commitment != record.manifest.commitment
+                        || share.capability_commitment
+                            != record.manifest.settlement_capability_commitment
+                        || share.party != expected_party
+                })
         {
             return Err(NodeError::State(
                 "node share store contains a misbound record".into(),
+            ));
+        }
+    }
+    for (key, receipt) in &state.completed_rounds {
+        if key != &hex::encode(receipt.round_id)
+            || receipt.party != expected_party
+            || receipt.round_id == [0; 32]
+            || receipt.round_commitment == [0; 32]
+            || receipt.program_sha256 == [0; 32]
+            || receipt.artifact_sha256 == [0; 32]
+            || receipt.result.slots.len() != MAX_MATCH_SLOTS
+            || receipt.public_output_sha256 != public_output_digest(&receipt.result)
+            || receipt.signer == [0; 32]
+            || receipt.signature.len() != 64
+        {
+            return Err(NodeError::State(
+                "node share store contains a misbound completed round".into(),
             ));
         }
     }
@@ -747,6 +850,8 @@ pub enum NodeError {
     Round(String),
     #[error("ordering state is invalid: {0}")]
     Ordering(String),
+    #[error("settlement capability release rejected: {0}")]
+    Release(String),
     #[error("node state is invalid: {0}")]
     State(String),
     #[error("unsafe node-store path: {0}")]
@@ -759,7 +864,7 @@ pub enum NodeError {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use oclob_core::{SecretOrder, Side, TimeInForce};
+    use oclob_core::{MpcBatchResult, MpcSlotResult, SecretOrder, Side, TimeInForce};
     use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
     use oclob_ordering::OrderingCommittee;
 
@@ -780,6 +885,21 @@ mod tests {
             TimeInForce::GoodTilCancelled,
             2_000_000_000,
             [1; 32],
+            [nonce; 32],
+            [nonce.wrapping_add(1); 32],
+        )
+        .unwrap()
+    }
+
+    fn ioc_order(price: u64, quantity: u64, nonce: u8) -> SecretOrder {
+        SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            price,
+            quantity,
+            TimeInForce::ImmediateOrCancel,
+            2_000_000_000,
+            [2; 32],
             [nonce; 32],
             [nonce.wrapping_add(1); 32],
         )
@@ -815,18 +935,33 @@ mod tests {
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         assert_eq!(
             store
-                .ingest(manifest.clone(), deliveries[0].1.clone(), 1_900_000_000)
+                .ingest(
+                    manifest.clone(),
+                    deliveries[0].1.clone(),
+                    deliveries[0].2.clone(),
+                    1_900_000_000,
+                )
                 .unwrap(),
             IngestOutcome::Stored { generation: 1 }
         );
         assert_eq!(
             store
-                .ingest(manifest.clone(), deliveries[0].1.clone(), 1_900_000_000)
+                .ingest(
+                    manifest.clone(),
+                    deliveries[0].1.clone(),
+                    deliveries[0].2.clone(),
+                    1_900_000_000,
+                )
                 .unwrap(),
             IngestOutcome::AlreadyPresent { generation: 1 }
         );
         assert!(store
-            .ingest(manifest.clone(), deliveries[1].1.clone(), 1_900_000_000)
+            .ingest(
+                manifest.clone(),
+                deliveries[1].1.clone(),
+                deliveries[1].2.clone(),
+                1_900_000_000,
+            )
             .is_err());
         drop(store);
         let reopened =
@@ -859,15 +994,29 @@ mod tests {
         .unwrap();
         let first_manifest = first.manifest().clone();
         let second_manifest = second.manifest().clone();
-        let first_delivery = first.into_deliveries()[0].1.clone();
-        let second_delivery = second.into_deliveries()[0].1.clone();
+        let first_deliveries = first.into_deliveries();
+        let second_deliveries = second.into_deliveries();
+        let first_delivery = first_deliveries[0].1.clone();
+        let first_key_delivery = first_deliveries[0].2.clone();
+        let second_delivery = second_deliveries[0].1.clone();
+        let second_key_delivery = second_deliveries[0].2.clone();
         let path = temp_path("round");
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         store
-            .ingest(first_manifest.clone(), first_delivery, 1_900_000_000)
+            .ingest(
+                first_manifest.clone(),
+                first_delivery,
+                first_key_delivery,
+                1_900_000_000,
+            )
             .unwrap();
         store
-            .ingest(second_manifest.clone(), second_delivery, 1_900_000_000)
+            .ingest(
+                second_manifest.clone(),
+                second_delivery,
+                second_key_delivery,
+                1_900_000_000,
+            )
             .unwrap();
         let prepared = store
             .prepare_round(
@@ -910,11 +1059,15 @@ mod tests {
         )
         .unwrap();
         let manifest = bundle.manifest().clone();
-        let delivery = bundle.into_deliveries()[0].1.clone();
+        let deliveries = bundle.into_deliveries();
+        let delivery = deliveries[0].1.clone();
+        let key_delivery = deliveries[0].2.clone();
         let path = temp_path("corrupt");
         let key_raw = private[0].raw_private_key().unwrap();
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
-        store.ingest(manifest, delivery, 1_900_000_000).unwrap();
+        store
+            .ingest(manifest, delivery, key_delivery, 1_900_000_000)
+            .unwrap();
         assert_eq!(store.prune_expired(2_000_000_001).unwrap(), 1);
         drop(store);
         let mut bytes = fs::read(&path).unwrap();
@@ -923,6 +1076,170 @@ mod tests {
         assert!(
             NodeShareStore::open(&path, 0, NodeDecryptionKey::from_raw(key_raw).unwrap()).is_err()
         );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn capability_key_share_is_released_only_after_an_authorized_completed_round() {
+        let (private, public) = keyset();
+        let participant = SigningKey::generate(&mut rand::rngs::OsRng);
+        let coordinator = SigningKey::generate(&mut rand::rngs::OsRng);
+        let resting_order = order(100, 40, 31);
+        let resting_bundle = EdgeOrderBundle::create(
+            &resting_order,
+            [32; 32],
+            [33; 32],
+            &participant,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let resting_manifest = resting_bundle.manifest().clone();
+        let resting_deliveries = resting_bundle.into_deliveries();
+        let path = temp_path("capability-release");
+        let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
+        store
+            .ingest(
+                resting_manifest.clone(),
+                resting_deliveries[0].1.clone(),
+                resting_deliveries[0].2.clone(),
+                1_900_000_000,
+            )
+            .unwrap();
+
+        let mut committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let resting_certificate = committee
+            .certify(
+                "JGB10Y-JPY",
+                resting_manifest.commitment,
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        let resting_plan = executor::RoundPlan::sign(
+            resting_certificate,
+            vec![],
+            1_900_000_000,
+            1_900_000_100,
+            &coordinator,
+        )
+        .unwrap();
+        assert!(
+            store
+                .release_capability_key_share(
+                    &resting_plan,
+                    resting_manifest.commitment,
+                    1_900_000_000,
+                )
+                .is_err()
+        );
+
+        let resting_result = MpcBatchResult {
+            slots: vec![
+                MpcSlotResult {
+                    matched: false,
+                    trade_price: 0,
+                    trade_quantity: 0,
+                };
+                MAX_MATCH_SLOTS
+            ],
+            arriving_remaining: 40,
+        };
+        let resting_output = public_output_digest(&resting_result);
+        let resting_generation = store.status().unwrap().generation;
+        store
+            .record_completed_round(executor::NodeExecutionReceipt {
+                version: 1,
+                party: 0,
+                round_id: resting_plan.round_id,
+                generation: resting_generation,
+                round_commitment: [34; 32],
+                program_sha256: [35; 32],
+                artifact_sha256: [36; 32],
+                public_output_sha256: resting_output,
+                result: resting_result,
+                execution_ms: 1,
+                signer: [38; 32],
+                signature: vec![39; 64],
+            })
+            .unwrap();
+        let (released, output) = store
+            .release_capability_key_share(&resting_plan, resting_manifest.commitment, 1_900_000_000)
+            .unwrap();
+        released
+            .verify(&resting_manifest, 0, 1_900_000_000)
+            .unwrap();
+        assert_eq!(output, resting_output);
+
+        let ioc = ioc_order(99, 20, 40);
+        let ioc_bundle = EdgeOrderBundle::create(
+            &ioc,
+            [41; 32],
+            [42; 32],
+            &participant,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let ioc_manifest = ioc_bundle.manifest().clone();
+        let ioc_deliveries = ioc_bundle.into_deliveries();
+        store
+            .ingest(
+                ioc_manifest.clone(),
+                ioc_deliveries[0].1.clone(),
+                ioc_deliveries[0].2.clone(),
+                1_900_000_000,
+            )
+            .unwrap();
+        let mut ioc_committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let ioc_certificate = ioc_committee
+            .certify(
+                "JGB10Y-JPY",
+                ioc_manifest.commitment,
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        let ioc_plan = executor::RoundPlan::sign(
+            ioc_certificate,
+            vec![resting_manifest.commitment],
+            1_900_000_000,
+            1_900_000_100,
+            &coordinator,
+        )
+        .unwrap();
+        let ioc_result = MpcBatchResult {
+            slots: vec![
+                MpcSlotResult {
+                    matched: false,
+                    trade_price: 0,
+                    trade_quantity: 0,
+                };
+                MAX_MATCH_SLOTS
+            ],
+            arriving_remaining: 0,
+        };
+        let ioc_output = public_output_digest(&ioc_result);
+        let ioc_generation = store.status().unwrap().generation;
+        store
+            .record_completed_round(executor::NodeExecutionReceipt {
+                version: 1,
+                party: 0,
+                round_id: ioc_plan.round_id,
+                generation: ioc_generation,
+                round_commitment: [43; 32],
+                program_sha256: [44; 32],
+                artifact_sha256: [45; 32],
+                public_output_sha256: ioc_output,
+                result: ioc_result,
+                execution_ms: 1,
+                signer: [47; 32],
+                signature: vec![48; 64],
+            })
+            .unwrap();
+        assert!(store
+            .release_capability_key_share(&ioc_plan, ioc_manifest.commitment, 1_900_000_000,)
+            .is_err());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -950,16 +1267,30 @@ mod tests {
         .unwrap();
         let first_manifest = first.manifest().clone();
         let second_manifest = second.manifest().clone();
-        let first_delivery = first.into_deliveries()[0].1.clone();
-        let second_delivery = second.into_deliveries()[0].1.clone();
+        let first_deliveries = first.into_deliveries();
+        let second_deliveries = second.into_deliveries();
+        let first_delivery = first_deliveries[0].1.clone();
+        let first_key_delivery = first_deliveries[0].2.clone();
+        let second_delivery = second_deliveries[0].1.clone();
+        let second_key_delivery = second_deliveries[0].2.clone();
         let path = temp_path("ordering");
         let key_raw = private[0].raw_private_key().unwrap();
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         store
-            .ingest(first_manifest.clone(), first_delivery, 1_900_000_000)
+            .ingest(
+                first_manifest.clone(),
+                first_delivery,
+                first_key_delivery,
+                1_900_000_000,
+            )
             .unwrap();
         store
-            .ingest(second_manifest.clone(), second_delivery, 1_900_000_000)
+            .ingest(
+                second_manifest.clone(),
+                second_delivery,
+                second_key_delivery,
+                1_900_000_000,
+            )
             .unwrap();
         let mut committee = OrderingCommittee::deterministic_for_demo().unwrap();
         let first_certificate = committee

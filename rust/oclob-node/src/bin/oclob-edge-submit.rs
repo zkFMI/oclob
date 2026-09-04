@@ -106,7 +106,6 @@ fn run() -> Result<(), String> {
             eligibility_commitment,
             &eligibility_wire,
             &signing_key,
-            &cluster.settlement_encryption_key,
             &mut rand::rngs::OsRng,
         )
         .map_err(|error| error.to_string())?;

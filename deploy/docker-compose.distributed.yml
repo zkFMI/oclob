@@ -188,9 +188,9 @@ services:
       OCLOB_TAKER_RECEIPT: /handoff/taker.json
       OCLOB_MAKER_CAPABILITY: /handoff/maker-capability.json
       OCLOB_TAKER_CAPABILITY: /handoff/taker-capability.json
-      OCLOB_SETTLEMENT_KEY: /settlement/capability-key.raw
-      OCLOB_RESEARCH_CONTRACT: /research/oclob_distributed_avalanche_contract.json
-      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_distributed_avalanche_e2e.json
+      OCLOB_SETTLEMENT_IDENTITY: /settlement/client.json
+      OCLOB_RESEARCH_CONTRACT: /research/oclob_threshold_settlement_contract.json
+      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_threshold_settlement_e2e_002.json
       QOMM_AVALANCHE_ARTIFACT: /out/oclob_distributed_avalanche_acceptance.json
 
 networks:

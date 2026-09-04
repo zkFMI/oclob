@@ -18,6 +18,7 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
 
@@ -26,6 +27,9 @@ pub const MAX_CORRUPT_PARTIES: usize = 2;
 pub const MATCH_FIELD_COUNT: usize = 6;
 pub const VSS_COEFFICIENTS: usize = MAX_CORRUPT_PARTIES + 1;
 pub const SEALED_SHARE_CLEAR_BYTES: usize = 2_048;
+pub const SETTLEMENT_KEY_THRESHOLD: usize = MAX_CORRUPT_PARTIES + 1;
+pub const SETTLEMENT_KEY_COEFFICIENTS: usize = SETTLEMENT_KEY_THRESHOLD;
+pub const SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES: usize = 1_024;
 pub const SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES: usize = 64 * 1_024;
 
 const MANIFEST_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST:v1";
@@ -36,9 +40,13 @@ const SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-CLEAR:v1";
 const VSS_SECOND_GENERATOR_DOMAIN: &[u8] = b"OCLOB:EDGE-VSS-H:v1";
 const SETTLEMENT_CAPABILITY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-COMMITMENT:v1";
 const SETTLEMENT_CAPABILITY_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-SIGNATURE:v1";
-const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-ENVELOPE:v1";
+const CAPABILITY_KEY_SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-SIGNATURE:v1";
+const CAPABILITY_KEY_SHARE_DIGEST_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-DIGEST:v1";
+const CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-ENVELOPE:v1";
+const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CLEAR:v1";
+const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v1";
 const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -51,6 +59,8 @@ pub struct EdgeOrderManifest {
     pub retention_deadline: u64,
     pub eligibility_commitment: Digest32,
     pub settlement_capability_commitment: Digest32,
+    #[serde(default)]
+    pub settlement_key_commitments: [[u8; 32]; SETTLEMENT_KEY_COEFFICIENTS],
     pub field_commitments: [[[u8; 32]; VSS_COEFFICIENTS]; MATCH_FIELD_COUNT],
     pub signer: Digest32,
     pub signature: Vec<u8>,
@@ -75,6 +85,17 @@ impl EdgeOrderManifest {
                     .ok_or(EdgeError::Manifest)?;
             }
         }
+        let mut settlement_key_points = Vec::with_capacity(SETTLEMENT_KEY_COEFFICIENTS);
+        for commitment in &self.settlement_key_commitments {
+            settlement_key_points.push(
+                CompressedRistretto(*commitment)
+                    .decompress()
+                    .ok_or(EdgeError::Manifest)?,
+            );
+        }
+        if settlement_key_points[0] == RistrettoPoint::default() {
+            return Err(EdgeError::Manifest);
+        }
         let key = VerifyingKey::from_bytes(&self.signer).map_err(|_| EdgeError::Signature)?;
         let signature =
             Signature::try_from(self.signature.as_slice()).map_err(|_| EdgeError::Signature)?;
@@ -87,15 +108,24 @@ impl EdgeOrderManifest {
     }
 
     fn unsigned_body(&self) -> Vec<u8> {
-        manifest_body(
-            self.version,
-            &self.market_id,
-            self.retention_deadline,
-            self.eligibility_commitment,
-            self.settlement_capability_commitment,
-            &self.field_commitments,
-            self.signer,
-        )
+        let mut body = Vec::with_capacity(MANIFEST_DOMAIN.len() + self.market_id.len() + 768);
+        body.extend_from_slice(MANIFEST_DOMAIN);
+        body.extend_from_slice(&self.version.to_be_bytes());
+        body.extend_from_slice(&(self.market_id.len() as u16).to_be_bytes());
+        body.extend_from_slice(self.market_id.as_bytes());
+        body.extend_from_slice(&self.retention_deadline.to_be_bytes());
+        body.extend_from_slice(&self.eligibility_commitment);
+        body.extend_from_slice(&self.settlement_capability_commitment);
+        for commitment in &self.settlement_key_commitments {
+            body.extend_from_slice(commitment);
+        }
+        for field in &self.field_commitments {
+            for commitment in field {
+                body.extend_from_slice(commitment);
+            }
+        }
+        body.extend_from_slice(&self.signer);
+        body
     }
 }
 
@@ -212,13 +242,6 @@ pub struct NodeDecryptionKey(PKey<Private>);
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NodeEncryptionKey(pub Digest32);
 
-/// The settlement gateway uses the same reviewed X25519 construction as an
-/// MPC node, but receives a different domain-separated envelope.  These
-/// aliases make the custody boundary explicit at call sites without adding a
-/// second cryptographic implementation.
-pub type SettlementDecryptionKey = NodeDecryptionKey;
-pub type SettlementEncryptionKey = NodeEncryptionKey;
-
 impl NodeDecryptionKey {
     pub fn generate() -> Result<Self, EdgeError> {
         PKey::generate_x25519()
@@ -275,6 +298,20 @@ impl fmt::Debug for SealedPartyShare {
 }
 
 impl SealedPartyShare {
+    pub fn wire_digest(&self) -> Digest32 {
+        let mut hash = Sha256::new();
+        hash.update(SHARE_ENVELOPE_DOMAIN);
+        hash.update(self.version.to_be_bytes());
+        hash.update(self.party.to_be_bytes());
+        hash.update(self.commitment.0);
+        hash.update(self.recipient);
+        hash.update(self.ephemeral_public);
+        hash.update(self.nonce);
+        hash.update((self.ciphertext.len() as u64).to_be_bytes());
+        hash.update(&self.ciphertext);
+        hash.finalize().into()
+    }
+
     pub fn open(
         &self,
         key: &NodeDecryptionKey,
@@ -307,17 +344,210 @@ impl SealedPartyShare {
     }
 }
 
-/// Fixed-size encrypted order authority delivered directly from the
-/// participant edge to the settlement gateway.  The coordinator sees only
-/// `EdgeOrderManifest::settlement_capability_commitment` and never receives
-/// this envelope or its plaintext.
+/// One Feldman-verifiable evaluation of the random capability key polynomial.
+/// It is encrypted at rest on one MPC node and may cross the wire in clear only
+/// inside a fixed-size mutually authenticated response after that node has
+/// durably recorded an authorized MPC result.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CapabilityKeyShare {
+    version: u16,
+    party: u16,
+    order_commitment: OrderCommitment,
+    capability_commitment: Digest32,
+    value: [u8; 32],
+    signer: Digest32,
+    signature: Vec<u8>,
+}
+
+impl fmt::Debug for CapabilityKeyShare {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityKeyShare")
+            .field("party", &self.party)
+            .field("order_commitment", &self.order_commitment.hex())
+            .field("value", &"[redacted]")
+            .field("signature_bytes", &self.signature.len())
+            .finish()
+    }
+}
+
+impl Drop for CapabilityKeyShare {
+    fn drop(&mut self) {
+        self.value.fill(0);
+    }
+}
+
+impl CapabilityKeyShare {
+    pub const fn party(&self) -> u16 {
+        self.party
+    }
+
+    pub const fn order_commitment(&self) -> OrderCommitment {
+        self.order_commitment
+    }
+
+    pub const fn capability_commitment(&self) -> Digest32 {
+        self.capability_commitment
+    }
+
+    pub fn wire_digest(&self) -> Digest32 {
+        let mut hash = Sha256::new();
+        hash.update(CAPABILITY_KEY_SHARE_DIGEST_DOMAIN);
+        hash.update(self.signature_body());
+        hash.update((self.signature.len() as u64).to_be_bytes());
+        hash.update(&self.signature);
+        hash.finalize().into()
+    }
+
+    pub fn verify(
+        &self,
+        manifest: &EdgeOrderManifest,
+        expected_party: u16,
+        now: u64,
+    ) -> Result<(), EdgeError> {
+        manifest.verify(now)?;
+        if self.version != VERSION
+            || self.party != expected_party
+            || usize::from(self.party) >= MPC_PARTIES
+            || self.order_commitment != manifest.commitment
+            || self.capability_commitment != manifest.settlement_capability_commitment
+            || self.signer != manifest.signer
+        {
+            return Err(EdgeError::CapabilityKeyShare);
+        }
+        let scalar = canonical_scalar(self.value).map_err(|_| EdgeError::CapabilityKeyShare)?;
+        let x = Scalar::from(u64::from(self.party) + 1);
+        let mut expected = RistrettoPoint::default();
+        let mut power = Scalar::ONE;
+        for commitment in &manifest.settlement_key_commitments {
+            let point = CompressedRistretto(*commitment)
+                .decompress()
+                .ok_or(EdgeError::CapabilityKeyShare)?;
+            expected += point * power;
+            power *= x;
+        }
+        if RISTRETTO_BASEPOINT_POINT * scalar != expected {
+            return Err(EdgeError::CapabilityKeyShare);
+        }
+        let key = VerifyingKey::from_bytes(&self.signer).map_err(|_| EdgeError::Signature)?;
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| EdgeError::Signature)?;
+        key.verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| EdgeError::Signature)
+    }
+
+    fn signature_body(&self) -> Vec<u8> {
+        [
+            CAPABILITY_KEY_SHARE_SIGNATURE_DOMAIN,
+            &self.version.to_be_bytes(),
+            &self.party.to_be_bytes(),
+            &self.order_commitment.0,
+            &self.capability_commitment,
+            &self.value,
+            &self.signer,
+        ]
+        .concat()
+    }
+}
+
+/// Node-specific encryption of one capability-key share. No node can open a
+/// different party's envelope, and two colluding nodes remain below threshold.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SealedCapabilityKeyShare {
+    pub version: u16,
+    pub party: u16,
+    pub order_commitment: OrderCommitment,
+    pub capability_commitment: Digest32,
+    pub recipient: Digest32,
+    pub ephemeral_public: Digest32,
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+}
+
+impl fmt::Debug for SealedCapabilityKeyShare {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SealedCapabilityKeyShare")
+            .field("party", &self.party)
+            .field("order_commitment", &self.order_commitment.hex())
+            .field("ciphertext_bytes", &self.ciphertext.len())
+            .finish()
+    }
+}
+
+impl SealedCapabilityKeyShare {
+    pub fn wire_digest(&self) -> Digest32 {
+        let mut hash = Sha256::new();
+        hash.update(CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN);
+        hash.update(self.version.to_be_bytes());
+        hash.update(self.party.to_be_bytes());
+        hash.update(self.order_commitment.0);
+        hash.update(self.capability_commitment);
+        hash.update(self.recipient);
+        hash.update(self.ephemeral_public);
+        hash.update(self.nonce);
+        hash.update((self.ciphertext.len() as u64).to_be_bytes());
+        hash.update(&self.ciphertext);
+        hash.finalize().into()
+    }
+
+    pub fn open(
+        &self,
+        key: &NodeDecryptionKey,
+        manifest: &EdgeOrderManifest,
+        expected_party: u16,
+        now: u64,
+    ) -> Result<CapabilityKeyShare, EdgeError> {
+        if self.version != VERSION
+            || self.party != expected_party
+            || self.order_commitment != manifest.commitment
+            || self.capability_commitment != manifest.settlement_capability_commitment
+            || self.ciphertext.len() != SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES + 16
+            || key.public_key()?.0 != self.recipient
+        {
+            return Err(EdgeError::Envelope);
+        }
+        let ephemeral = PKey::public_key_from_raw_bytes(&self.ephemeral_public, Id::X25519)
+            .map_err(|error| EdgeError::Crypto(error.to_string()))?;
+        let shared = shared_secret(&key.0, &ephemeral)?;
+        let derived = derive_capability_key_share_envelope_key(
+            &shared,
+            self.party,
+            self.order_commitment,
+            self.capability_commitment,
+            self.recipient,
+            self.ephemeral_public,
+        );
+        let mut clear = decrypt(
+            &derived,
+            &self.nonce,
+            &self.ciphertext,
+            &capability_key_share_envelope_aad(self),
+        )?;
+        let share = decode_capability_key_share_clear(&clear)?;
+        clear.fill(0);
+        share.verify(manifest, expected_party, now)?;
+        Ok(share)
+    }
+}
+
+/// Reconstructed only after three signed node releases. This type is neither
+/// serializable nor printable and clears its key bytes on drop.
+pub struct SettlementCapabilityKey([u8; 32]);
+
+impl Drop for SettlementCapabilityKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+/// Fixed-size encrypted order authority. Its symmetric key is Shamir-shared
+/// 3-of-7 across the MPC nodes; no settlement-wide private key exists.
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SealedSettlementCapability {
     pub version: u16,
     pub order_commitment: OrderCommitment,
     pub capability_commitment: Digest32,
-    pub recipient: Digest32,
-    pub ephemeral_public: Digest32,
     pub nonce: [u8; 12],
     pub ciphertext: Vec<u8>,
 }
@@ -375,7 +605,7 @@ struct SettlementCapabilityClear {
 impl SealedSettlementCapability {
     pub fn open(
         &self,
-        key: &SettlementDecryptionKey,
+        key: &SettlementCapabilityKey,
         manifest: &EdgeOrderManifest,
         now: u64,
     ) -> Result<VerifiedSettlementCapability, EdgeError> {
@@ -384,55 +614,52 @@ impl SealedSettlementCapability {
             || self.order_commitment != manifest.commitment
             || self.capability_commitment != manifest.settlement_capability_commitment
             || self.ciphertext.len() != SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES + 16
-            || key.public_key()?.0 != self.recipient
         {
             return Err(EdgeError::Envelope);
         }
-        let ephemeral = PKey::public_key_from_raw_bytes(&self.ephemeral_public, Id::X25519)
-            .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-        let shared = shared_secret(&key.0, &ephemeral)?;
-        let derived = derive_settlement_envelope_key(
-            &shared,
-            self.order_commitment,
-            self.capability_commitment,
-            self.recipient,
-            self.ephemeral_public,
-        );
-        let clear = decrypt(
-            &derived,
+        let scalar = canonical_scalar(key.0).map_err(|_| EdgeError::CapabilityKeyShare)?;
+        if (RISTRETTO_BASEPOINT_POINT * scalar).compress().to_bytes()
+            != manifest.settlement_key_commitments[0]
+        {
+            return Err(EdgeError::CapabilityKeyShare);
+        }
+        let mut clear = decrypt(
+            &key.0,
             &self.nonce,
             &self.ciphertext,
             &settlement_envelope_aad(self),
         )?;
-        let clear = decode_settlement_clear(&clear)?;
-        if clear.version != VERSION
-            || clear.signer != manifest.signer
-            || clear.eligibility_commitment != manifest.eligibility_commitment
-            || clear.eligibility_evidence.is_empty()
+        let capability = decode_settlement_clear(&clear)?;
+        clear.fill(0);
+        if capability.version != VERSION
+            || capability.signer != manifest.signer
+            || capability.eligibility_commitment != manifest.eligibility_commitment
+            || capability.eligibility_evidence.is_empty()
         {
             return Err(EdgeError::Capability);
         }
-        let order =
-            SecretOrder::from_secret_wire(&clear.order_wire).map_err(|_| EdgeError::Capability)?;
+        let order = SecretOrder::from_secret_wire(&capability.order_wire)
+            .map_err(|_| EdgeError::Capability)?;
         if order.market_id() != manifest.market_id
             || order.expires_at() != manifest.retention_deadline
-            || settlement_capability_commitment(&order, &clear.signer)
+            || settlement_capability_commitment(&order, &capability.signer)
                 != manifest.settlement_capability_commitment
         {
             return Err(EdgeError::Capability);
         }
-        verify_constant_terms(&order, &clear.constant_blindings, manifest)?;
-        let signature =
-            Signature::try_from(clear.signature.as_slice()).map_err(|_| EdgeError::Signature)?;
-        let signer = VerifyingKey::from_bytes(&clear.signer).map_err(|_| EdgeError::Signature)?;
+        verify_constant_terms(&order, &capability.constant_blindings, manifest)?;
+        let signature = Signature::try_from(capability.signature.as_slice())
+            .map_err(|_| EdgeError::Signature)?;
+        let signer =
+            VerifyingKey::from_bytes(&capability.signer).map_err(|_| EdgeError::Signature)?;
         signer
             .verify_strict(
                 &settlement_capability_signature_body(
                     manifest.commitment,
                     manifest.settlement_capability_commitment,
                     manifest.eligibility_commitment,
-                    &clear.eligibility_evidence,
-                    &clear.constant_blindings,
+                    &capability.eligibility_evidence,
+                    &capability.constant_blindings,
                 ),
                 &signature,
             )
@@ -441,7 +668,7 @@ impl SealedSettlementCapability {
             order,
             order_commitment: manifest.commitment,
             eligibility_commitment: manifest.eligibility_commitment,
-            eligibility_evidence: clear.eligibility_evidence,
+            eligibility_evidence: capability.eligibility_evidence,
         })
     }
 }
@@ -452,6 +679,8 @@ impl SealedSettlementCapability {
 pub struct EdgeOrderBundle {
     manifest: EdgeOrderManifest,
     sealed_shares: [SealedPartyShare; MPC_PARTIES],
+    sealed_capability_key_shares: [SealedCapabilityKeyShare; MPC_PARTIES],
+    settlement_capability_key: SettlementCapabilityKey,
     constant_blindings: [[u8; 32]; MATCH_FIELD_COUNT],
 }
 
@@ -502,34 +731,46 @@ impl EdgeOrderBundle {
                 blinding_evaluations[party][field] = evaluate(&blinding_coefficients, x);
             }
         }
+        let settlement_key_scalar = random_nonzero_scalar(rng);
+        let settlement_key_coefficients = [
+            settlement_key_scalar,
+            Scalar::random(&mut *rng),
+            Scalar::random(&mut *rng),
+        ];
+        let settlement_key_commitments = settlement_key_coefficients.map(|coefficient| {
+            (RISTRETTO_BASEPOINT_POINT * coefficient)
+                .compress()
+                .to_bytes()
+        });
+        let settlement_key_evaluations: [Scalar; MPC_PARTIES] = std::array::from_fn(|party| {
+            evaluate(
+                &settlement_key_coefficients,
+                Scalar::from((party + 1) as u64),
+            )
+        });
         let signer_public = signer.verifying_key().to_bytes();
-        let body = manifest_body(
-            VERSION,
-            order.market_id(),
-            order.expires_at(),
-            eligibility_commitment,
-            settlement_capability_commitment,
-            &field_commitments,
-            signer_public,
-        );
-        let commitment = OrderCommitment(Sha256::digest(body).into());
-        let manifest = EdgeOrderManifest {
+        let mut manifest = EdgeOrderManifest {
             version: VERSION,
             market_id: order.market_id().to_owned(),
-            commitment,
+            commitment: OrderCommitment([0; 32]),
             retention_deadline: order.expires_at(),
             eligibility_commitment,
             settlement_capability_commitment,
+            settlement_key_commitments,
             field_commitments,
             signer: signer_public,
-            signature: signer
-                .sign(&manifest_signature_body(commitment))
-                .to_bytes()
-                .to_vec(),
+            signature: Vec::new(),
         };
+        manifest.commitment = manifest.derived_commitment();
+        manifest.signature = signer
+            .sign(&manifest_signature_body(manifest.commitment))
+            .to_bytes()
+            .to_vec();
         manifest.verify(0)?;
+        let commitment = manifest.commitment;
 
         let mut sealed = Vec::with_capacity(MPC_PARTIES);
+        let mut sealed_capability_keys = Vec::with_capacity(MPC_PARTIES);
         for party in 0..MPC_PARTIES {
             let mut share = PartyOrderShare {
                 version: VERSION,
@@ -543,12 +784,35 @@ impl EdgeOrderBundle {
             share.signature = signer.sign(&share.signature_body()).to_bytes().to_vec();
             share.verify(&manifest, party as u16, 0)?;
             sealed.push(seal_share(&share, &node_keys[party], rng)?);
+            let mut capability_key_share = CapabilityKeyShare {
+                version: VERSION,
+                party: party as u16,
+                order_commitment: commitment,
+                capability_commitment: settlement_capability_commitment,
+                value: settlement_key_evaluations[party].to_bytes(),
+                signer: signer_public,
+                signature: Vec::new(),
+            };
+            capability_key_share.signature = signer
+                .sign(&capability_key_share.signature_body())
+                .to_bytes()
+                .to_vec();
+            capability_key_share.verify(&manifest, party as u16, 0)?;
+            sealed_capability_keys.push(seal_capability_key_share(
+                &capability_key_share,
+                &node_keys[party],
+                rng,
+            )?);
         }
         Ok(Self {
             manifest,
             sealed_shares: sealed
                 .try_into()
                 .map_err(|_| EdgeError::Crypto("seven share envelopes were not produced".into()))?,
+            sealed_capability_key_shares: sealed_capability_keys.try_into().map_err(|_| {
+                EdgeError::Crypto("seven capability-key envelopes were not produced".into())
+            })?,
+            settlement_capability_key: SettlementCapabilityKey(settlement_key_scalar.to_bytes()),
             constant_blindings,
         })
     }
@@ -557,23 +821,21 @@ impl EdgeOrderBundle {
         &self.manifest
     }
 
-    /// Encrypt the participant's pre-authorized settlement material directly
-    /// to the configured settlement gateway.  The VSS constant blindings prove
-    /// that the values authorized for reservation and DvP are exactly the
-    /// values distributed to the MPC nodes.
+    /// Encrypt the participant's pre-authorized settlement material under the
+    /// random key whose shares were delivered to the seven MPC nodes. The VSS
+    /// constant blindings prove that reservation and DvP values equal the MPC
+    /// inputs. No cluster-wide decryption key is created.
     pub fn seal_settlement_capability<R: RngCore + CryptoRng>(
         &self,
         order: &SecretOrder,
         eligibility_commitment: Digest32,
         eligibility_evidence: &[u8],
         signer: &SigningKey,
-        recipient: &SettlementEncryptionKey,
         rng: &mut R,
     ) -> Result<SealedSettlementCapability, EdgeError> {
         if eligibility_commitment == [0; 32]
             || eligibility_evidence.is_empty()
             || eligibility_evidence.len() > SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES / 2
-            || recipient.0 == [0; 32]
             || signer.verifying_key().to_bytes() != self.manifest.signer
             || eligibility_commitment != self.manifest.eligibility_commitment
             || settlement_capability_commitment(order, &self.manifest.signer)
@@ -604,18 +866,23 @@ impl EdgeOrderBundle {
             &clear,
             self.manifest.commitment,
             self.manifest.settlement_capability_commitment,
-            recipient,
+            &self.settlement_capability_key,
             rng,
         )
     }
 
-    /// Move one encrypted share to its node. Callers cannot clone or serialize
-    /// the bundle as a whole.
-    pub fn into_deliveries(self) -> [(u16, SealedPartyShare); MPC_PARTIES] {
+    /// Move one encrypted order share and one encrypted capability-key share to
+    /// each node. Callers cannot clone or serialize the bundle as a whole.
+    pub fn into_deliveries(
+        self,
+    ) -> [(u16, SealedPartyShare, SealedCapabilityKeyShare); MPC_PARTIES] {
         self.sealed_shares
             .into_iter()
+            .zip(self.sealed_capability_key_shares)
             .enumerate()
-            .map(|(party, share)| (party as u16, share))
+            .map(|(party, (share, capability_key_share))| {
+                (party as u16, share, capability_key_share)
+            })
             .collect::<Vec<_>>()
             .try_into()
             .expect("the bundle always contains seven deliveries")
@@ -637,6 +904,50 @@ pub fn settlement_capability_commitment(order: &SecretOrder, signer: &Digest32) 
         .into()
 }
 
+/// Reconstruct the one-order capability key from any three distinct,
+/// participant-signed and Feldman-verified node shares. Two shares always fail.
+pub fn reconstruct_settlement_capability_key(
+    manifest: &EdgeOrderManifest,
+    shares: &[CapabilityKeyShare],
+    now: u64,
+) -> Result<SettlementCapabilityKey, EdgeError> {
+    manifest.verify(now)?;
+    if shares.len() < SETTLEMENT_KEY_THRESHOLD || shares.len() > MPC_PARTIES {
+        return Err(EdgeError::CapabilityKeyThreshold);
+    }
+    let mut parties = BTreeSet::new();
+    for share in shares {
+        if !parties.insert(share.party) {
+            return Err(EdgeError::CapabilityKeyThreshold);
+        }
+        share.verify(manifest, share.party, now)?;
+    }
+    let mut secret = Scalar::ZERO;
+    for share in shares {
+        let x_i = Scalar::from(u64::from(share.party) + 1);
+        let mut numerator = Scalar::ONE;
+        let mut denominator = Scalar::ONE;
+        for other in shares {
+            if other.party == share.party {
+                continue;
+            }
+            let x_j = Scalar::from(u64::from(other.party) + 1);
+            numerator *= -x_j;
+            denominator *= x_i - x_j;
+        }
+        let evaluation =
+            canonical_scalar(share.value).map_err(|_| EdgeError::CapabilityKeyShare)?;
+        secret += evaluation * numerator * denominator.invert();
+    }
+    if secret == Scalar::ZERO
+        || (RISTRETTO_BASEPOINT_POINT * secret).compress().to_bytes()
+            != manifest.settlement_key_commitments[0]
+    {
+        return Err(EdgeError::CapabilityKeyThreshold);
+    }
+    Ok(SettlementCapabilityKey(secret.to_bytes()))
+}
+
 fn order_values(order: &SecretOrder) -> [Scalar; MATCH_FIELD_COUNT] {
     [
         Scalar::from(u64::from(order.side().wire())),
@@ -656,6 +967,15 @@ fn order_values(order: &SecretOrder) -> [Scalar; MATCH_FIELD_COUNT] {
 
 fn evaluate(coefficients: &[Scalar; VSS_COEFFICIENTS], x: Scalar) -> Scalar {
     coefficients[0] + coefficients[1] * x + coefficients[2] * x * x
+}
+
+fn random_nonzero_scalar<R: RngCore + CryptoRng>(rng: &mut R) -> Scalar {
+    loop {
+        let value = Scalar::random(&mut *rng);
+        if value != Scalar::ZERO {
+            return value;
+        }
+    }
 }
 
 fn vss_second_generator() -> RistrettoPoint {
@@ -698,32 +1018,6 @@ fn settlement_capability_signature_body(
         hash.update(blinding);
     }
     hash.finalize().to_vec()
-}
-
-fn manifest_body(
-    version: u16,
-    market_id: &str,
-    retention_deadline: u64,
-    eligibility_commitment: Digest32,
-    settlement_capability_commitment: Digest32,
-    field_commitments: &[[[u8; 32]; VSS_COEFFICIENTS]; MATCH_FIELD_COUNT],
-    signer: Digest32,
-) -> Vec<u8> {
-    let mut body = Vec::with_capacity(MANIFEST_DOMAIN.len() + market_id.len() + 768);
-    body.extend_from_slice(MANIFEST_DOMAIN);
-    body.extend_from_slice(&version.to_be_bytes());
-    body.extend_from_slice(&(market_id.len() as u16).to_be_bytes());
-    body.extend_from_slice(market_id.as_bytes());
-    body.extend_from_slice(&retention_deadline.to_be_bytes());
-    body.extend_from_slice(&eligibility_commitment);
-    body.extend_from_slice(&settlement_capability_commitment);
-    for field in field_commitments {
-        for commitment in field {
-            body.extend_from_slice(commitment);
-        }
-    }
-    body.extend_from_slice(&signer);
-    body
 }
 
 fn manifest_signature_body(commitment: OrderCommitment) -> Vec<u8> {
@@ -797,14 +1091,12 @@ fn seal_share<R: RngCore + CryptoRng>(
     Ok(envelope)
 }
 
-fn seal_settlement_clear<R: RngCore + CryptoRng>(
-    capability: &SettlementCapabilityClear,
-    order_commitment: OrderCommitment,
-    capability_commitment: Digest32,
-    recipient: &SettlementEncryptionKey,
+fn seal_capability_key_share<R: RngCore + CryptoRng>(
+    share: &CapabilityKeyShare,
+    recipient: &NodeEncryptionKey,
     rng: &mut R,
-) -> Result<SealedSettlementCapability, EdgeError> {
-    let clear = encode_settlement_clear(capability, rng)?;
+) -> Result<SealedCapabilityKeyShare, EdgeError> {
+    let mut clear = encode_capability_key_share_clear(share, rng)?;
     let ephemeral_private =
         PKey::generate_x25519().map_err(|error| EdgeError::Crypto(error.to_string()))?;
     let ephemeral_public: Digest32 = ephemeral_private
@@ -815,25 +1107,55 @@ fn seal_settlement_clear<R: RngCore + CryptoRng>(
     let recipient_key = PKey::public_key_from_raw_bytes(&recipient.0, Id::X25519)
         .map_err(|error| EdgeError::Crypto(error.to_string()))?;
     let shared = shared_secret(&ephemeral_private, &recipient_key)?;
-    let key = derive_settlement_envelope_key(
+    let key = derive_capability_key_share_envelope_key(
         &shared,
-        order_commitment,
-        capability_commitment,
+        share.party,
+        share.order_commitment,
+        share.capability_commitment,
         recipient.0,
         ephemeral_public,
     );
+    let mut nonce = [0_u8; 12];
+    rng.fill_bytes(&mut nonce);
+    let mut envelope = SealedCapabilityKeyShare {
+        version: VERSION,
+        party: share.party,
+        order_commitment: share.order_commitment,
+        capability_commitment: share.capability_commitment,
+        recipient: recipient.0,
+        ephemeral_public,
+        nonce,
+        ciphertext: Vec::new(),
+    };
+    envelope.ciphertext = encrypt(
+        &key,
+        &nonce,
+        &clear,
+        &capability_key_share_envelope_aad(&envelope),
+    )?;
+    clear.fill(0);
+    Ok(envelope)
+}
+
+fn seal_settlement_clear<R: RngCore + CryptoRng>(
+    capability: &SettlementCapabilityClear,
+    order_commitment: OrderCommitment,
+    capability_commitment: Digest32,
+    key: &SettlementCapabilityKey,
+    rng: &mut R,
+) -> Result<SealedSettlementCapability, EdgeError> {
+    let mut clear = encode_settlement_clear(capability, rng)?;
     let mut nonce = [0_u8; 12];
     rng.fill_bytes(&mut nonce);
     let mut envelope = SealedSettlementCapability {
         version: VERSION,
         order_commitment,
         capability_commitment,
-        recipient: recipient.0,
-        ephemeral_public,
         nonce,
         ciphertext: Vec::new(),
     };
-    envelope.ciphertext = encrypt(&key, &nonce, &clear, &settlement_envelope_aad(&envelope))?;
+    envelope.ciphertext = encrypt(&key.0, &nonce, &clear, &settlement_envelope_aad(&envelope))?;
+    clear.fill(0);
     Ok(envelope)
 }
 
@@ -861,6 +1183,50 @@ fn decode_fixed_clear(clear: &[u8]) -> Result<PartyOrderShare, EdgeError> {
         return Err(EdgeError::Envelope);
     }
     let start = SHARE_CLEAR_DOMAIN.len();
+    let length = u32::from_be_bytes(
+        clear[start..start + 4]
+            .try_into()
+            .expect("four-byte fixed frame length"),
+    ) as usize;
+    let payload_start = start + 4;
+    let payload_end = payload_start
+        .checked_add(length)
+        .filter(|end| *end <= clear.len())
+        .ok_or(EdgeError::Envelope)?;
+    serde_json::from_slice(&clear[payload_start..payload_end]).map_err(|_| EdgeError::Envelope)
+}
+
+fn encode_capability_key_share_clear<R: RngCore + CryptoRng>(
+    share: &CapabilityKeyShare,
+    rng: &mut R,
+) -> Result<Vec<u8>, EdgeError> {
+    let mut encoded =
+        serde_json::to_vec(share).map_err(|error| EdgeError::Wire(error.to_string()))?;
+    let header = CAPABILITY_KEY_SHARE_CLEAR_DOMAIN.len() + 4;
+    if header + encoded.len() > SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES {
+        encoded.fill(0);
+        return Err(EdgeError::Wire(
+            "capability-key share exceeds fixed clear frame".into(),
+        ));
+    }
+    let mut clear = vec![0_u8; SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES];
+    clear[..CAPABILITY_KEY_SHARE_CLEAR_DOMAIN.len()]
+        .copy_from_slice(CAPABILITY_KEY_SHARE_CLEAR_DOMAIN);
+    clear[CAPABILITY_KEY_SHARE_CLEAR_DOMAIN.len()..header]
+        .copy_from_slice(&(encoded.len() as u32).to_be_bytes());
+    clear[header..header + encoded.len()].copy_from_slice(&encoded);
+    encoded.fill(0);
+    rng.fill_bytes(&mut clear[header + encoded.len()..]);
+    Ok(clear)
+}
+
+fn decode_capability_key_share_clear(clear: &[u8]) -> Result<CapabilityKeyShare, EdgeError> {
+    if clear.len() != SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES
+        || !clear.starts_with(CAPABILITY_KEY_SHARE_CLEAR_DOMAIN)
+    {
+        return Err(EdgeError::Envelope);
+    }
+    let start = CAPABILITY_KEY_SHARE_CLEAR_DOMAIN.len();
     let length = u32::from_be_bytes(
         clear[start..start + 4]
             .try_into()
@@ -947,30 +1313,46 @@ fn derive_envelope_key(
     hmac_sha256(&pseudorandom, &info)
 }
 
-fn derive_settlement_envelope_key(
+fn derive_capability_key_share_envelope_key(
     shared: &[u8],
+    party: u16,
     order_commitment: OrderCommitment,
     capability_commitment: Digest32,
     recipient: Digest32,
     ephemeral_public: Digest32,
 ) -> Digest32 {
     let salt = [
-        SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN,
+        CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN,
         &order_commitment.0,
         &capability_commitment,
+        &party.to_be_bytes(),
     ]
     .concat();
     let pseudorandom = hmac_sha256(&salt, shared);
     let info = [
-        SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN,
+        CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN,
         &recipient,
         &ephemeral_public,
+        &party.to_be_bytes(),
         &order_commitment.0,
         &capability_commitment,
         &[1_u8],
     ]
     .concat();
     hmac_sha256(&pseudorandom, &info)
+}
+
+fn capability_key_share_envelope_aad(envelope: &SealedCapabilityKeyShare) -> Vec<u8> {
+    [
+        CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN,
+        &envelope.version.to_be_bytes(),
+        &envelope.party.to_be_bytes(),
+        &envelope.order_commitment.0,
+        &envelope.capability_commitment,
+        &envelope.recipient,
+        &envelope.ephemeral_public,
+    ]
+    .concat()
 }
 
 fn envelope_aad(envelope: &SealedPartyShare) -> Vec<u8> {
@@ -991,8 +1373,6 @@ fn settlement_envelope_aad(envelope: &SealedSettlementCapability) -> Vec<u8> {
         &envelope.version.to_be_bytes(),
         &envelope.order_commitment.0,
         &envelope.capability_commitment,
-        &envelope.recipient,
-        &envelope.ephemeral_public,
     ]
     .concat()
 }
@@ -1093,6 +1473,10 @@ pub enum EdgeError {
     Envelope,
     #[error("settlement capability is invalid or not bound to the MPC shares")]
     Capability,
+    #[error("settlement capability-key share is invalid")]
+    CapabilityKeyShare,
+    #[error("at least three distinct valid capability-key shares are required")]
+    CapabilityKeyThreshold,
     #[error("edge-order wire failure: {0}")]
     Wire(String),
     #[error("edge-order cryptography failure: {0}")]
@@ -1148,7 +1532,7 @@ mod tests {
         assert!(!manifest_json.contains("dekyx_nullifier"));
         let manifest = bundle.manifest().clone();
         let deliveries = bundle.into_deliveries();
-        for (party, sealed) in deliveries {
+        for (party, sealed, sealed_capability_key) in deliveries {
             assert_eq!(sealed.ciphertext.len(), SEALED_SHARE_CLEAR_BYTES + 16);
             let opened = sealed
                 .open(
@@ -1163,12 +1547,28 @@ mod tests {
             assert!(sealed
                 .open(&private[wrong], &manifest, party, 1_900_000_000)
                 .is_err());
+            assert_eq!(
+                sealed_capability_key.ciphertext.len(),
+                SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES + 16
+            );
+            let capability_key_share = sealed_capability_key
+                .open(
+                    &private[usize::from(party)],
+                    &manifest,
+                    party,
+                    1_900_000_000,
+                )
+                .unwrap();
+            assert_eq!(capability_key_share.party(), party);
+            assert!(sealed_capability_key
+                .open(&private[wrong], &manifest, party, 1_900_000_000)
+                .is_err());
         }
     }
 
     #[test]
-    fn settlement_capability_is_recipient_only_and_bound_to_vss_values() {
-        let (_, public) = node_keys();
+    fn settlement_capability_requires_three_node_shares_and_is_bound_to_vss_values() {
+        let (private, public) = node_keys();
         let signer = SigningKey::generate(&mut rand::rngs::OsRng);
         let order = sample_order();
         let eligibility_commitment = [21; 32];
@@ -1183,28 +1583,55 @@ mod tests {
             &mut rand::rngs::OsRng,
         )
         .unwrap();
-        let settlement_key = SettlementDecryptionKey::generate().unwrap();
         let envelope = bundle
             .seal_settlement_capability(
                 &order,
                 eligibility_commitment,
                 b"anonymous-presentation",
                 &signer,
-                &settlement_key.public_key().unwrap(),
                 &mut rand::rngs::OsRng,
             )
             .unwrap();
+        let manifest = bundle.manifest().clone();
+        let deliveries = bundle.into_deliveries();
+        let capability_key_shares = [0_usize, 3, 6]
+            .map(|party| {
+                deliveries[party]
+                    .2
+                    .open(&private[party], &manifest, party as u16, 1_900_000_000)
+                    .unwrap()
+            })
+            .to_vec();
+        assert!(reconstruct_settlement_capability_key(
+            &manifest,
+            &capability_key_shares[..2],
+            1_900_000_000
+        )
+        .is_err());
+        assert!(reconstruct_settlement_capability_key(
+            &manifest,
+            &[
+                capability_key_shares[0].clone(),
+                capability_key_shares[0].clone(),
+                capability_key_shares[2].clone(),
+            ],
+            1_900_000_000,
+        )
+        .is_err());
+        let mut tampered = capability_key_shares[0].clone();
+        tampered.value = (canonical_scalar(tampered.value).unwrap() + Scalar::ONE).to_bytes();
+        tampered.signature = signer.sign(&tampered.signature_body()).to_bytes().to_vec();
+        assert!(tampered.verify(&manifest, 0, 1_900_000_000).is_err());
+        let settlement_key =
+            reconstruct_settlement_capability_key(&manifest, &capability_key_shares, 1_900_000_000)
+                .unwrap();
         let opened = envelope
-            .open(&settlement_key, bundle.manifest(), 1_900_000_000)
+            .open(&settlement_key, &manifest, 1_900_000_000)
             .unwrap();
-        assert_eq!(opened.order_commitment(), bundle.manifest().commitment);
+        assert_eq!(opened.order_commitment(), manifest.commitment);
         assert_eq!(opened.order().limit_price(), 101);
         assert_eq!(opened.order().quantity(), 40);
         assert_eq!(opened.eligibility_evidence(), b"anonymous-presentation");
-        let wrong_key = SettlementDecryptionKey::generate().unwrap();
-        assert!(envelope
-            .open(&wrong_key, bundle.manifest(), 1_900_000_000)
-            .is_err());
     }
 
     #[test]

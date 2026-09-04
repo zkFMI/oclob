@@ -5,9 +5,10 @@
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
 use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
-use oclob_edge::{SealedSettlementCapability, SettlementDecryptionKey};
+use oclob_edge::SealedSettlementCapability;
 use oclob_node::edge_client::{
-    collect_order_certificate, execute_agreed_round, AgreedRoundExecution, EdgeAdmissionReceipt,
+    collect_order_certificate, collect_threshold_capability_release, execute_agreed_round,
+    AgreedRoundExecution, EdgeAdmissionReceipt,
 };
 use oclob_node::executor::RoundPlan;
 use oclob_node::network::{
@@ -58,7 +59,7 @@ struct IntegratedPaths {
     taker_receipt: PathBuf,
     maker_capability: PathBuf,
     taker_capability: PathBuf,
-    settlement_key: PathBuf,
+    settlement_identity: PathBuf,
     research_contract: PathBuf,
     research_manifest: PathBuf,
 }
@@ -94,7 +95,7 @@ impl IntegratedPaths {
             "OCLOB_TAKER_RECEIPT",
             "OCLOB_MAKER_CAPABILITY",
             "OCLOB_TAKER_CAPABILITY",
-            "OCLOB_SETTLEMENT_KEY",
+            "OCLOB_SETTLEMENT_IDENTITY",
             "OCLOB_RESEARCH_CONTRACT",
             "OCLOB_RESEARCH_MANIFEST",
         ];
@@ -117,7 +118,7 @@ impl IntegratedPaths {
             taker_receipt: values.next().expect("taker receipt path"),
             maker_capability: values.next().expect("maker capability path"),
             taker_capability: values.next().expect("taker capability path"),
-            settlement_key: values.next().expect("settlement key path"),
+            settlement_identity: values.next().expect("settlement identity path"),
             research_contract: values.next().expect("research contract path"),
             research_manifest: values.next().expect("research manifest path"),
         }))
@@ -147,18 +148,29 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "distributed cluster is configured for another market",
         ));
     }
-    let identity: ClientIdentityConfig = read_json_limited(&paths.coordinator_identity)?;
-    identity
+    let coordinator_identity: ClientIdentityConfig =
+        read_json_limited(&paths.coordinator_identity)?;
+    coordinator_identity
         .validate()
         .map_err(|error| failure(error.to_string()))?;
     let coordinator = SigningKey::from_bytes(
-        &load_secret_32(&identity.application_signing_key)
+        &load_secret_32(&coordinator_identity.application_signing_key)
             .map_err(|error| failure(error.to_string()))?,
     );
-    let tls = client_tls_context(
-        &identity.tls_certificate,
-        &identity.tls_private_key,
-        &identity.tls_ca,
+    let coordinator_tls = client_tls_context(
+        &coordinator_identity.tls_certificate,
+        &coordinator_identity.tls_private_key,
+        &coordinator_identity.tls_ca,
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let settlement_identity: ClientIdentityConfig = read_json_limited(&paths.settlement_identity)?;
+    settlement_identity
+        .validate()
+        .map_err(|error| failure(error.to_string()))?;
+    let settlement_tls = client_tls_context(
+        &settlement_identity.tls_certificate,
+        &settlement_identity.tls_private_key,
+        &settlement_identity.tls_ca,
     )
     .map_err(|error| failure(error.to_string()))?;
     let maker_receipt: EdgeAdmissionReceipt = read_json_limited(&paths.maker_receipt)?;
@@ -179,58 +191,21 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         ));
     }
 
-    let settlement_key = SettlementDecryptionKey::from_raw(
-        load_secret_32(&paths.settlement_key).map_err(|error| failure(error.to_string()))?,
-    )
-    .map_err(|error| failure(error.to_string()))?;
-    if settlement_key
-        .public_key()
-        .map_err(|error| failure(error.to_string()))?
-        != cluster.settlement_encryption_key
-    {
-        return Err(failure(
-            "settlement private key is not the configured recipient",
-        ));
-    }
     let maker_envelope: SealedSettlementCapability = read_json_limited(&paths.maker_capability)?;
     let taker_envelope: SealedSettlementCapability = read_json_limited(&paths.taker_capability)?;
-    let maker = maker_envelope
-        .open(&settlement_key, &maker_receipt.manifest, now)
-        .map_err(|error| failure(error.to_string()))?;
-    let taker = taker_envelope
-        .open(&settlement_key, &taker_receipt.manifest, now)
-        .map_err(|error| failure(error.to_string()))?;
-    if hidden_eligibility_commitment(maker.order()) != maker.eligibility_commitment()
-        || hidden_eligibility_commitment(taker.order()) != taker.eligibility_commitment()
+    if maker_envelope.order_commitment != maker_receipt.commitment()
+        || maker_envelope.capability_commitment
+            != maker_receipt.manifest.settlement_capability_commitment
+        || taker_envelope.order_commitment != taker_receipt.commitment()
+        || taker_envelope.capability_commitment
+            != taker_receipt.manifest.settlement_capability_commitment
     {
         return Err(failure(
-            "settlement capability is not bound to its eligibility scope",
+            "encrypted settlement handoff is not bound to its edge manifest",
         ));
     }
-    let maker_presentation: AnonymousPresentation =
-        serde_json::from_slice(maker.eligibility_evidence())?;
-    let taker_presentation: AnonymousPresentation =
-        serde_json::from_slice(taker.eligibility_evidence())?;
     let (mut eligibility, _) =
         deterministic_demo_environment(MARKET).map_err(|error| failure(error.to_string()))?;
-    let maker_eligibility = eligibility
-        .verify_order(
-            maker.order_commitment().0,
-            maker.order().dekyx_nullifier(),
-            maker.order().expires_at(),
-            &maker_presentation,
-            now,
-        )
-        .map_err(|error| failure(error.to_string()))?;
-    let taker_eligibility = eligibility
-        .verify_order(
-            taker.order_commitment().0,
-            taker.order().dekyx_nullifier(),
-            taker.order().expires_at(),
-            &taker_presentation,
-            now,
-        )
-        .map_err(|error| failure(error.to_string()))?;
 
     let transition_committee =
         OrderingCommittee::deterministic_for_demo().map_err(|error| failure(error.to_string()))?;
@@ -240,18 +215,6 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         transition_committee.policy(),
     )
     .map_err(|error| failure(error.to_string()))?;
-    settlement
-        .bind_eligible_participant(
-            maker.order().participant_handle(),
-            maker_eligibility.subject_nullifier,
-        )
-        .map_err(|error| failure(error.to_string()))?;
-    settlement
-        .bind_eligible_participant(
-            taker.order().participant_handle(),
-            taker_eligibility.subject_nullifier,
-        )
-        .map_err(|error| failure(error.to_string()))?;
     let (authorizer, approval_keys) = committee(&options.chain_id)?;
     let receipt_key = SigningKey::from_bytes(&digest(b"oclob-integrated-receipt-key-v1"));
     let facility =
@@ -261,10 +224,10 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     let now = unix_seconds()?;
     let maker_certificate = collect_order_certificate(
         &cluster,
-        &tls,
+        &coordinator_tls,
         None,
-        maker.order_commitment(),
-        maker.order().expires_at(),
+        maker_receipt.commitment(),
+        maker_receipt.manifest.retention_deadline,
         Duration::from_secs(30),
     )
     .map_err(|error| failure(error.to_string()))?;
@@ -272,14 +235,48 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         maker_certificate.clone(),
         vec![],
         now,
-        now.saturating_add(300).min(maker.order().expires_at()),
+        now.saturating_add(300)
+            .min(maker_receipt.manifest.retention_deadline),
         &coordinator,
     )
     .map_err(|error| failure(error.to_string()))?;
-    let maker_execution =
-        execute_agreed_round(&cluster, &tls, &maker_plan, Duration::from_secs(300))
-            .map_err(|error| failure(error.to_string()))?;
+    let maker_execution = execute_agreed_round(
+        &cluster,
+        &coordinator_tls,
+        &maker_plan,
+        Duration::from_secs(300),
+    )
+    .map_err(|error| failure(error.to_string()))?;
     validate_integrated_maker(&maker_execution)?;
+    let maker_release = collect_threshold_capability_release(
+        &cluster,
+        &settlement_tls,
+        &maker_plan,
+        &maker_execution,
+        &maker_receipt.manifest,
+        maker_receipt.commitment(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let maker = maker_release
+        .open(&maker_envelope, &maker_receipt.manifest, now)
+        .map_err(|error| failure(error.to_string()))?;
+    if hidden_eligibility_commitment(maker.order()) != maker.eligibility_commitment() {
+        return Err(failure(
+            "maker capability is not bound to its eligibility scope",
+        ));
+    }
+    let maker_presentation: AnonymousPresentation =
+        serde_json::from_slice(maker.eligibility_evidence())?;
+    let maker_eligibility = eligibility
+        .verify_order(
+            maker.order_commitment().0,
+            maker.order().dekyx_nullifier(),
+            maker.order().expires_at(),
+            &maker_presentation,
+            now,
+        )
+        .map_err(|error| failure(error.to_string()))?;
     let private_genesis = tagged_digest(b"OCLOB:DISTRIBUTED:PRIVATE-GENESIS:v1", MARKET.as_bytes());
     let public_genesis = tagged_digest(b"OCLOB:DISTRIBUTED:PUBLIC-GENESIS:v1", MARKET.as_bytes());
     let (maker_transition, private_after_maker, public_after_maker) = verified_round_transition(
@@ -292,7 +289,14 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         private_genesis,
         public_genesis,
     )?;
+    let maker_base_snapshot = settlement.state_snapshot();
     let mut maker_candidate = settlement.clone();
+    maker_candidate
+        .bind_eligible_participant(
+            maker.order().participant_handle(),
+            maker_eligibility.subject_nullifier,
+        )
+        .map_err(|error| failure(error.to_string()))?;
     let maker_reservation = maker_candidate
         .reserve_order(&maker)
         .map_err(|error| failure(error.to_string()))?;
@@ -306,6 +310,11 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             now,
         )
         .map_err(|error| failure(error.to_string()))?;
+    if settlement.state_snapshot() != maker_base_snapshot {
+        return Err(failure(
+            "maker entity binding or reservation mutated live state before finality",
+        ));
+    }
     let bootstrap_root = gateway.bootstrap(&maker_prepared)?;
     let maker_acceptance = gateway.settle(&maker_prepared, now)?;
     let maker_tx = maker_acceptance.transaction_id().to_owned();
@@ -323,25 +332,59 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     let now = unix_seconds()?;
     let taker_certificate = collect_order_certificate(
         &cluster,
-        &tls,
+        &coordinator_tls,
         Some(&maker_certificate),
-        taker.order_commitment(),
-        taker.order().expires_at(),
+        taker_receipt.commitment(),
+        taker_receipt.manifest.retention_deadline,
         Duration::from_secs(30),
     )
     .map_err(|error| failure(error.to_string()))?;
     let taker_plan = RoundPlan::sign(
         taker_certificate.clone(),
-        vec![maker.order_commitment()],
+        vec![maker_receipt.commitment()],
         now,
-        now.saturating_add(300).min(taker.order().expires_at()),
+        now.saturating_add(300)
+            .min(taker_receipt.manifest.retention_deadline),
         &coordinator,
     )
     .map_err(|error| failure(error.to_string()))?;
-    let taker_execution =
-        execute_agreed_round(&cluster, &tls, &taker_plan, Duration::from_secs(300))
-            .map_err(|error| failure(error.to_string()))?;
+    let taker_execution = execute_agreed_round(
+        &cluster,
+        &coordinator_tls,
+        &taker_plan,
+        Duration::from_secs(300),
+    )
+    .map_err(|error| failure(error.to_string()))?;
     validate_integrated_taker(&taker_execution)?;
+    let taker_release = collect_threshold_capability_release(
+        &cluster,
+        &settlement_tls,
+        &taker_plan,
+        &taker_execution,
+        &taker_receipt.manifest,
+        taker_receipt.commitment(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let taker = taker_release
+        .open(&taker_envelope, &taker_receipt.manifest, now)
+        .map_err(|error| failure(error.to_string()))?;
+    if hidden_eligibility_commitment(taker.order()) != taker.eligibility_commitment() {
+        return Err(failure(
+            "taker capability is not bound to its eligibility scope",
+        ));
+    }
+    let taker_presentation: AnonymousPresentation =
+        serde_json::from_slice(taker.eligibility_evidence())?;
+    let taker_eligibility = eligibility
+        .verify_order(
+            taker.order_commitment().0,
+            taker.order().dekyx_nullifier(),
+            taker.order().expires_at(),
+            &taker_presentation,
+            now,
+        )
+        .map_err(|error| failure(error.to_string()))?;
     let fills = vec![PublicFill {
         maker_order: maker.order_commitment(),
         taker_order: taker.order_commitment(),
@@ -358,7 +401,14 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         private_after_maker,
         public_after_maker,
     )?;
+    let taker_base_snapshot = settlement.state_snapshot();
     let mut taker_candidate = settlement.clone();
+    taker_candidate
+        .bind_eligible_participant(
+            taker.order().participant_handle(),
+            taker_eligibility.subject_nullifier,
+        )
+        .map_err(|error| failure(error.to_string()))?;
     let taker_reservation = taker_candidate
         .reserve_order(&taker)
         .map_err(|error| failure(error.to_string()))?;
@@ -374,6 +424,11 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             now,
         })
         .map_err(|error| failure(error.to_string()))?;
+    if settlement.state_snapshot() != taker_base_snapshot {
+        return Err(failure(
+            "taker entity binding or reservation mutated live state before finality",
+        ));
+    }
     let taker_acceptance = gateway.settle(&taker_prepared, now)?;
     let accepted_tx = taker_acceptance.transaction_id().to_owned();
     let accepted_height = taker_acceptance.height();
@@ -428,7 +483,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     }
 
     Ok(json!({
-        "schema": "oclob.distributed-avalanche-acceptance/v1",
+        "schema": "oclob.distributed-avalanche-acceptance/v2",
         "verdict": "accepted",
         "research": research,
         "environment": "seven MPC containers plus five AvalancheGo validators on one host",
@@ -447,7 +502,14 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "coordinator_received_plain_order": false,
             "maker_signed_admission_receipts": maker_receipt.node_receipts.len(),
             "taker_signed_admission_receipts": taker_receipt.node_receipts.len(),
-            "settlement_capability_recipient_only": true,
+            "settlement_capability_threshold": cluster.settlement_release_threshold,
+            "maker_post_match_releases": maker_release.release_count(),
+            "taker_post_match_releases": taker_release.release_count(),
+            "maker_releasing_parties": maker_release.releasing_parties(),
+            "taker_releasing_parties": taker_release.releasing_parties(),
+            "single_pre_match_decryption_key_exists": false,
+            "key_shares_released_only_after_durable_mpc_receipt": true,
+            "dekyx_binding_finalized_with_reservation": true,
             "mpc_values_bound_to_settlement_capability": true,
             "dekyx_presentations_verified_by_settlement_gateway": true,
         },
@@ -501,7 +563,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         "elapsed_ms": started.elapsed().as_secs_f64() * 1_000.0,
         "non_claims": [
             "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-            "The settlement capability is opened by one laboratory gateway; threshold decryption remains a production cutover.",
+            "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover.",
             "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
             "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
             "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -531,12 +593,12 @@ fn validate_integrated_research_binding(
         .and_then(Value::as_str)
         .ok_or_else(|| failure("integrated research manifest has no contract digest"))?;
     let actual_sha: [u8; 32] = Sha256::digest(&contract_bytes).into();
-    if contract_id != "oclob-distributed-avalanche-v1"
+    if contract_id != "oclob-threshold-settlement-v1"
         || manifest_contract != Some(contract_id)
         || expected_sha != hex::encode(actual_sha)
         || manifest.get("stage").and_then(Value::as_str) != Some("CONFIRMATION")
         || manifest.get("primary_metric").and_then(Value::as_str)
-            != Some("complete_distributed_avalanche_settlement_path")
+            != Some("complete_threshold_gated_avalanche_settlement_path")
     {
         return Err(failure(
             "integrated research contract and manifest are not the approved pair",
@@ -547,7 +609,7 @@ fn validate_integrated_research_binding(
         "contract_sha256": expected_sha,
         "manifest_id": manifest_id,
         "stage": "CONFIRMATION",
-        "primary_metric": "complete_distributed_avalanche_settlement_path",
+        "primary_metric": "complete_threshold_gated_avalanche_settlement_path",
         "observed_value": 1
     }))
 }

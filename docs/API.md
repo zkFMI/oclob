@@ -84,7 +84,7 @@
 - `mpc_topology=seven_processes_on_one_host`: 7社独立運営ではなく、同一host上の7 MP-SPDZ process。
 - `defmi_topology=in_process_state_machine`: Avalanche validator consensusではなく、RustのDeFMI正本状態機械を同一process内で実行する。
 
-上記はブラウザ用デモAPIの表示境界です。`oclob-avalanche-acceptance` は別の受入binaryであり、5つの実AvalancheGo validatorへRPC送信します。デモAPIがそのL1経路へ切り替わったことを意味しません。
+上記はブラウザ用デモAPIの表示境界です。`oclob-avalanche-acceptance` は別の受入binaryであり、法人側から7 MPCノードへの直接配送、MPC結果保存後の注文別3-of-7決済鍵解放、5つの実AvalancheGo validatorへのRPC送信を行います。デモAPIがその分散経路やL1経路へ切り替わったことを意味しません。
 
 ## 4. `POST /api/order`
 
@@ -203,9 +203,12 @@ MPC healthが不足していれば、平文処理へ切り替えず `waiting_for
 2. schema version、request id、idempotency key、有効期限を必須化。
 3. 注文平文を中央APIへ送らず、法人端末でshare化して7 nodeへ直接送る。
 4. 分散経路で実装済みの注文ごとの使い捨て署名鍵、commitment・各shareの結合検査、全nodeの署名付き保存受領証、5-of-7受付証明本体のノード側検証をHTTP/API経路でも必須にする。
-5. 認証主体からviewerを決め、query parameterで権限を切り替えない。
-6. 業務error code、retryability、監査ID、canonical receipt参照を固定する。
-7. body/header上限、timeout、rate limit、backpressureを定義する。
-8. TLS終端後も秘密payloadをaccess log、APM、traceへ記録しない。
-9. OpenAPIまたは同等schemaを生成し、後方互換性試験を置く。
-10. node toggleのようなデモ管理機能をproduction binaryから除外する。
+5. 注文別の決済鍵片も注文shareと同時に各ノードへ直接配送し、照合結果を保存したノードから決済roleだけが3片以上を取得できるようにする。
+6. 認証主体からviewerを決め、query parameterで権限を切り替えない。
+7. 業務error code、retryability、監査ID、canonical receipt参照を固定する。
+8. body/header上限、timeout、rate limit、backpressureを定義する。
+9. TLS終端後も秘密payloadをaccess log、APM、traceへ記録しない。
+10. OpenAPIまたは同等schemaを生成し、後方互換性試験を置く。
+11. node toggleのようなデモ管理機能をproduction binaryから除外する。
+
+通信・保存形式version 1からversion 2への更新では、旧注文を先に失効または取消しし、全MPCノードの受付位置を揃えてから再投入する必要があります。version 1の保存recordには注文別決済鍵片がないため、読み込み可能であってもversion 2の決済対象にはできません。無停止で両versionを混在させる互換経路は提供しません。

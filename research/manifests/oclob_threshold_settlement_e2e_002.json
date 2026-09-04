@@ -1,0 +1,66 @@
+{
+  "manifest_id": "oclob-threshold-settlement-confirmation-002",
+  "contract_id": "oclob-threshold-settlement-v1",
+  "contract_path": "research/oclob_threshold_settlement_contract.json",
+  "contract_sha256": "50adef565d185ce8deba77ad3110e9f04bb0890a52a978432d56d2b3a515f5cf",
+  "stage": "CONFIRMATION",
+  "current_bottleneck": "Confirmation 001 failed closed because the newly delayed Taker DeKYX verification changed the live local reservation root after Maker finality without placing that entity binding in a canonical DeFMI transition.",
+  "causal_hypothesis": "Applying each verified DeKYX entity binding only to the isolated reservation candidate will make the same reservation-state compare-and-swap atomically commit both the binding and the order reserve, keeping local and canonical roots identical.",
+  "single_intended_change": "Move Maker and Taker entity binding from the live settlement engine into their isolated reservation candidates before constructing the canonical reservation or admission-and-DvP transition.",
+  "baseline": {
+    "manifest": "research/manifests/oclob_threshold_settlement_e2e.json",
+    "verdict": "rejected",
+    "observed_failure": "prepared settlement is stale against canonical DeFMI",
+    "failed_boundary": "Taker canonical admission-and-DvP submission after successful post-match threshold release"
+  },
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "encrypted_capability_key_shares": 14,
+    "mpc_node_containers": 7,
+    "matching_rounds": 2,
+    "minimum_key_releases_per_open": 3,
+    "avalanche_validators": 5,
+    "canonical_transitions": 2,
+    "replay_attempts": 1,
+    "validator_restarts": 1
+  },
+  "primary_metric": "complete_threshold_gated_avalanche_settlement_path",
+  "point_prediction": {
+    "complete_threshold_gated_avalanche_settlement_path": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "expected_minimum_valid_releases_per_order": 3,
+    "expected_maker_canonical_height": 9,
+    "expected_taker_canonical_height": 10
+  },
+  "most_likely_prediction_error": "The combined entity-binding and reservation root delta may expose an invariant in canonical admission preparation that previously assumed the entity binding was already finalized.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "the Maker or Taker entity binding mutates the live settlement engine before canonical finality",
+    "a settlement-wide capability private key is generated or loaded",
+    "two or fewer node shares open an order capability",
+    "a key share can be released before the exact completed matching receipt is durable",
+    "a non-settlement mutual-TLS role can request a key share",
+    "an unmatched IOC order can release its capability",
+    "either matching round returns fewer than seven valid agreeing receipts",
+    "the settlement capability or reconstructed key fails commitment and VSS binding",
+    "Maker reservation is not finalized before the Taker round",
+    "trade price is not 100 or quantity is not 40",
+    "Taker reservation and DvP do not finalize atomically",
+    "the same canonical transition is accepted twice",
+    "any validator returns a different root before or after restart",
+    "the artifact contains private order material or capability-key shares",
+    "the artifact claims a production property excluded by the contract"
+  ],
+  "promotion_rules": [
+    "every functional rejection rule remains false",
+    "unit and mutual-TLS tests prove the two-share, pre-result, unmatched-IOC, wrong-role, wrong-output and tamper rejection boundaries",
+    "the integrated artifact records the exact contract SHA-256 and this manifest identifier",
+    "the integrated artifact records seven MPC receipts per round, at least three valid releases per opened order, and five agreeing validator roots",
+    "the integrated artifact preserves every contract non-claim",
+    "the observed elapsed time is reported only as one-host functional evidence"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}
