@@ -2,7 +2,7 @@
 
 ## 判定
 
-OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7決済鍵、7 MPCノードの秘密照合、Maker予約、Taker予約とDvP、5検証者の非EVM DeFMI Avalanche L1確定までを一続きに実装し、1ホスト上で受入済みです。約定前に全注文を開ける単一の決済鍵は廃止しました。ただし、本番移行可能と判定できる段階ではありません。特に、独立したMPC/validator運営者、永続状態と鍵の世代整合、本番APIの認証・運用制御、約定後も注文全文を一か所へ復元しない共同zkPI生成がP0です。
+OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7決済鍵、7 MPCノードの秘密照合、ノードごとの秘密板の持越し、Maker予約、Taker予約とDvP、5検証者の非EVM DeFMI Avalanche L1確定までを一続きに実装し、1ホスト上で受入済みです。約定前に全注文を開ける単一の決済鍵と、次回照合のために中央で平文板を持つ必要は廃止しました。ただし、本番移行可能と判定できる段階ではありません。特に、独立したMPC/validator運営者、鍵・証明nonceを含む世代整合、本番APIの認証・運用制御、約定後も注文全文を一か所へ復元しない共同zkPI生成がP0です。
 
 「実装済み」はsourceがあるだけではなく、repositoryのremote release gateで動かす対象になっていることを示します。「未受入」は設計や一部codeがあっても、本番の信頼境界または実環境で確認できていないことを示します。
 
@@ -18,7 +18,7 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 | 受付順5-of-7 | 実装済み・1ホスト受入済み | 7ノード投票、証明本体、連鎖、署名前の永続化、各MPCノードでの再検証、二重投票拒否 | HSM key、epoch交代、独立node/WAN、公平到着順の定義 |
 | 法人側の注文分割と直接配送 | 実装済み・1ホスト受入済み | Pedersen検証付き3-of-7分割、ノード別暗号文、固定長mTLS通信、各ノードの署名付き保存受領証、7コンテナE2E | 別運営者WAN、鍵の個別生成・保管 |
 | 注文別の決済鍵解放 | 実装済み・1ホスト受入済み | 注文ごとの乱数鍵、署名付き3-of-7 Shamir/Feldman分割、ノード別暗号保管、MPC結果永続化後の決済専用mTLS解放、2片・事前解放・未約定IOC・誤権限・改ざんの拒否 | 独立運営者での鍵生成、HSM、約定後の共同zkPI生成 |
-| MP-SPDZ秘密照合 | 実装済み | 公式compilerとmalicious-shamir、1コンテナ1 partyの7 node E2E、全結果一致 | 別host 7 party、通信量・障害評価 |
+| MP-SPDZ秘密照合と板持越し | 実装済み・1ホスト受入済み | 公式compilerとmalicious-shamir、1コンテナ1 party、各ノード36秘密値のPersistence、DeFMI確定後だけ親状態を更新、次回照合でMaker残量shareを再利用 | 別host 7 party、秘密板の圧縮・取消・深い板、通信量・障害評価 |
 | 平文fallback禁止 | 実装済み | binary不在・party失敗時fail closed | 運用SLOとbackpressure |
 | DeKYX参加資格 | 実装済み | pinned `dekyx-core` adapter test | issuer governance、失効配布、HSM |
 | 法人単位の枠合算 | 実装済み | DeKYX entity単位reservation test | CCP/DeFMI外部設定、権限・更新監査 |
@@ -39,8 +39,8 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 - `oclob-dekyx`: DeKYX匿名法人資格を注文用途へ結合するadapter。
 - `oclob-ordering`: 受付番号、5-of-7 certificate、連鎖、二重投票拒否。
 - `oclob-edge`: 法人端末で注文と決済鍵を分割し、各ノード向け固定長暗号文と公開manifestを作る。
-- `oclob-node`: 自ノードの暗号文保管、受付順投票、MP-SPDZ実行、結果永続化後の署名付き鍵片解放。
-- `oclob-mpc`: MP-SPDZ回路生成、公式compile、7 party実行、output一致確認。
+- `oclob-node`: 自ノードの暗号文保管、受付順投票、MP-SPDZ実行、秘密板shareの保存、DeFMI確定後の親状態更新、結果永続化後の署名付き鍵片解放。
+- `oclob-mpc`: MP-SPDZ回路生成、公式compile、7 party実行、公開output一致確認とノード別秘密状態の書出し。
 - `oclob-proofs`: 受付証明、MPC出力、板の前後root、fillを一つの遷移statementへ結合。
 - `oclob-settlement`: 法人枠、reservation、threshold zkPI、原子的multi-fill DeFMI DvP。
 - `oclob-service`: 下流失敗時にbook/ordering/settlementをcommitしない調整、暗号化queue。
@@ -69,6 +69,8 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 `oclob-edge` と `oclob-node` を使う分散経路では、法人側が注文を検証可能な7分割へ変換し、ノードごとに別々に暗号化して直接送ります。調整役はcommitment（注文の要約値）、受付証明、署名付き公開結果だけを扱います。OmenX上の7コンテナ受入では、調整役へ平文注文を渡さずに40口を価格100で約定し、同一ラウンドの再送で二度目の計算を起動しないことを確認しました。
 
 各MPCノードは、保存した注文要約値、永続状態の世代、保存状態の要約値を自分の鍵で署名します。参加法人から引き継いだ受領証は、コンテナ停止後でも7ノードの公開鍵に対して検証できます。公開要約の署名には注文ごとの使い捨て鍵を用い、法人の長期application keyは調整役へ渡しません。各ノードは受付票を返す前に同じ通番への投票を永続化し、MPC起動前には5票以上の証明本体、対象注文、前証明との連続性を自分で再検証します。
+
+照合回路は固定8枠と到着注文について、有効状態、売買方向、価格、残量を `sint.write_to_file` で各partyのPersistenceへ書きます。各ノードは自分のファイルだけを0600で保存し、署名済み受領証にはファイルの要約値と使用した親状態の要約値だけを載せます。DeFMIの正本受領証と高さが確定した後に限り、そのファイルを次回照合の親へ進めます。OmenXの受入では、Makerの7つの秘密残量を確定後にTaker照合へ引き継ぎ、40口約定後の20口を中央で復元せず保持しました。
 
 一方、React Flowの単体デモが使う `OclobService::submit` は、従来どおり `SecretOrder` を受けてから7入力を作ります。したがって、中央非開示の保証は分散経路だけに適用します。
 
@@ -103,9 +105,9 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 - 正本を匿名commitment口座から、口座を持たないnote方式へ移す。
 - consensus receiptと認証済みOCLOB API/画面の確定表示を結合する。
 
-### P0-4 永続状態と鍵を同じ世代で復旧する
+### P0-4 永続状態と鍵を同じ世代で復旧する — 秘密板の単一世代更新は実装済み
 
-現在のdemoはqueue fileを永続化できますが、participant wallet、committee key、DeFMI state、nonceを起動時生成します。queueだけ残したrestartは安全に受入できません。
+秘密板については、実行受領証が入力親と出力ファイルを結び、同じDeFMI確定通知の再送を同一結果にし、古い親からの確定で新しいheadを上書きしない仕組みを実装しました。一方、participant wallet、committee key、共同証明nonceを含む全体snapshotは未完成です。queueや秘密板だけ残したrestartを、本番復旧完了とは扱えません。
 
 必要な変更:
 

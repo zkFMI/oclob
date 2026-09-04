@@ -3,8 +3,9 @@
 use crate::executor::{NodeExecutionReceipt, RoundPlan};
 use crate::network::{
     ClientTlsConfig, ClusterPublicConfig, NetworkError, NodeAdmissionReceipt,
-    NodeCapabilityRelease, NodeRpcClient,
+    NodeCapabilityRelease, NodePrivateStateReceipt, NodeRpcClient,
 };
+use crate::PrivateStateFinality;
 use ed25519_dalek::VerifyingKey;
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment};
 use oclob_edge::{
@@ -178,6 +179,55 @@ impl EdgeDistributor {
 pub struct AgreedRoundExecution {
     pub receipts: Vec<NodeExecutionReceipt>,
     pub result: MpcBatchResult,
+}
+
+/// Advance all seven party-local private book heads after the same canonical
+/// DeFMI receipt. Only public digests cross the RPC boundary.
+pub fn finalize_agreed_private_state(
+    cluster: &ClusterPublicConfig,
+    settlement_tls: &ClientTlsConfig,
+    plan: &RoundPlan,
+    execution: &AgreedRoundExecution,
+    finality: PrivateStateFinality,
+    timeout: Duration,
+) -> Result<Vec<NodePrivateStateReceipt>, EdgeClientError> {
+    if timeout.is_zero()
+        || timeout > Duration::from_secs(120)
+        || execution.receipts.len() != cluster.nodes.len()
+        || execution
+            .receipts
+            .first()
+            .is_none_or(|receipt| receipt.public_output_sha256 != finality.public_output_sha256)
+    {
+        return Err(EdgeClientError::Configuration);
+    }
+    let handles = cluster
+        .nodes
+        .iter()
+        .cloned()
+        .zip(execution.receipts.iter().cloned())
+        .map(|(node, execution_receipt)| {
+            let tls = settlement_tls.clone();
+            let plan = plan.clone();
+            let finality = finality.clone();
+            thread::spawn(move || {
+                NodeRpcClient::new(node.endpoint(), tls, timeout)?.finalize_private_state(
+                    plan,
+                    finality,
+                    &execution_receipt,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .map_err(|_| EdgeClientError::Worker)?
+                .map_err(EdgeClientError::Network)
+        })
+        .collect()
 }
 
 /// Settlement-side holder for a reconstructed one-order key. It cannot be

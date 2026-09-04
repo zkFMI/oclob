@@ -1,0 +1,56 @@
+{
+  "manifest_id": "oclob-node-local-private-book-rough-001",
+  "contract_id": "oclob-node-local-private-book-v1",
+  "contract_path": "research/oclob_private_book_contract.json",
+  "contract_sha256": "54536d70edc63063f40cfe577899ade375e16a7f7934326f2b2d3b8359d8ad45",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The distributed matcher previously deleted every party-local MPC output and reopened the original encrypted order share in the next round, while the settlement process maintained the only mutable private-book state.",
+  "causal_hypothesis": "Persisting each party's post-match Shamir evaluations, binding them to the execution receipt and advancing their public pointers only after canonical DeFMI finality will let the next round consume the exact Maker remainder without a coordinator-held private book.",
+  "single_intended_change": "Add a fixed private-book Persistence ABI, durable owner-only node storage, signed parent and output digests, canonical-finality-gated head advancement, and Maker-to-Taker carry-forward in the integrated seven-node acceptance path.",
+  "baseline": {
+    "manifest": "research/manifests/oclob_threshold_settlement_e2e_002.json",
+    "verdict": "accepted",
+    "limitation": "The central settlement process held the mutable clear private book; MP-SPDZ party state was deleted after each round."
+  },
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "mpc_nodes": 7,
+    "matching_rounds": 2,
+    "private_state_files": 14,
+    "private_state_finalizations": 14,
+    "avalanche_validators": 5,
+    "validator_restarts": 1
+  },
+  "primary_metric": "complete_private_state_carry_forward_avalanche_path",
+  "point_prediction": {
+    "complete_private_state_carry_forward_avalanche_path": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "expected_private_state_receipts_per_round": 7,
+    "expected_distinct_private_state_digests_per_round": 7
+  },
+  "most_likely_prediction_error": "MP-SPDZ Persistence output may use a runtime directory or wire representation different from the parser assumptions, causing the node to reject its own state file before Maker finality can be recorded.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "any party fails to write exactly 36 private-book state shares",
+    "any private-state or parent digest is zero",
+    "two node-local private-state files have the same digest",
+    "Maker heads advance before canonical reservation finality",
+    "Taker execution does not bind the finalized Maker head",
+    "trade price is not 100 or quantity is not 40",
+    "Taker DvP does not reach canonical finality",
+    "validator roots diverge or restart recovery fails",
+    "the public artifact exposes order fields, local file paths or Shamir shares",
+    "the artifact claims collaborative zkPI, account-free notes, independent operators, WAN or HSM evidence"
+  ],
+  "promotion_rules": [
+    "the complete Maker reserve, private-head finalization, Taker match, DvP, second private-head finalization and validator-restart path succeeds",
+    "all rejection rules remain false",
+    "the artifact records the exact contract SHA-256 and this manifest identifier",
+    "remote formatting, Clippy and workspace tests remain green",
+    "the observed result is recorded once in the append-only experiment ledger"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}

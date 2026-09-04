@@ -18,6 +18,7 @@ use oclob_edge::{
 };
 use oclob_mpc::public_output_digest;
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderCertificate};
+use qomm_mpc::persistence::{from_montgomery, read as read_persistence};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +29,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 4;
+const STORE_VERSION: u16 = 5;
+const LEGACY_STORE_VERSION_V4: u16 = 4;
 const LEGACY_STORE_VERSION_V3: u16 = 3;
 const LEGACY_STORE_VERSION_V2: u16 = 2;
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
@@ -59,6 +61,30 @@ struct StoreState {
     ordering_head: Digest32,
     ordering_votes: BTreeMap<u64, StoredOrderVote>,
     ordered_commitments: BTreeSet<String>,
+    /// Public pointers into this node's own private Persistence files. Values
+    /// and shares never enter the JSON store.
+    #[serde(default)]
+    private_heads: BTreeMap<String, PrivateBookStateRef>,
+    #[serde(default)]
+    finalized_private_rounds: BTreeMap<String, PrivateRoundFinalization>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PrivateBookStateRef {
+    round_id: Digest32,
+    private_state_sha256: Digest32,
+    wire_offset: u16,
+    transition_digest: Digest32,
+    canonical_receipt_digest: Digest32,
+    canonical_height: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PrivateRoundFinalization {
+    public_output_sha256: Digest32,
+    transition_digest: Digest32,
+    canonical_receipt_digest: Digest32,
+    canonical_height: u64,
 }
 
 #[derive(Deserialize)]
@@ -67,7 +93,8 @@ struct LegacyStoreStateV2 {
     party: u16,
     generation: u64,
     records: BTreeMap<String, StoredRecord>,
-    completed_rounds: BTreeMap<String, executor::NodeExecutionReceipt>,
+    #[serde(rename = "completed_rounds")]
+    _completed_rounds: BTreeMap<String, executor::NodeExecutionReceipt>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,6 +103,8 @@ pub struct NodeStoreStatus {
     pub generation: u64,
     pub record_count: usize,
     pub completed_round_count: usize,
+    pub private_head_count: usize,
+    pub finalized_private_round_count: usize,
     pub ordering_sequence: u64,
     pub ordering_head: Digest32,
     pub state_digest: Digest32,
@@ -87,12 +116,42 @@ pub enum IngestOutcome {
     AlreadyPresent { generation: u64 },
 }
 
+/// Public DeFMI finality binding required before a node advances its private
+/// book head. The coordinator cannot use an MPC result speculatively and then
+/// overwrite a later state: the exact parent and output are fixed in the
+/// node's signed execution receipt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PrivateStateFinality {
+    pub round_id: Digest32,
+    pub public_output_sha256: Digest32,
+    pub transition_digest: Digest32,
+    pub canonical_receipt_digest: Digest32,
+    pub canonical_height: u64,
+}
+
+impl PrivateStateFinality {
+    fn validate(&self) -> Result<(), NodeError> {
+        if self.round_id == [0; 32]
+            || self.public_output_sha256 == [0; 32]
+            || self.transition_digest == [0; 32]
+            || self.canonical_receipt_digest == [0; 32]
+            || self.canonical_height == 0
+        {
+            return Err(NodeError::PrivateState(
+                "canonical finality binding is incomplete".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A node-owned input file. The material intentionally has no `Debug`,
 /// serialization or clear-value accessor.
 pub struct PreparedPartyInput {
     party: u16,
     generation: u64,
     round_commitment: Digest32,
+    private_parent_digest: Digest32,
     contents: Vec<u8>,
 }
 
@@ -107,6 +166,10 @@ impl PreparedPartyInput {
 
     pub const fn round_commitment(&self) -> Digest32 {
         self.round_commitment
+    }
+
+    pub const fn private_parent_digest(&self) -> Digest32 {
+        self.private_parent_digest
     }
 
     /// Write the node-local MP-SPDZ input with owner-only permissions. The
@@ -133,6 +196,7 @@ pub struct NodeShareStore {
     path: PathBuf,
     key: NodeDecryptionKey,
     state: StoreState,
+    private_state_root: Option<PathBuf>,
 }
 
 impl NodeShareStore {
@@ -152,7 +216,12 @@ impl NodeShareStore {
         } else {
             (empty_state(party), false)
         };
-        let mut store = Self { path, key, state };
+        let mut store = Self {
+            path,
+            key,
+            state,
+            private_state_root: None,
+        };
         if !existed || migrated {
             store.persist()?;
         }
@@ -165,10 +234,27 @@ impl NodeShareStore {
             generation: self.state.generation,
             record_count: self.state.records.len(),
             completed_round_count: self.state.completed_rounds.len(),
+            private_head_count: self.state.private_heads.len(),
+            finalized_private_round_count: self.state.finalized_private_rounds.len(),
             ordering_sequence: self.state.ordering_sequence,
             ordering_head: self.state.ordering_head,
             state_digest: state_digest(&self.state)?,
         })
+    }
+
+    /// Bind this store to the owner-only directory managed by its local
+    /// `PartyExecutor`. The path is runtime configuration and is deliberately
+    /// not serialized into the durable public-index store.
+    pub(crate) fn bind_private_state_root(
+        &mut self,
+        root: impl Into<PathBuf>,
+    ) -> Result<(), NodeError> {
+        let root = root.into();
+        reject_symlink(&root)?;
+        fs::create_dir_all(&root)?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        self.private_state_root = Some(root);
+        Ok(())
     }
 
     pub fn ingest(
@@ -392,10 +478,7 @@ impl NodeShareStore {
         let mut fields = Vec::with_capacity(MAX_MATCH_SLOTS * 4 + 4);
         for slot in 0..MAX_MATCH_SLOTS {
             if let Some(commitment) = resting.get(slot) {
-                let share = self.open_record(*commitment, market_id, now)?;
-                let values = share.value_share_decimals();
-                fields.push("1".to_owned());
-                fields.extend([values[0].clone(), values[1].clone(), values[2].clone()]);
+                fields.extend(self.private_match_fields(*commitment, market_id, now)?);
             } else {
                 fields.extend([
                     "0".to_owned(),
@@ -421,10 +504,12 @@ impl NodeShareStore {
             arriving,
             &contents,
         );
+        let private_parent_digest = self.private_parent_digest(resting, arriving);
         Ok(PreparedPartyInput {
             party: self.state.party,
             generation: self.state.generation,
             round_commitment,
+            private_parent_digest,
             contents,
         })
     }
@@ -467,6 +552,8 @@ impl NodeShareStore {
             || receipt.round_commitment == [0; 32]
             || receipt.program_sha256 == [0; 32]
             || receipt.artifact_sha256 == [0; 32]
+            || receipt.private_parent_digest == [0; 32]
+            || receipt.private_state_sha256 == [0; 32]
             || receipt.result.slots.len() != MAX_MATCH_SLOTS
             || receipt.public_output_sha256 != public_output_digest(&receipt.result)
             || receipt.signer == [0; 32]
@@ -496,6 +583,91 @@ impl NodeShareStore {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Advance every order's node-local secret-share head only after the exact
+    /// MPC output has canonical DeFMI finality. No order field or share is
+    /// supplied by the settlement coordinator.
+    pub(crate) fn finalize_private_round(
+        &mut self,
+        plan: &executor::RoundPlan,
+        finality: &PrivateStateFinality,
+    ) -> Result<u64, NodeError> {
+        finality.validate()?;
+        if finality.round_id != plan.round_id {
+            return Err(NodeError::PrivateState(
+                "finality refers to another MPC round".into(),
+            ));
+        }
+        let receipt = self
+            .completed_round(plan.round_id)
+            .ok_or_else(|| NodeError::PrivateState("MPC round is not complete".into()))?;
+        if receipt.public_output_sha256 != finality.public_output_sha256 {
+            return Err(NodeError::PrivateState(
+                "canonical finality does not bind this MPC output".into(),
+            ));
+        }
+        let key = hex::encode(plan.round_id);
+        let candidate = PrivateRoundFinalization {
+            public_output_sha256: finality.public_output_sha256,
+            transition_digest: finality.transition_digest,
+            canonical_receipt_digest: finality.canonical_receipt_digest,
+            canonical_height: finality.canonical_height,
+        };
+        if let Some(existing) = self.state.finalized_private_rounds.get(&key) {
+            return if existing == &candidate {
+                Ok(self.state.generation)
+            } else {
+                Err(NodeError::Conflict)
+            };
+        }
+        if receipt.private_parent_digest != self.private_parent_digest(&plan.resting, plan.arriving)
+        {
+            return Err(NodeError::PrivateState(
+                "private book parent advanced before this round finalized".into(),
+            ));
+        }
+        self.verify_private_state_file(plan.round_id, receipt.private_state_sha256)?;
+
+        let previous = self.state.clone();
+        for (slot, commitment) in plan.resting.iter().enumerate() {
+            self.state.private_heads.insert(
+                commitment.hex(),
+                PrivateBookStateRef {
+                    round_id: plan.round_id,
+                    private_state_sha256: receipt.private_state_sha256,
+                    wire_offset: u16::try_from(slot * 4).map_err(|_| {
+                        NodeError::PrivateState("private wire offset overflowed".into())
+                    })?,
+                    transition_digest: finality.transition_digest,
+                    canonical_receipt_digest: finality.canonical_receipt_digest,
+                    canonical_height: finality.canonical_height,
+                },
+            );
+        }
+        if receipt.result.arriving_remaining > 0 {
+            self.state.private_heads.insert(
+                plan.arriving.hex(),
+                PrivateBookStateRef {
+                    round_id: plan.round_id,
+                    private_state_sha256: receipt.private_state_sha256,
+                    wire_offset: u16::try_from(MAX_MATCH_SLOTS * 4).map_err(|_| {
+                        NodeError::PrivateState("private wire offset overflowed".into())
+                    })?,
+                    transition_digest: finality.transition_digest,
+                    canonical_receipt_digest: finality.canonical_receipt_digest,
+                    canonical_height: finality.canonical_height,
+                },
+            );
+        } else {
+            self.state.private_heads.remove(&plan.arriving.hex());
+        }
+        self.state.finalized_private_rounds.insert(key, candidate);
+        if let Err(error) = self.bump_generation().and_then(|_| self.persist()) {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(self.state.generation)
     }
 
     /// Open this node's capability-key share only after the exact signed round
@@ -590,6 +762,115 @@ impl NodeShareStore {
             .map_err(|error| NodeError::Admission(error.to_string()))
     }
 
+    fn private_match_fields(
+        &self,
+        commitment: OrderCommitment,
+        market_id: &str,
+        now: u64,
+    ) -> Result<[String; 4], NodeError> {
+        let share = self.open_record(commitment, market_id, now)?;
+        let original = share.value_share_decimals();
+        let Some(head) = self.state.private_heads.get(&commitment.hex()) else {
+            return Ok([
+                "1".to_owned(),
+                original[0].clone(),
+                original[1].clone(),
+                original[2].clone(),
+            ]);
+        };
+        let root = self
+            .private_state_root
+            .as_ref()
+            .ok_or_else(|| NodeError::PrivateState("private state root is not bound".into()))?;
+        let path = root
+            .join(hex::encode(head.round_id))
+            .join(format!("Transactions-P{}.data", self.state.party));
+        self.verify_private_state_file(head.round_id, head.private_state_sha256)?;
+        let file = read_persistence(&path, usize::from(self.state.party))
+            .map_err(|error| NodeError::PrivateState(error.to_string()))?;
+        let start = usize::from(head.wire_offset);
+        let end = start
+            .checked_add(4)
+            .filter(|end| *end <= file.shares.len())
+            .ok_or_else(|| {
+                NodeError::PrivateState("private state wire offset is invalid".into())
+            })?;
+        let mut decoded = Vec::with_capacity(4);
+        for stored in &file.shares[start..end] {
+            let value = if file.montgomery {
+                from_montgomery(stored, &file.prime, file.element_bytes)
+                    .map_err(|error| NodeError::PrivateState(error.to_string()))?
+            } else {
+                stored.clone()
+            };
+            decoded.push(value.to_string());
+        }
+        decoded
+            .try_into()
+            .map_err(|_| NodeError::PrivateState("private state wire count is invalid".into()))
+    }
+
+    fn verify_private_state_file(
+        &self,
+        round_id: Digest32,
+        expected_digest: Digest32,
+    ) -> Result<(), NodeError> {
+        let root = self
+            .private_state_root
+            .as_ref()
+            .ok_or_else(|| NodeError::PrivateState("private state root is not bound".into()))?;
+        let path = root
+            .join(hex::encode(round_id))
+            .join(format!("Transactions-P{}.data", self.state.party));
+        reject_symlink(&path)?;
+        let metadata = fs::metadata(&path)?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+            return Err(NodeError::PrivateState(
+                "party-local private state file has an unsafe size or type".into(),
+            ));
+        }
+        let bytes = fs::read(&path)?;
+        let digest: Digest32 = Sha256::digest(&bytes).into();
+        if digest != expected_digest {
+            return Err(NodeError::PrivateState(
+                "party-local private state digest changed".into(),
+            ));
+        }
+        let file = read_persistence(&path, usize::from(self.state.party))
+            .map_err(|error| NodeError::PrivateState(error.to_string()))?;
+        let expected = MAX_MATCH_SLOTS * 4 + 4;
+        if file.shares.len() != expected {
+            return Err(NodeError::PrivateState(format!(
+                "private state contains {} shares; expected {expected}",
+                file.shares.len()
+            )));
+        }
+        Ok(())
+    }
+
+    fn private_parent_digest(
+        &self,
+        resting: &[OrderCommitment],
+        arriving: OrderCommitment,
+    ) -> Digest32 {
+        let mut hash = Sha256::new();
+        hash.update(b"OCLOB:PRIVATE-BOOK-PARENTS:v1");
+        hash.update((resting.len() as u64).to_be_bytes());
+        for commitment in resting {
+            hash.update(commitment.0);
+            if let Some(head) = self.state.private_heads.get(&commitment.hex()) {
+                hash.update([1]);
+                hash.update(head.round_id);
+                hash.update(head.private_state_sha256);
+                hash.update(head.wire_offset.to_be_bytes());
+            } else {
+                hash.update([0]);
+            }
+        }
+        hash.update(arriving.0);
+        hash.finalize().into()
+    }
+
     fn persist(&mut self) -> Result<(), NodeError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -656,6 +937,8 @@ fn empty_state(party: u16) -> StoreState {
         ordering_head: [0; 32],
         ordering_votes: BTreeMap::new(),
         ordered_commitments: BTreeSet::new(),
+        private_heads: BTreeMap::new(),
+        finalized_private_rounds: BTreeMap::new(),
     }
 }
 
@@ -698,6 +981,20 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                 .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
             false,
         ),
+        LEGACY_STORE_VERSION_V4 => {
+            let mut legacy: StoreState = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy v4 node store payload is invalid".into()))?;
+            if legacy.version != LEGACY_STORE_VERSION_V4 {
+                return Err(NodeError::State(
+                    "legacy v4 node store version is invalid".into(),
+                ));
+            }
+            // V4 receipts predate durable party-local post-match state. They
+            // must not authorize capability release after this migration.
+            legacy.completed_rounds.clear();
+            legacy.version = STORE_VERSION;
+            (legacy, true)
+        }
         LEGACY_STORE_VERSION_V3 => {
             let mut legacy: StoreState = serde_json::from_value(value)
                 .map_err(|_| NodeError::State("legacy v3 node store payload is invalid".into()))?;
@@ -706,6 +1003,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                     "legacy v3 node store version is invalid".into(),
                 ));
             }
+            legacy.completed_rounds.clear();
             legacy.version = STORE_VERSION;
             (legacy, true)
         }
@@ -723,11 +1021,15 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                     party: legacy.party,
                     generation: legacy.generation,
                     records: legacy.records,
-                    completed_rounds: legacy.completed_rounds,
+                    // V2 receipts have no durable party-local post-match
+                    // state and cannot authorize a V5 settlement transition.
+                    completed_rounds: BTreeMap::new(),
                     ordering_sequence: 0,
                     ordering_head: [0; 32],
                     ordering_votes: BTreeMap::new(),
                     ordered_commitments: BTreeSet::new(),
+                    private_heads: BTreeMap::new(),
+                    finalized_private_rounds: BTreeMap::new(),
                 },
                 true,
             )
@@ -778,6 +1080,8 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
             || receipt.round_commitment == [0; 32]
             || receipt.program_sha256 == [0; 32]
             || receipt.artifact_sha256 == [0; 32]
+            || receipt.private_parent_digest == [0; 32]
+            || receipt.private_state_sha256 == [0; 32]
             || receipt.result.slots.len() != MAX_MATCH_SLOTS
             || receipt.public_output_sha256 != public_output_digest(&receipt.result)
             || receipt.signer == [0; 32]
@@ -785,6 +1089,46 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
         {
             return Err(NodeError::State(
                 "node share store contains a misbound completed round".into(),
+            ));
+        }
+    }
+    for (commitment, head) in &state.private_heads {
+        let round_key = hex::encode(head.round_id);
+        let receipt = state.completed_rounds.get(&round_key);
+        let finalization = state.finalized_private_rounds.get(&round_key);
+        if !state.records.contains_key(commitment)
+            || head.round_id == [0; 32]
+            || head.private_state_sha256 == [0; 32]
+            || usize::from(head.wire_offset) > MAX_MATCH_SLOTS * 4
+            || usize::from(head.wire_offset) % 4 != 0
+            || head.transition_digest == [0; 32]
+            || head.canonical_receipt_digest == [0; 32]
+            || head.canonical_height == 0
+            || receipt
+                .is_none_or(|receipt| receipt.private_state_sha256 != head.private_state_sha256)
+            || finalization.is_none_or(|finalization| {
+                finalization.transition_digest != head.transition_digest
+                    || finalization.canonical_receipt_digest != head.canonical_receipt_digest
+                    || finalization.canonical_height != head.canonical_height
+            })
+        {
+            return Err(NodeError::State(
+                "node share store contains a misbound private-state head".into(),
+            ));
+        }
+    }
+    for (round, finalization) in &state.finalized_private_rounds {
+        let receipt = state.completed_rounds.get(round);
+        if finalization.public_output_sha256 == [0; 32]
+            || finalization.transition_digest == [0; 32]
+            || finalization.canonical_receipt_digest == [0; 32]
+            || finalization.canonical_height == 0
+            || receipt.is_none_or(|receipt| {
+                receipt.public_output_sha256 != finalization.public_output_sha256
+            })
+        {
+            return Err(NodeError::State(
+                "node share store contains a misbound private-state finalization".into(),
             ));
         }
     }
@@ -852,6 +1196,8 @@ pub enum NodeError {
     Ordering(String),
     #[error("settlement capability release rejected: {0}")]
     Release(String),
+    #[error("party-local private book state is invalid: {0}")]
+    PrivateState(String),
     #[error("node state is invalid: {0}")]
     State(String),
     #[error("unsafe node-store path: {0}")]
@@ -1156,6 +1502,8 @@ mod tests {
                 round_commitment: [34; 32],
                 program_sha256: [35; 32],
                 artifact_sha256: [36; 32],
+                private_parent_digest: [37; 32],
+                private_state_sha256: [40; 32],
                 public_output_sha256: resting_output,
                 result: resting_result,
                 execution_ms: 1,
@@ -1230,6 +1578,8 @@ mod tests {
                 round_commitment: [43; 32],
                 program_sha256: [44; 32],
                 artifact_sha256: [45; 32],
+                private_parent_digest: [46; 32],
+                private_state_sha256: [49; 32],
                 public_output_sha256: ioc_output,
                 result: ioc_result,
                 execution_ms: 1,

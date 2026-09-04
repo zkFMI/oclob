@@ -1,44 +1,48 @@
 {
   "canonical_settlement": {
-    "bootstrap_root": "05b6b1cb1dd37ebc7dae5119f7ce46931fac7dfffa6b2e5ad66e2bceaf95c200",
+    "bootstrap_root": "1c6f5149444b9e61aebcdb4f909fe718136997af3fdc8d9d325efbbacc0e6698",
     "maker_reservation_height": 9,
-    "maker_reservation_transaction_id": "Y2iNwdhf5NhtDSSWCzVfZm1vXMzSCqYXAHZ5mrCNL2oWnoaTE",
-    "maker_reservation_zkpi": "8ae55fb10e75e2ae8504c1693be7f8d09bb9acdb9023ce880e46c6c5e5788221",
+    "maker_reservation_transaction_id": "LRrTLcp1WFKEgQUqzsMzzX5SXVVMEFNRsjCo5X43Xhv7Fwkiz",
+    "maker_reservation_zkpi": "b0f5503ad0c7dabbc7336a1fa6e67193faabb30907869000eacfe0dc82242e00",
     "receipt_chain_verified": true,
     "replay_rejected": true,
-    "state_root": "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
+    "state_root": "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
     "taker_dvp_height": 10,
-    "taker_dvp_transaction_id": "BGG1xs3wpdaxPXcTFaRkokvnKnY71c31qHLb9h36BbxCq8jMU",
+    "taker_dvp_transaction_id": "CQttQwoCqtdQziRHc52oVsptkbi2ZLsbL94SboyAMduLPhogn",
     "taker_reservation_finalized_with_dvp": true,
     "threshold_amount_range": true,
     "threshold_price_range": true,
     "validator_roots_after_restart": [
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4"
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324"
     ],
     "validator_roots_before_restart": [
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4",
-      "043d1cb9abbffc5cf193da920dae706e194d93541aaf2d29a63275a0cf7304f4"
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324"
     ]
   },
-  "chain_id": "2B8SMa8LquyUtBn5M8zEkRFhckUxQHvwm2Fapes1Q3qb1NeJbk",
+  "chain_id": "tCmk6WM743MnMtGMxNxM6PNiH3of5dikCsvSeLhaxnn4k3e7Q",
   "distributed_matching": {
     "all_outputs_agreed": true,
-    "artifact_sha256": "651e4df5237b1aa9d31272fb12f75f4f94924290c76f0a5b9397227950c2bc5f",
+    "artifact_sha256": "49fcd6a92516b2116a9c09a750586b5580ded3c5a24045624c3374954283dea9",
+    "distinct_maker_private_state_digests": 7,
+    "distinct_taker_private_state_digests": 7,
     "maker_remainder": 20,
     "maker_round_receipts": 7,
     "max_corrupt_parties": 2,
     "parties": 7,
     "price": 100,
-    "program_sha256": "cd2266eab47cc5129e32000d37c134a0319c773a420642ae9087dcb7462f11b2",
+    "private_state_wires_per_node": 36,
+    "program_sha256": "442604d2aa3465f6ebe7a3769617e843ae02a2756aeb306370ff2428fff6231e",
     "protocol": "MP-SPDZ malicious-shamir",
     "quantity": 40,
+    "taker_parent_heads_are_party_local": true,
     "taker_remainder": 0,
     "taker_round_receipts": 7
   },
@@ -50,7 +54,7 @@
     "taker_sequence": 2,
     "taker_votes": 7
   },
-  "elapsed_ms": 40773.161287,
+  "elapsed_ms": 29956.254749,
   "environment": "seven MPC containers plus five AvalancheGo validators on one host",
   "evm_used": false,
   "external_binaries": {
@@ -71,13 +75,13 @@
     "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60"
   ],
   "network": {
-    "chainID": "2B8SMa8LquyUtBn5M8zEkRFhckUxQHvwm2Fapes1Q3qb1NeJbk",
+    "chainID": "tCmk6WM743MnMtGMxNxM6PNiH3of5dikCsvSeLhaxnn4k3e7Q",
     "networkID": 1337,
     "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
   },
   "non_claims": [
     "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-    "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover.",
+    "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover even though matching state is now node-local.",
     "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
     "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
     "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -88,6 +92,7 @@
     "dekyx_presentations_verified_by_settlement_gateway": true,
     "key_shares_released_only_after_durable_mpc_receipt": true,
     "maker_post_match_releases": 7,
+    "maker_private_state_receipts": 7,
     "maker_releasing_parties": [
       0,
       1,
@@ -100,9 +105,12 @@
     "maker_signed_admission_receipts": 7,
     "mpc_values_bound_to_settlement_capability": true,
     "participant_edge_shared_before_coordinator": true,
+    "party_local_private_state_after_finality": true,
+    "private_state_finality_retry_idempotent": true,
     "settlement_capability_threshold": 3,
     "single_pre_match_decryption_key_exists": false,
     "taker_post_match_releases": 7,
+    "taker_private_state_receipts": 7,
     "taker_releasing_parties": [
       0,
       1,
@@ -115,19 +123,19 @@
     "taker_signed_admission_receipts": 7
   },
   "research": {
-    "contract_id": "oclob-threshold-settlement-v1",
-    "contract_sha256": "50adef565d185ce8deba77ad3110e9f04bb0890a52a978432d56d2b3a515f5cf",
-    "manifest_id": "oclob-threshold-settlement-confirmation-002",
+    "contract_id": "oclob-node-local-private-book-v1",
+    "contract_sha256": "54536d70edc63063f40cfe577899ade375e16a7f7934326f2b2d3b8359d8ad45",
+    "manifest_id": "oclob-node-local-private-book-rough-001",
     "observed_value": 1,
-    "primary_metric": "complete_threshold_gated_avalanche_settlement_path",
-    "stage": "CONFIRMATION"
+    "primary_metric": "complete_private_state_carry_forward_avalanche_path",
+    "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
   },
   "restart": {
-    "elapsed_ms": 1632.5458419999998,
+    "elapsed_ms": 1206.027638,
     "node": "node3",
     "root_recovered": true
   },
-  "schema": "oclob.distributed-avalanche-acceptance/v2",
+  "schema": "oclob.distributed-avalanche-acceptance/v3",
   "topology": {
     "avalanche_validators": 5,
     "independent_operators_claimed": false,

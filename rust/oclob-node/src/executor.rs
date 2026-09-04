@@ -161,6 +161,15 @@ pub struct NodeExecutionReceipt {
     pub round_commitment: Digest32,
     pub program_sha256: Digest32,
     pub artifact_sha256: Digest32,
+    /// Commitment to the exact prior private-state heads used as this round's
+    /// input. It prevents a delayed finalization from overwriting a newer head.
+    #[serde(default)]
+    pub private_parent_digest: Digest32,
+    /// Digest of this node's durable Shamir share of the post-match private
+    /// book. The file itself never leaves the node and cannot be reconstructed
+    /// from this public receipt.
+    #[serde(default)]
+    pub private_state_sha256: Digest32,
     pub public_output_sha256: Digest32,
     pub result: MpcBatchResult,
     pub execution_ms: u64,
@@ -181,6 +190,8 @@ impl NodeExecutionReceipt {
             || usize::from(self.party) >= MPC_PARTIES
             || self.round_id != plan.round_id
             || self.program_sha256 != expected_program
+            || self.private_parent_digest == [0; 32]
+            || self.private_state_sha256 == [0; 32]
             || self.public_output_sha256 != public_output_digest(&self.result)
             || self.result.slots.len() != MAX_MATCH_SLOTS
             || self.signer != expected_signer.to_bytes()
@@ -204,6 +215,8 @@ impl NodeExecutionReceipt {
         body.extend_from_slice(&self.round_commitment);
         body.extend_from_slice(&self.program_sha256);
         body.extend_from_slice(&self.artifact_sha256);
+        body.extend_from_slice(&self.private_parent_digest);
+        body.extend_from_slice(&self.private_state_sha256);
         body.extend_from_slice(&self.public_output_sha256);
         body.extend_from_slice(&(self.result.slots.len() as u16).to_be_bytes());
         for slot in &self.result.slots {
@@ -304,6 +317,10 @@ impl PartyExecutor {
         self.signing_key.verifying_key()
     }
 
+    pub(crate) fn private_state_root(&self) -> PathBuf {
+        self.work_root.join("private-state")
+    }
+
     pub fn execute(
         &mut self,
         prepared: &PreparedPartyInput,
@@ -326,6 +343,9 @@ impl PartyExecutor {
         fs::set_permissions(&round, fs::Permissions::from_mode(0o700))?;
         let cleanup = RoundCleanup(round.clone());
         prepare_runtime_view(&self.root, &round, self.party)?;
+        let persistence_directory = round.join("Persistence");
+        fs::create_dir(&persistence_directory)?;
+        fs::set_permissions(&persistence_directory, fs::Permissions::from_mode(0o700))?;
         let input_prefix = round.join("Input");
         prepared.write_exclusive(round.join(format!("Input-P{}-0", self.party)))?;
         let hosts_path = round.join("hosts");
@@ -366,6 +386,7 @@ impl PartyExecutor {
         let output = read_bounded(&log_path, MAX_LOG_BYTES)?;
         let output = std::str::from_utf8(&output).map_err(|_| PartyExecutionError::Output)?;
         let result = parse_result(output).map_err(|_| PartyExecutionError::Output)?;
+        let private_state_sha256 = self.retain_private_state(&round, plan.round_id)?;
         let mut receipt = NodeExecutionReceipt {
             version: VERSION,
             party: self.party,
@@ -374,6 +395,8 @@ impl PartyExecutor {
             round_commitment: prepared.round_commitment(),
             program_sha256: self.program_sha256,
             artifact_sha256: self.artifact_sha256,
+            private_parent_digest: prepared.private_parent_digest(),
+            private_state_sha256,
             public_output_sha256: public_output_digest(&result),
             result,
             execution_ms,
@@ -388,6 +411,39 @@ impl PartyExecutor {
         receipt.verify(plan, self.party, &self.signing_key.verifying_key())?;
         drop(cleanup);
         Ok(receipt)
+    }
+
+    /// Move the party-local MP-SPDZ Persistence output out of the ephemeral
+    /// execution directory. Only a digest is returned to the coordinator.
+    fn retain_private_state(
+        &self,
+        round: &Path,
+        round_id: Digest32,
+    ) -> Result<Digest32, PartyExecutionError> {
+        let source = round
+            .join("Persistence")
+            .join(format!("Transactions-P{}.data", self.party));
+        let bytes = read_bounded(&source, 16 * 1024 * 1024)?;
+        let digest: Digest32 = Sha256::digest(&bytes).into();
+        let private_root = self.work_root.join("private-state");
+        reject_symlink(&private_root)?;
+        fs::create_dir_all(&private_root)?;
+        fs::set_permissions(&private_root, fs::Permissions::from_mode(0o700))?;
+        let destination_directory = private_root.join(hex::encode(round_id));
+        reject_symlink(&destination_directory)?;
+        fs::create_dir(&destination_directory).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                PartyExecutionError::Replay
+            } else {
+                PartyExecutionError::Io(error)
+            }
+        })?;
+        fs::set_permissions(&destination_directory, fs::Permissions::from_mode(0o700))?;
+        let destination = destination_directory.join(format!("Transactions-P{}.data", self.party));
+        reject_symlink(&destination)?;
+        fs::rename(&source, &destination)?;
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
+        Ok(digest)
     }
 }
 

@@ -5,7 +5,7 @@
 //! authorization rules; no QOMM order data crosses this interface.
 
 use crate::executor::{NodeExecutionReceipt, PartyExecutor, RoundPlan};
-use crate::{IngestOutcome, NodeShareStore, NodeStoreStatus};
+use crate::{IngestOutcome, NodeShareStore, NodeStoreStatus, PrivateStateFinality};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::{
@@ -36,7 +36,8 @@ const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ1";
 const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS1";
 const ADMISSION_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-ADMISSION-RECEIPT:v1";
 const CAPABILITY_RELEASE_DOMAIN: &[u8] = b"OCLOB:NODE-CAPABILITY-RELEASE:v1";
-const RECORD_VERSION: u16 = 2;
+const PRIVATE_STATE_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-PRIVATE-STATE-RECEIPT:v1";
+const RECORD_VERSION: u16 = 3;
 const RECORD_HEADER_BYTES: usize = 8 + 2 + 4 + 32;
 const MAX_TLS_KEY_BYTES: u64 = 128 * 1024;
 
@@ -92,18 +93,37 @@ enum NodeRequest {
         plan: Box<RoundPlan>,
         order_commitment: OrderCommitment,
     },
+    FinalizePrivateState {
+        plan: Box<RoundPlan>,
+        finality: PrivateStateFinality,
+    },
     Status,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum NodeResponse {
-    Ingested { receipt: Box<NodeAdmissionReceipt> },
-    Voted { vote: OrderVote },
-    Executed { receipt: Box<NodeExecutionReceipt> },
-    Released { release: Box<NodeCapabilityRelease> },
-    Status { status: NodeStoreStatus },
-    Rejected { code: String },
+    Ingested {
+        receipt: Box<NodeAdmissionReceipt>,
+    },
+    Voted {
+        vote: OrderVote,
+    },
+    Executed {
+        receipt: Box<NodeExecutionReceipt>,
+    },
+    Released {
+        release: Box<NodeCapabilityRelease>,
+    },
+    PrivateStateFinalized {
+        receipt: Box<NodePrivateStateReceipt>,
+    },
+    Status {
+        status: NodeStoreStatus,
+    },
+    Rejected {
+        code: String,
+    },
 }
 
 /// Durable proof that one authenticated node accepted one participant-signed
@@ -306,6 +326,109 @@ impl NodeCapabilityRelease {
     }
 }
 
+/// Signed evidence that one MPC node advanced its local secret-share head only
+/// after the exact public match transition reached canonical DeFMI finality.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodePrivateStateReceipt {
+    pub version: u16,
+    pub party: u16,
+    pub round_id: Digest32,
+    pub private_state_sha256: Digest32,
+    pub transition_digest: Digest32,
+    pub canonical_receipt_digest: Digest32,
+    pub canonical_height: u64,
+    pub generation: u64,
+    pub state_digest: Digest32,
+    pub signer: Digest32,
+    pub signature: Vec<u8>,
+}
+
+impl NodePrivateStateReceipt {
+    #[allow(clippy::too_many_arguments)]
+    fn sign(
+        party: u16,
+        execution: &NodeExecutionReceipt,
+        finality: &PrivateStateFinality,
+        generation: u64,
+        state_digest: Digest32,
+        key: &SigningKey,
+    ) -> Result<Self, NetworkError> {
+        if execution.party != party
+            || execution.round_id != finality.round_id
+            || execution.public_output_sha256 != finality.public_output_sha256
+            || execution.private_state_sha256 == [0; 32]
+            || finality.transition_digest == [0; 32]
+            || finality.canonical_receipt_digest == [0; 32]
+            || finality.canonical_height == 0
+            || generation == 0
+            || state_digest == [0; 32]
+        {
+            return Err(NetworkError::State);
+        }
+        let mut receipt = Self {
+            version: RECORD_VERSION,
+            party,
+            round_id: finality.round_id,
+            private_state_sha256: execution.private_state_sha256,
+            transition_digest: finality.transition_digest,
+            canonical_receipt_digest: finality.canonical_receipt_digest,
+            canonical_height: finality.canonical_height,
+            generation,
+            state_digest,
+            signer: key.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        };
+        receipt.signature = key.sign(&receipt.signature_body()).to_bytes().to_vec();
+        Ok(receipt)
+    }
+
+    pub fn verify(
+        &self,
+        execution: &NodeExecutionReceipt,
+        finality: &PrivateStateFinality,
+        expected_party: u16,
+        expected_signer: &VerifyingKey,
+    ) -> Result<(), NetworkError> {
+        if self.version != RECORD_VERSION
+            || self.party != expected_party
+            || self.round_id != finality.round_id
+            || self.round_id != execution.round_id
+            || self.private_state_sha256 != execution.private_state_sha256
+            || self.transition_digest != finality.transition_digest
+            || self.canonical_receipt_digest != finality.canonical_receipt_digest
+            || self.canonical_height != finality.canonical_height
+            || execution.public_output_sha256 != finality.public_output_sha256
+            || self.generation == 0
+            || self.state_digest == [0; 32]
+            || self.signer != expected_signer.to_bytes()
+        {
+            return Err(NetworkError::Protocol);
+        }
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| NetworkError::Protocol)?;
+        expected_signer
+            .verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| NetworkError::Protocol)
+    }
+
+    fn signature_body(&self) -> Vec<u8> {
+        [
+            PRIVATE_STATE_RECEIPT_DOMAIN,
+            &self.version.to_be_bytes(),
+            &self.party.to_be_bytes(),
+            &self.round_id,
+            &self.private_state_sha256,
+            &self.transition_digest,
+            &self.canonical_receipt_digest,
+            &self.canonical_height.to_be_bytes(),
+            &self.generation.to_be_bytes(),
+            &self.state_digest,
+            &self.signer,
+        ]
+        .concat()
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerTlsConfig {
     acceptor: Arc<SslAcceptor>,
@@ -389,6 +512,12 @@ impl NodeRpcServer {
         ordering_policy
             .validate()
             .map_err(|_| NetworkError::Configuration)?;
+        let mut store = store;
+        if let Some(executor) = executor.as_ref() {
+            store
+                .bind_private_state_root(executor.private_state_root())
+                .map_err(|_| NetworkError::Configuration)?;
+        }
         let party = store.status().map_err(|_| NetworkError::State)?.party;
         let node_id = party.checked_add(1).ok_or(NetworkError::Configuration)?;
         if max_connections == 0
@@ -707,6 +836,33 @@ impl NodeRpcClient {
         }
     }
 
+    pub fn finalize_private_state(
+        &self,
+        plan: RoundPlan,
+        finality: PrivateStateFinality,
+        execution: &NodeExecutionReceipt,
+    ) -> Result<NodePrivateStateReceipt, NetworkError> {
+        match self.call(NodeRequest::FinalizePrivateState {
+            plan: Box::new(plan),
+            finality: finality.clone(),
+        })? {
+            NodeResponse::PrivateStateFinalized { receipt }
+                if receipt.party == self.endpoint.party =>
+            {
+                receipt.verify(
+                    execution,
+                    &finality,
+                    self.endpoint.party,
+                    &VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
+                        .map_err(|_| NetworkError::Protocol)?,
+                )?;
+                Ok(*receipt)
+            }
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
     pub fn vote(
         &self,
         market_id: &str,
@@ -1006,6 +1162,37 @@ fn dispatch_checked(
             )?;
             Ok(NodeResponse::Released {
                 release: Box::new(release),
+            })
+        }
+        NodeRequest::FinalizePrivateState { plan, finality } => {
+            require_role(principal, PeerRole::Settlement)?;
+            let plan = *plan;
+            plan.verify_ordering(runtime.ordering_policy, &runtime.ordering_keys, now)
+                .map_err(|_| NetworkError::Plan)?;
+            let (execution, generation, status) = {
+                let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
+                let execution = store
+                    .completed_round(plan.round_id)
+                    .ok_or(NetworkError::Execution)?;
+                let generation = store
+                    .finalize_private_round(&plan, &finality)
+                    .map_err(|_| NetworkError::State)?;
+                let status = store.status().map_err(|_| NetworkError::State)?;
+                (execution, generation, status)
+            };
+            if generation != status.generation {
+                return Err(NetworkError::State);
+            }
+            let receipt = NodePrivateStateReceipt::sign(
+                status.party,
+                &execution,
+                &finality,
+                generation,
+                status.state_digest,
+                &runtime.receipt_signing_key,
+            )?;
+            Ok(NodeResponse::PrivateStateFinalized {
+                receipt: Box::new(receipt),
             })
         }
         NodeRequest::Status => {
@@ -1460,6 +1647,8 @@ mod tests {
                 round_commitment: [59; 32],
                 program_sha256: [60; 32],
                 artifact_sha256: [61; 32],
+                private_parent_digest: [62; 32],
+                private_state_sha256: [63; 32],
                 public_output_sha256: output,
                 result,
                 execution_ms: 1,

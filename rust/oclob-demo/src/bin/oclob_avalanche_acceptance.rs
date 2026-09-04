@@ -8,12 +8,13 @@ use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
 use oclob_edge::SealedSettlementCapability;
 use oclob_node::edge_client::{
     collect_order_certificate, collect_threshold_capability_release, execute_agreed_round,
-    AgreedRoundExecution, EdgeAdmissionReceipt,
+    finalize_agreed_private_state, AgreedRoundExecution, EdgeAdmissionReceipt,
 };
 use oclob_node::executor::RoundPlan;
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
 };
+use oclob_node::PrivateStateFinality;
 use oclob_ordering::{OrderCertificate, OrderingCommittee};
 use oclob_proofs::{
     public_fills_digest, TransitionProof, TransitionStatement, VerifiedTransitionProof,
@@ -26,7 +27,7 @@ use qomm_defmi::facility::{DefmiFacility, QuorumAuthorizer};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -319,6 +320,13 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     let maker_acceptance = gateway.settle(&maker_prepared, now)?;
     let maker_tx = maker_acceptance.transaction_id().to_owned();
     let maker_height = maker_acceptance.height();
+    let maker_finality = PrivateStateFinality {
+        round_id: maker_plan.round_id,
+        public_output_sha256: maker_execution.receipts[0].public_output_sha256,
+        transition_digest: maker_transition.digest(),
+        canonical_receipt_digest: maker_acceptance.receipt_digest(),
+        canonical_height: maker_height,
+    };
     let maker_applied = maker_prepared
         .accept(&mut settlement, maker_acceptance)
         .map_err(|error| failure(error.to_string()))?;
@@ -328,6 +336,29 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             return Err(failure("maker admission unexpectedly produced DvP"));
         }
     };
+    let maker_private_state_receipts = finalize_agreed_private_state(
+        &cluster,
+        &settlement_tls,
+        &maker_plan,
+        &maker_execution,
+        maker_finality.clone(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let maker_private_state_retry = finalize_agreed_private_state(
+        &cluster,
+        &settlement_tls,
+        &maker_plan,
+        &maker_execution,
+        maker_finality,
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    if maker_private_state_retry != maker_private_state_receipts {
+        return Err(failure(
+            "Maker private-state finality retry was not idempotent",
+        ));
+    }
 
     let now = unix_seconds()?;
     let taker_certificate = collect_order_certificate(
@@ -356,6 +387,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     )
     .map_err(|error| failure(error.to_string()))?;
     validate_integrated_taker(&taker_execution)?;
+    validate_private_state_chain(&maker_execution, &taker_execution)?;
     let taker_release = collect_threshold_capability_release(
         &cluster,
         &settlement_tls,
@@ -433,6 +465,13 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     let accepted_tx = taker_acceptance.transaction_id().to_owned();
     let accepted_height = taker_acceptance.height();
     let accepted_root = taker_acceptance.after_state_root();
+    let taker_finality = PrivateStateFinality {
+        round_id: taker_plan.round_id,
+        public_output_sha256: taker_execution.receipts[0].public_output_sha256,
+        transition_digest: taker_transition.digest(),
+        canonical_receipt_digest: taker_acceptance.receipt_digest(),
+        canonical_height: accepted_height,
+    };
     let replay_rejected = gateway.settle(&taker_prepared, now).is_err();
     if !replay_rejected {
         return Err(failure(
@@ -448,6 +487,29 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             return Err(failure("crossing taker produced no DvP"));
         }
     };
+    let taker_private_state_receipts = finalize_agreed_private_state(
+        &cluster,
+        &settlement_tls,
+        &taker_plan,
+        &taker_execution,
+        taker_finality.clone(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let taker_private_state_retry = finalize_agreed_private_state(
+        &cluster,
+        &settlement_tls,
+        &taker_plan,
+        &taker_execution,
+        taker_finality,
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    if taker_private_state_retry != taker_private_state_receipts {
+        return Err(failure(
+            "Taker private-state finality retry was not idempotent",
+        ));
+    }
 
     let roots_before_restart = wait_for_roots(&clients, accepted_root, Duration::from_secs(30))?;
     let mut restart_ms = None;
@@ -483,7 +545,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     }
 
     Ok(json!({
-        "schema": "oclob.distributed-avalanche-acceptance/v2",
+        "schema": "oclob.distributed-avalanche-acceptance/v3",
         "verdict": "accepted",
         "research": research,
         "environment": "seven MPC containers plus five AvalancheGo validators on one host",
@@ -511,6 +573,10 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "key_shares_released_only_after_durable_mpc_receipt": true,
             "dekyx_binding_finalized_with_reservation": true,
             "mpc_values_bound_to_settlement_capability": true,
+            "party_local_private_state_after_finality": true,
+            "maker_private_state_receipts": maker_private_state_receipts.len(),
+            "taker_private_state_receipts": taker_private_state_receipts.len(),
+            "private_state_finality_retry_idempotent": true,
             "dekyx_presentations_verified_by_settlement_gateway": true,
         },
         "distributed_ordering": {
@@ -527,6 +593,10 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "max_corrupt_parties": 2,
             "maker_round_receipts": maker_execution.receipts.len(),
             "taker_round_receipts": taker_execution.receipts.len(),
+            "private_state_wires_per_node": MAX_MATCH_SLOTS * 4 + 4,
+            "distinct_maker_private_state_digests": distinct_private_state_digests(&maker_execution),
+            "distinct_taker_private_state_digests": distinct_private_state_digests(&taker_execution),
+            "taker_parent_heads_are_party_local": taker_execution.receipts.iter().map(|receipt| receipt.private_parent_digest).collect::<BTreeSet<_>>().len() == cluster.nodes.len(),
             "all_outputs_agreed": true,
             "program_sha256": hex::encode(taker_execution.receipts[0].program_sha256),
             "artifact_sha256": hex::encode(taker_execution.receipts[0].artifact_sha256),
@@ -563,7 +633,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         "elapsed_ms": started.elapsed().as_secs_f64() * 1_000.0,
         "non_claims": [
             "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-            "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover.",
+            "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover even though matching state is now node-local.",
             "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
             "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
             "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -593,12 +663,13 @@ fn validate_integrated_research_binding(
         .and_then(Value::as_str)
         .ok_or_else(|| failure("integrated research manifest has no contract digest"))?;
     let actual_sha: [u8; 32] = Sha256::digest(&contract_bytes).into();
-    if contract_id != "oclob-threshold-settlement-v1"
+    if contract_id != "oclob-node-local-private-book-v1"
         || manifest_contract != Some(contract_id)
         || expected_sha != hex::encode(actual_sha)
-        || manifest.get("stage").and_then(Value::as_str) != Some("CONFIRMATION")
+        || manifest.get("stage").and_then(Value::as_str)
+            != Some("RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC")
         || manifest.get("primary_metric").and_then(Value::as_str)
-            != Some("complete_threshold_gated_avalanche_settlement_path")
+            != Some("complete_private_state_carry_forward_avalanche_path")
     {
         return Err(failure(
             "integrated research contract and manifest are not the approved pair",
@@ -608,8 +679,8 @@ fn validate_integrated_research_binding(
         "contract_id": contract_id,
         "contract_sha256": expected_sha,
         "manifest_id": manifest_id,
-        "stage": "CONFIRMATION",
-        "primary_metric": "complete_threshold_gated_avalanche_settlement_path",
+        "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+        "primary_metric": "complete_private_state_carry_forward_avalanche_path",
         "observed_value": 1
     }))
 }
@@ -642,6 +713,50 @@ fn validate_integrated_taker(execution: &AgreedRoundExecution) -> RunResult<()> 
     {
         return Err(failure(
             "distributed taker round returned an unexpected result",
+        ));
+    }
+    Ok(())
+}
+
+fn distinct_private_state_digests(execution: &AgreedRoundExecution) -> usize {
+    execution
+        .receipts
+        .iter()
+        .map(|receipt| receipt.private_state_sha256)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn validate_private_state_chain(
+    maker: &AgreedRoundExecution,
+    taker: &AgreedRoundExecution,
+) -> RunResult<()> {
+    let maker_parents = maker
+        .receipts
+        .iter()
+        .map(|receipt| receipt.private_parent_digest)
+        .collect::<BTreeSet<_>>();
+    let taker_parents = taker
+        .receipts
+        .iter()
+        .map(|receipt| receipt.private_parent_digest)
+        .collect::<BTreeSet<_>>();
+    if maker.receipts.len() != oclob_edge::MPC_PARTIES
+        || taker.receipts.len() != oclob_edge::MPC_PARTIES
+        || maker_parents.len() != 1
+        || taker_parents.len() != oclob_edge::MPC_PARTIES
+        || taker_parents == maker_parents
+        || distinct_private_state_digests(maker) != oclob_edge::MPC_PARTIES
+        || distinct_private_state_digests(taker) != oclob_edge::MPC_PARTIES
+        || maker.receipts.iter().any(|receipt| {
+            receipt.private_parent_digest == [0; 32] || receipt.private_state_sha256 == [0; 32]
+        })
+        || taker.receipts.iter().any(|receipt| {
+            receipt.private_parent_digest == [0; 32] || receipt.private_state_sha256 == [0; 32]
+        })
+    {
+        return Err(failure(
+            "party-local private book state did not carry from Maker finality into the Taker round",
         ));
     }
     Ok(())

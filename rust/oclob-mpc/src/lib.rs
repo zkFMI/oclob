@@ -312,7 +312,7 @@ def secret_input():
         ));
     }
     source.push_str(
-        "arriving_side = secret_input()\narriving_price = secret_input()\narriving_quantity = secret_input()\narriving_can_rest = secret_input()\nremaining = arriving_quantity\n",
+        "arriving_side = secret_input()\narriving_price = secret_input()\narriving_quantity = secret_input()\narriving_can_rest = secret_input()\nremaining = arriving_quantity\nprivate_book_wires = []\n",
     );
     for slot in 0..MAX_MATCH_SLOTS {
         source.push_str(&format!(
@@ -323,14 +323,16 @@ matched_{slot} = active_{slot} * opposite_{slot} * price_cross_{slot} * positive
 minimum_{slot} = (resting_quantity_{slot} <= remaining).if_else(resting_quantity_{slot}, remaining)\n\
 trade_quantity_{slot} = matched_{slot} * minimum_{slot}\n\
 trade_price_{slot} = matched_{slot} * resting_price_{slot}\n\
+resting_remaining_{slot} = resting_quantity_{slot} - trade_quantity_{slot}\n\
 remaining = remaining - trade_quantity_{slot}\n\
+private_book_wires += [active_{slot}, resting_side_{slot}, resting_price_{slot}, resting_remaining_{slot}]\n\
 print_ln('OCLOB_SLOT_{slot}_MATCHED=%s', matched_{slot}.reveal())\n\
 print_ln('OCLOB_SLOT_{slot}_PRICE=%s', trade_price_{slot}.reveal())\n\
 print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
         ));
     }
     source.push_str(
-        "published_remaining = remaining * arriving_can_rest\nprint_ln('OCLOB_ARRIVING_REMAINING=%s', published_remaining.reveal())\n",
+        "published_remaining = remaining * arriving_can_rest\nprivate_book_wires += [arriving_can_rest, arriving_side, arriving_price, published_remaining]\nsint.write_to_file(private_book_wires)\nprint_ln('OCLOB_ARRIVING_REMAINING=%s', published_remaining.reveal())\n",
     );
     Ok(source)
 }
@@ -484,5 +486,7 @@ mod tests {
         assert!(!source.contains("malicious"));
         assert!(!source.contains("SLOT_0_REMAINING"));
         assert!(source.contains("published_remaining"));
+        assert!(source.contains("sint.write_to_file(private_book_wires)"));
+        assert!(source.contains("resting_remaining_0"));
     }
 }

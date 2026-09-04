@@ -1,0 +1,60 @@
+{
+  "contract_id": "oclob-node-local-private-book-v1",
+  "objective": "Execute the OCLOB Maker-to-Taker lifecycle with the post-match private order state retained only as one Shamir share per MPC node, advance those shares only after the exact DeFMI transition is canonical, and consume the finalized Maker remainder as the next distributed matching input without reconstructing the private book at the coordinator.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101",
+    "expected_fill": "40 lots at 100",
+    "expected_private_maker_remainder": "20 lots represented only by seven Shamir shares"
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "max_corrupt_mpc_nodes": 2,
+    "ordering_quorum": 5,
+    "avalanche_validators": 5,
+    "operator_hosts_in_this_gate": 1,
+    "evm_used": false
+  },
+  "state_protocol": {
+    "execution": "The malicious-secure matching circuit writes active, side, price and remaining quantity for every fixed slot with sint.write_to_file; each process receives only its own Shamir evaluation.",
+    "custody": "Each node moves only Transactions-Pn.data into its owner-only private-state directory and publishes only its SHA-256 digest in the signed execution receipt.",
+    "parent_binding": "Every execution receipt signs a digest of the exact private-state heads used by that node, preventing a delayed result from overwriting a newer order state.",
+    "finality": "A settlement-role mutual-TLS request advances the node-local heads only when its round and public-output digest match a durable execution receipt and it carries a nonzero canonical DeFMI receipt digest and height.",
+    "carry_forward": "After Maker reservation finality, the Taker round reads the Maker active, side, price and remaining-quantity shares from the finalized local Persistence file rather than reopening the original quantity share.",
+    "replay": "Repeating an identical finality binding is idempotent; changing it for the same round or finalizing against a changed parent fails closed."
+  },
+  "acceptance": {
+    "required": [
+      "all Rust formatting, Clippy and workspace tests pass on an approved remote host",
+      "all seven Maker and Taker executions return valid signed receipts",
+      "all seven execution receipts contain nonzero private-state and parent digests",
+      "the seven party-local private-state files have distinct digests and never appear in the public artifact",
+      "Maker private heads finalize only after Maker DeFMI reservation finality",
+      "the Taker round parent digests differ from the private genesis parent and bind the finalized Maker state",
+      "Taker DvP finality advances the Maker remainder heads and removes the fully filled Taker from the private active set",
+      "five Avalanche validators agree on the same state root and recover it after restart",
+      "the artifact records the exact contract and manifest digests and preserves every non-claim"
+    ],
+    "reject_if": [
+      "the contract digest differs from the preregistered manifest",
+      "any node omits its private-state file or emits a malformed wire count",
+      "any private-state digest is zero or shared by two party files",
+      "a private state head advances before canonical finality",
+      "the Taker round uses the original Maker quantity instead of the finalized Maker head",
+      "a stale parent can overwrite a newer private state",
+      "a private order field, Shamir share, Persistence path or capability-key share appears in the public artifact",
+      "the implementation claims collaborative zkPI generation or account-free DeFMI notes"
+    ]
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "One laboratory settlement process still reconstructs each post-match order capability and creates zkPI; collaborative proof generation is the next cutover.",
+    "Canonical DeFMI state still uses commitment accounts and a reservation root rather than account-free product notes.",
+    "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
+    "One functional scenario is not throughput, adversarial-load or economic-effect evidence."
+  ]
+}
