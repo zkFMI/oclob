@@ -2,7 +2,7 @@
 
 ## 判定
 
-OCLOBは、研究用MVPとして一続きの経路を実装しています。本番移行可能と判定できる段階ではありません。特に、注文のedge sharing、独立した7 MPC運営者、実Avalanche L1、永続状態の世代整合、認証・鍵管理がP0です。
+OCLOBは、研究用MVPとして一続きの経路を実装しています。法人側で注文を7分割し、各MPCノードへ直接届ける中央非開示経路も実装・受入済みです。ただし、本番移行可能と判定できる段階ではありません。特に、独立した7 MPC運営者、実Avalanche L1、永続状態の世代整合、認証・鍵管理がP0です。
 
 「実装済み」はsourceがあるだけではなく、repositoryのremote release gateで動かす対象になっていることを示します。「未受入」は設計や一部codeがあっても、本番の信頼境界または実環境で確認できていないことを示します。
 
@@ -16,7 +16,8 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。本
 | 部分・複数約定 | 実装済み | 最大8枠batch回路、原子的multi-fill | 8枠上限の拡張または分割規則 |
 | 取消・期限切れ | 実装済み | authority、遷移proof、予約解放test | 公開API、外部clock/epoch運用 |
 | 受付順5-of-7 | 実装済み | quorum、連鎖、二重投票拒否test | HSM key、epoch交代、独立node/WAN |
-| MP-SPDZ秘密照合 | 実装済み | 公式compilerとmalicious-shamir 7 process E2E | edge sharing、別host 7 party、traffic評価 |
+| 法人側の注文分割と直接配送 | 実装済み・1ホスト受入済み | Pedersen検証付き3-of-7分割、ノード別暗号文、固定長mTLS通信、7コンテナE2E | DeKYX証明・予約との暗号的な結合、別運営者WAN |
+| MP-SPDZ秘密照合 | 実装済み | 公式compilerとmalicious-shamir、1コンテナ1 partyの7 node E2E、全結果一致 | 別host 7 party、通信量・障害評価 |
 | 平文fallback禁止 | 実装済み | binary不在・party失敗時fail closed | 運用SLOとbackpressure |
 | DeKYX参加資格 | 実装済み | pinned `dekyx-core` adapter test | issuer governance、失効配布、HSM |
 | 法人単位の枠合算 | 実装済み | DeKYX entity単位reservation test | CCP/DeFMI外部設定、権限・更新監査 |
@@ -25,7 +26,7 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。本
 | 暗号化耐久queue | 実装済み | AEAD、idempotency、順序、cover slot test | 鍵永続化、世代整合restart、HA |
 | 公開板 | 実装済み | price level aggregateのみ | 差分漏洩測定、公開頻度・粒度の市場実験 |
 | React Flowデモ | 実装済み・研究用受入済み | OmenX Docker runtimeをIABの1440×1000/390×844で操作。売りGTC 100口、買いIOC 40口、残60口、参加者別残高、5/7受付、7-process MPC、閾値zkPI、DeFMI高さ3を確認。横overflow 0、console error/warn 0 | 認証済み本番APIとの接続、継続的a11y試験 |
-| 独立MPCコンテナ | 未受入 | 設計文書のみ | 一node一share、一party一host、mTLS |
+| 分離MPCコンテナ | 実装済み・1ホスト受入済み | 一node一暗号化share、一container一party、mTLS、署名済み同一結果、再実行防止 | 別運営主体、一party一host、独立鍵生成・KMS/HSM |
 | 実Avalanche L1 | 未受入 | DeFMI state machineのみ | validator deployment、RPC、finality証拠 |
 | 本番HTTP/API | 未実装 | demo APIのみ | mTLS、認可、OpenAPI、rate limit、audit |
 | 形式安全性証明 | 未受入 | property/unit test | security definition、proof、査読 |
@@ -59,25 +60,24 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。本
 
 ## P0: 本番移行を止める課題
 
-### P0-1 注文を中央プロセスへ平文で渡さない
+### P0-1 注文を中央プロセスへ平文で渡さない — 分散経路で実装済み
 
-現在の `OclobService::submit` は `SecretOrder` を受け、`MpcRunner` がその値から7 party用inputを作ります。これはMPC計算自体は実行していても、調整サービスが注文を読めることを意味します。
+`oclob-edge` と `oclob-node` を使う分散経路では、法人側が注文を検証可能な7分割へ変換し、ノードごとに別々に暗号化して直接送ります。調整役はcommitment（注文の要約値）、受付証明、署名付き公開結果だけを扱います。OmenX上の7コンテナ受入では、調整役へ平文注文を渡さずに40口を価格100で約定し、同一ラウンドの再送で二度目の計算を起動しないことを確認しました。
 
-必要な変更:
+一方、React Flowの単体デモが使う `OclobService::submit` は、従来どおり `SecretOrder` を受けてから7入力を作ります。したがって、中央非開示の保証は分散経路だけに適用します。
 
-- 法人参加モジュールで秘密分散する。
-- 7 nodeへ各shareを直接mTLS送信する。
-- nodeは自分のshare以外を受け取らない。
-- commitment、署名、DeKYX資格、shareが同じ注文を指すことを証明する。
-- coordinatorはcommitment、受付証明、party receipt、公開outputだけを扱う。
+残る変更:
+
+- DeKYX資格、DeFMI予約、注文署名、分割入力が同じ注文を指すことを一つの証明へ結ぶ。
+- React Flowデモと公開APIを分散経路へ切り替え、中央経路を研究用互換モードへ限定する。
 
 ### P0-2 7 partyを独立運営する
 
-現在は同じhost、同じprocess owner、同じfilesystemで7 MP-SPDZ processを起動します。k-of-nの暗号条件と、現実の独立性は別です。
+1コンテナ1ノード、ノード別保存領域、相互TLS、ノード署名までは実装しました。ただし受入環境は同じhost・同じ管理者で、検証用の鍵も一つのlab作成器が生成します。k-of-nの暗号条件と、現実の独立性は別です。
 
 必要な変更:
 
-- 一party一containerまたは一host。
+- 一party一hostとし、7運営者がそれぞれ鍵を生成する。
 - 独立KMS/HSM、管理者、監査log、障害領域。
 - mTLS、固定peer identity、epoch設定。
 - WAN latency、packet loss、partial outage、selective abort試験。

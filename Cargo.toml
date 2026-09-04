@@ -3,6 +3,8 @@ resolver = "2"
 members = [
   "rust/oclob-core",
   "rust/oclob-dekyx",
+  "rust/oclob-edge",
+  "rust/oclob-node",
   "rust/oclob-ordering",
   "rust/oclob-mpc",
   "rust/oclob-proofs",
@@ -26,10 +28,13 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
+openssl = "0.10.75"
 thiserror = "2.0.17"
 
 oclob-core = { path = "rust/oclob-core" }
 oclob-dekyx = { path = "rust/oclob-dekyx" }
+oclob-edge = { path = "rust/oclob-edge" }
+oclob-node = { path = "rust/oclob-node" }
 oclob-ordering = { path = "rust/oclob-ordering" }
 oclob-mpc = { path = "rust/oclob-mpc" }
 oclob-proofs = { path = "rust/oclob-proofs" }

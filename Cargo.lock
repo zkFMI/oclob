@@ -522,6 +522,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "oclob-edge"
+version = "0.1.0"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "hex",
+ "oclob-core",
+ "openssl",
+ "rand",
+ "rand_core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "oclob-mpc"
 version = "0.1.0"
 dependencies = [
@@ -530,6 +547,24 @@ dependencies = [
  "qomm-mpc",
  "rand",
  "serde",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "oclob-node"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "oclob-core",
+ "oclob-edge",
+ "oclob-mpc",
+ "oclob-ordering",
+ "openssl",
+ "rand",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror 2.0.20",
 ]

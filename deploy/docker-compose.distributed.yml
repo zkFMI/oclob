@@ -1,0 +1,169 @@
+name: oclob-distributed
+
+x-node: &node
+  image: ${OCLOB_CLUSTER_IMAGE:-oclob-cluster:local}
+  user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:size=64m,mode=0700
+  networks: [oclob-private]
+  expose: ["5000", "7443"]
+  healthcheck:
+    test: [CMD, test, -s, /state/ready.json]
+    interval: 2s
+    timeout: 1s
+    retries: 30
+    start_period: 5s
+  stop_grace_period: 5s
+
+x-client: &client
+  image: ${OCLOB_CLUSTER_IMAGE:-oclob-cluster:local}
+  user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:size=32m,mode=0700
+  networks: [oclob-private]
+
+services:
+  node-0:
+    <<: *node
+    hostname: oclob-node-0
+    networks:
+      oclob-private:
+        aliases: [oclob-node-0]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-0:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-0:/state:rw
+
+  node-1:
+    <<: *node
+    hostname: oclob-node-1
+    networks:
+      oclob-private:
+        aliases: [oclob-node-1]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-1:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-1:/state:rw
+
+  node-2:
+    <<: *node
+    hostname: oclob-node-2
+    networks:
+      oclob-private:
+        aliases: [oclob-node-2]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-2:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-2:/state:rw
+
+  node-3:
+    <<: *node
+    hostname: oclob-node-3
+    networks:
+      oclob-private:
+        aliases: [oclob-node-3]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-3:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-3:/state:rw
+
+  node-4:
+    <<: *node
+    hostname: oclob-node-4
+    networks:
+      oclob-private:
+        aliases: [oclob-node-4]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-4:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-4:/state:rw
+
+  node-5:
+    <<: *node
+    hostname: oclob-node-5
+    networks:
+      oclob-private:
+        aliases: [oclob-node-5]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-5:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-5:/state:rw
+
+  node-6:
+    <<: *node
+    hostname: oclob-node-6
+    networks:
+      oclob-private:
+        aliases: [oclob-node-6]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/node-6:/node:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/state/node-6:/state:rw
+
+  maker:
+    <<: *client
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/maker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+    command:
+      - oclob-edge-submit
+      - --cluster
+      - /public/cluster.json
+      - --identity
+      - /identity/client.json
+      - --handoff
+      - /handoff/maker.json
+      - --scenario
+      - maker
+
+  taker:
+    <<: *client
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/taker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+    command:
+      - oclob-edge-submit
+      - --cluster
+      - /public/cluster.json
+      - --identity
+      - /identity/client.json
+      - --handoff
+      - /handoff/taker.json
+      - --scenario
+      - taker
+
+  coordinator:
+    <<: *client
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+      - ${OCLOB_SOURCE_DIR:?set OCLOB_SOURCE_DIR}/research:/research:ro
+    command:
+      - oclob-cluster-e2e
+      - --cluster
+      - /public/cluster.json
+      - --identity
+      - /identity/client.json
+      - --maker
+      - /handoff/maker.json
+      - --taker
+      - /handoff/taker.json
+      - --contract
+      - /research/oclob_distributed_contract.json
+      - --manifest
+      - /research/manifests/oclob_distributed_e2e.json
+      - --artifact
+      - /handoff/oclob_distributed_e2e.json
+
+networks:
+  oclob-private:
+    internal: true

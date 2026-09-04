@@ -1,0 +1,21 @@
+[package]
+name = "oclob-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oclob-core.workspace = true
+oclob-edge.workspace = true
+oclob-mpc.workspace = true
+oclob-ordering.workspace = true
+ed25519-dalek.workspace = true
+openssl.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

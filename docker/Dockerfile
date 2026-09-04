@@ -49,11 +49,44 @@ CMD ["cargo", "test", "--workspace", "--release"]
 
 FROM oclob-test AS oclob-builder
 COPY . /workspace
-RUN cd /workspace/oclob_demo/react-flow \
+RUN --mount=type=cache,id=oclob-npm,target=/root/.npm \
+    --mount=type=cache,id=oclob-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=oclob-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=oclob-cargo-target,target=/var/cache/oclob/target \
+    cd /workspace/oclob_demo/react-flow \
     && npm ci --no-audit --no-fund \
     && npm run build \
     && cd /workspace \
-    && cargo build --release -p oclob-demo --bin oclob-server
+    && cargo build --release --workspace --bins \
+    && /var/cache/oclob/target/release/oclob-compile-program \
+       --root /opt/MP-SPDZ --program oclob_match_v1 \
+    && install -d -m 0755 /opt/oclob-bin \
+    && install -m 0755 \
+       /var/cache/oclob/target/release/oclob-server \
+       /var/cache/oclob/target/release/oclob-node \
+       /var/cache/oclob/target/release/oclob-lab-provision \
+       /var/cache/oclob/target/release/oclob-edge-submit \
+       /var/cache/oclob/target/release/oclob-cluster-e2e \
+       /opt/oclob-bin/
+
+# The distributed acceptance image does not need the browser bundle or the
+# monolithic demo server. Keeping this builder separate avoids relinking those
+# binaries whenever only MPC-node code or deployment policy changes.
+FROM oclob-test AS oclob-cluster-builder
+COPY . /workspace
+RUN --mount=type=cache,id=oclob-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=oclob-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=oclob-cargo-target,target=/var/cache/oclob/target \
+    cargo build --release -p oclob-node -p oclob-mpc --bins \
+    && /var/cache/oclob/target/release/oclob-compile-program \
+       --root /opt/MP-SPDZ --program oclob_match_v1 \
+    && install -d -m 0755 /opt/oclob-bin \
+    && install -m 0755 \
+       /var/cache/oclob/target/release/oclob-node \
+       /var/cache/oclob/target/release/oclob-lab-provision \
+       /var/cache/oclob/target/release/oclob-edge-submit \
+       /var/cache/oclob/target/release/oclob-cluster-e2e \
+       /opt/oclob-bin/
 
 FROM debian:bookworm-slim AS oclob-server
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
@@ -63,8 +96,8 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system oclob \
     && useradd --system --gid oclob --home-dir /var/lib/oclob --create-home oclob
-COPY --from=mp-spdz-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
-COPY --from=oclob-builder --chown=oclob:oclob /var/cache/oclob/target/release/oclob-server /usr/local/bin/oclob-server
+COPY --from=oclob-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
+COPY --from=oclob-builder --chown=oclob:oclob /opt/oclob-bin/oclob-server /usr/local/bin/oclob-server
 RUN ! ldd /opt/MP-SPDZ/malicious-shamir-party.x | grep -F 'not found' \
     && ! ldd /opt/MP-SPDZ/libSPDZ.so | grep -F 'not found'
 ENV MP_SPDZ_ROOT=/opt/MP-SPDZ
@@ -76,3 +109,24 @@ USER oclob
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=6 \
     CMD curl --fail --silent http://127.0.0.1:18800/health >/dev/null || exit 1
 ENTRYPOINT ["oclob-server", "--host", "0.0.0.0", "--port", "18800", "--state-dir", "/var/lib/oclob"]
+
+FROM debian:bookworm-slim AS oclob-cluster
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates libssl3 libgmp10 libgmpxx4ldbl libsodium23 libboost-thread1.74.0 \
+       libboost-filesystem1.74.0 libboost-iostreams1.74.0 libntl44 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 oclob \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/oclob --create-home oclob
+COPY --from=oclob-cluster-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-node /usr/local/bin/oclob-node
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-lab-provision /usr/local/bin/oclob-lab-provision
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-edge-submit /usr/local/bin/oclob-edge-submit
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-cluster-e2e /usr/local/bin/oclob-cluster-e2e
+RUN ! ldd /opt/MP-SPDZ/malicious-shamir-party.x | grep -F 'not found' \
+    && ! ldd /opt/MP-SPDZ/libSPDZ.so | grep -F 'not found' \
+    && ! ldd /usr/local/bin/oclob-node | grep -F 'not found'
+ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
+USER oclob
+WORKDIR /var/lib/oclob
+CMD ["oclob-node", "--config", "/node/config.json"]

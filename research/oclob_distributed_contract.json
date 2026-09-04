@@ -1,0 +1,53 @@
+{
+  "contract_id": "oclob-distributed-edge-mpc-v1",
+  "objective": "Execute one OCLOB maker/taker match where each participant creates seven verifiable shares at its own edge, sends one encrypted share directly to each MPC node, and a commitment-only coordinator launches one malicious-secure MP-SPDZ party per node.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "price_unit": "integer ticks",
+    "quantity_unit": "integer lots",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101"
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "mpc_processes_per_node": 1,
+    "max_corrupt_nodes": 2,
+    "operator_hosts_in_this_gate": 1,
+    "transport": "TLS 1.3 mutual authentication with pinned certificate SHA-256 and fixed-size records"
+  },
+  "privacy": {
+    "participant_edge": "The complete SecretOrder exists only inside its participant process before sharing.",
+    "mpc_node": "Each node receives and persists only the ciphertext addressed to that node and opens only its own share.",
+    "coordinator": "The coordinator receives commitments, edge admission receipts, ordering certificates and public matching outputs; it receives no complete order or set of seven shares.",
+    "opened_after_match": ["trade price", "trade quantity", "arriving remainder", "signed public receipts"],
+    "forbidden": ["clear order at coordinator", "all seven shares in one node", "plaintext fallback", "private order fields in logs or artifact"]
+  },
+  "acceptance": {
+    "required": [
+      "both participant processes receive acknowledgements from all seven nodes",
+      "every node verifies the signed manifest, encrypted envelope and Pedersen VSS share",
+      "the coordinator fixes maker then taker sequence using 5-of-7 certificates",
+      "seven distinct node processes each launch exactly one malicious-shamir party",
+      "all seven signed receipts bind the same program artifact and public output",
+      "the maker rests 60 lots without a fill",
+      "the taker fills 40 lots at the maker price 100 and has zero remainder",
+      "replaying the same round returns the byte-identical persisted receipt without a second execution"
+    ],
+    "reject_if": [
+      "any participant delivery is missing",
+      "a node accepts another node's ciphertext or party index",
+      "the canonical MP-SPDZ source or compiled artifact differs between nodes",
+      "one node reports another public result",
+      "the coordinator receives or logs a private order field",
+      "a repeated round starts a second MPC execution"
+    ]
+  },
+  "non_claims": [
+    "Seven containers on one host are not evidence of seven independent operators or a WAN deployment.",
+    "This gate ends at distributed matching and does not prove live Avalanche settlement.",
+    "One scenario is functional acceptance evidence, not a throughput or economic comparison."
+  ]
+}

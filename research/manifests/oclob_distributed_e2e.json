@@ -1,0 +1,43 @@
+{
+  "manifest_id": "oclob-distributed-edge-mpc-run-001",
+  "contract_id": "oclob-distributed-edge-mpc-v1",
+  "contract_path": "research/oclob_distributed_contract.json",
+  "contract_sha256": "31bc6251b7014f77f5c907c87dc4259a17b1325fc7f835780c0341704d73ef74",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The accepted MVP used a coordinator-side clear order and seven party processes on one host rather than participant-edge sharing into node-local custody.",
+  "causal_hypothesis": "Direct participant-to-node VSS delivery plus one isolated party executor per node will preserve the expected 40-lot match while removing the complete order from coordinator memory.",
+  "single_intended_change": "Replace coordinator-side Shamir dealing in the distributed acceptance path with signed edge manifests, seven encrypted node-specific shares, and node-signed idempotent execution receipts.",
+  "baseline": "The release gate matches and settles correctly, but its MpcRunner receives the complete private order before generating party files.",
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "mpc_node_containers": 7,
+    "matching_rounds": 2,
+    "idempotent_retries": 1
+  },
+  "primary_metric": "complete_distributed_matching_path",
+  "point_prediction": {
+    "complete_distributed_matching_path": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "matching_elapsed_ms_excluding_image_build": 15000
+  },
+  "most_likely_prediction_error": "MP-SPDZ process startup and the heavily loaded single OmenX host may push elapsed time above 15000 ms without changing the functional result.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "either participant receives fewer than seven node acknowledgements",
+    "any node accepts a share addressed to another party",
+    "the coordinator receives a complete order or all seven shares",
+    "the seven malicious-shamir parties do not agree",
+    "trade price is not 100 or quantity is not 40",
+    "the same signed round causes another execution",
+    "the artifact claims independent operators or live Avalanche settlement"
+  ],
+  "promotion_rules": [
+    "every functional rejection rule remains false",
+    "a fresh machine-readable artifact binds the topology, code digests, node receipts and result",
+    "the artifact explicitly records one operator host and no live Avalanche claim"
+  ],
+  "command": "make remote-distributed-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}

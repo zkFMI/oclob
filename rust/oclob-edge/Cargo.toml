@@ -1,0 +1,18 @@
+[package]
+name = "oclob-edge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oclob-core.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+openssl.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true

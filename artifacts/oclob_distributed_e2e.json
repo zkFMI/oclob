@@ -1,0 +1,61 @@
+{
+  "edge_admission": {
+    "all_seven_nodes_acknowledged": true,
+    "coordinator_received_plain_order": false,
+    "maker": "d1e1720a5806cf0dc3b2208e614fc82258f2e1c7f147b15fc1f6b729e9f1657a",
+    "taker": "0b58224f8361b9b90ba0ceca476defd4448f604ead4df0c421bdc6d9b0b3ddc4"
+  },
+  "elapsed_ms": 7689,
+  "market_id": "JGB10Y-JPY",
+  "matching": {
+    "all_party_outputs_agreed": true,
+    "artifact_sha256": "651e4df5237b1aa9d31272fb12f75f4f94924290c76f0a5b9397227950c2bc5f",
+    "idempotent_retry": true,
+    "maker_arriving_remainder": 60,
+    "max_corrupt_parties": 2,
+    "parties": 7,
+    "party_execution_ms": [
+      562,
+      570,
+      577,
+      590,
+      575,
+      623,
+      563
+    ],
+    "program_sha256": "cd2266eab47cc5129e32000d37c134a0319c773a420642ae9087dcb7462f11b2",
+    "protocol": "MP-SPDZ malicious-shamir",
+    "taker_remainder": 0,
+    "trade_price": 100,
+    "trade_quantity": 40
+  },
+  "non_claims": [
+    "Seven containers on one host are not seven independent operators or WAN evidence.",
+    "This acceptance stops at distributed matching; live Avalanche DeFMI settlement is a separate gate."
+  ],
+  "ordering": {
+    "maker_sequence": 1,
+    "maker_votes": 5,
+    "taker_sequence": 2,
+    "taker_votes": 5
+  },
+  "research": {
+    "contract_id": "oclob-distributed-edge-mpc-v1",
+    "contract_sha256": "31bc6251b7014f77f5c907c87dc4259a17b1325fc7f835780c0341704d73ef74",
+    "manifest_id": "oclob-distributed-edge-mpc-run-001",
+    "observed_value": 1,
+    "primary_metric": "complete_distributed_matching_path",
+    "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
+  },
+  "schema": "oclob.distributed-acceptance/v1",
+  "topology": {
+    "independent_operators_claimed": false,
+    "mpc_containers": 7,
+    "mpc_processes_per_container": 1,
+    "operator_hosts": 1,
+    "request_record_bytes": 32768,
+    "response_record_bytes": 16384,
+    "transport": "mutual TLS 1.3 with pinned certificate SHA-256"
+  },
+  "verdict": "accepted"
+}

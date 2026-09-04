@@ -22,6 +22,7 @@ use thiserror::Error;
 
 pub const MPC_PARTIES: usize = 7;
 pub const MAX_CORRUPT_NODES: usize = 2;
+pub const SHAMIR_FIELD_ORDER: &str = ED25519_ORDER;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MpcReceipt {
@@ -283,7 +284,9 @@ impl Drop for MpcRunner {
     }
 }
 
-fn matching_program() -> Result<String, MpcError> {
+/// Canonical OCLOB matching source compiled by the official MP-SPDZ compiler.
+/// Distributed parties must all pin the digest of these exact bytes.
+pub fn matching_program() -> Result<String, MpcError> {
     let lagrange = ed25519_lagrange_at_zero(MPC_PARTIES)
         .map_err(|error| MpcError::Setup(error.to_string()))?
         .join(", ");
@@ -332,7 +335,10 @@ print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
     Ok(source)
 }
 
-fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
+/// Parse and validate only the deliberately public matching result. Callers
+/// must never forward the complete MP-SPDZ stdout because it could contain
+/// diagnostics added by an unsafe local build.
+pub fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
     let value = |name: &str| -> Result<u64, String> {
         let prefix = format!("{name}=");
         output
@@ -361,7 +367,8 @@ fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
     })
 }
 
-fn public_output_digest(result: &MpcBatchResult) -> [u8; 32] {
+/// Domain-separated commitment to the public matching result.
+pub fn public_output_digest(result: &MpcBatchResult) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"OCLOB:MPC-PUBLIC-OUTPUT:v1");
     for slot in &result.slots {
