@@ -2,7 +2,7 @@
 
 ## 判定
 
-OCLOBは、研究用MVPとして一続きの経路を実装しています。法人側で注文を7分割し、各MPCノードへ直接届ける中央非開示経路も実装・受入済みです。ただし、本番移行可能と判定できる段階ではありません。特に、独立した7 MPC運営者、実Avalanche L1、永続状態の世代整合、認証・鍵管理がP0です。
+OCLOBは、研究用MVPとして一続きの経路を実装しています。法人側で注文を7分割し、各MPCノードへ直接届ける中央非開示経路と、5検証者の非EVM DeFMI Avalanche L1で予約・DvPを確定する経路を個別に受入済みです。ただし、本番移行可能と判定できる段階ではありません。特に、両経路の統合、独立したMPC/validator運営者、永続状態の世代整合、認証・鍵管理がP0です。
 
 「実装済み」はsourceがあるだけではなく、repositoryのremote release gateで動かす対象になっていることを示します。「未受入」は設計や一部codeがあっても、本番の信頼境界または実環境で確認できていないことを示します。
 
@@ -22,12 +22,12 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。法
 | DeKYX参加資格 | 実装済み | pinned `dekyx-core` adapter test | issuer governance、失効配布、HSM |
 | 法人単位の枠合算 | 実装済み | DeKYX entity単位reservation test | CCP/DeFMI外部設定、権限・更新監査 |
 | 閾値zkPI | 実装済み | 金額・価格3-of-7共同range proof | 独立prover、distributed nonce管理 |
-| DeFMI原子的DvP | 実装済み | in-process canonical state machine、readback、replay拒否 | 実Avalanche L1とfinality/reorg試験 |
+| DeFMI原子的DvP | 実装済み・1ホストL1受入済み | Maker予約を板登録前に確定、Taker予約＋DvPの単一遷移、5 validator root一致、replay拒否 | 分散MPCとの統合、独立validator、reorg試験、note方式 |
 | 暗号化耐久queue | 実装済み | AEAD、idempotency、順序、cover slot test | 鍵永続化、世代整合restart、HA |
 | 公開板 | 実装済み | price level aggregateのみ | 差分漏洩測定、公開頻度・粒度の市場実験 |
 | React Flowデモ | 実装済み・研究用受入済み | OmenX Docker runtimeをIABの1440×1000/390×844で操作。売りGTC 100口、買いIOC 40口、残60口、参加者別残高、5/7受付、7-process MPC、閾値zkPI、DeFMI高さ3を確認。横overflow 0、console error/warn 0 | 認証済み本番APIとの接続、継続的a11y試験 |
 | 分離MPCコンテナ | 実装済み・1ホスト受入済み | 一node一暗号化share、一container一party、mTLS、署名済み同一結果、再実行防止 | 別運営主体、一party一host、独立鍵生成・KMS/HSM |
-| 実Avalanche L1 | 未受入 | DeFMI state machineのみ | validator deployment、RPC、finality証拠 |
+| 実Avalanche L1 | 1ホスト受入済み | AvalancheGo 1.14.2、5 validator、非EVM Rust VM、RPC finality、readback、1 validator再起動復旧 | 独立host/運営者、WAN、reorg、HSM鍵 |
 | 本番HTTP/API | 未実装 | demo APIのみ | mTLS、認可、OpenAPI、rate limit、audit |
 | 形式安全性証明 | 未受入 | property/unit test | security definition、proof、査読 |
 | 統計的性能比較 | 未受入 | rough E2E一件 | preregistered cohort、CI、throughput/latency gate |
@@ -83,17 +83,18 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。法
 - WAN latency、packet loss、partial outage、selective abort試験。
 - party omissionとequivocationを公開情報だけで追跡するreceipt。
 
-### P0-3 実DeFMI/Avalancheへ接続する
+### P0-3 分散MPCから実DeFMI/Avalancheまで一つに接続する — L1単体は受入済み
 
-現在のDeFMIは正本状態機械、原子性、root、height、readbackを実行しますが、実validator consensusではありません。
+5検証者の実AvalancheGo上へRust DeFMI VMを載せ、Makerの事前予約、Taker予約＋DvP、root/height/readback、二重送信拒否、1検証者再起動後のroot復旧まで確認しました。EVMは使っていません。一方、この経路の照合は互換coordinatorであり、参加者側分割から7 MPCノードを通る分散経路とはまだ一つの原子的実行になっていません。
 
 必要な変更:
 
-- Rust VM/moduleをAvalanche L1へ組み込む。
-- 5 validator以上で起動する。
+- 分散MPCの署名済み結果を、そのままL1用のzkPI/DvPへ渡す。
+- MPC、DeKYX、予約、ordering、L1 receiptを同じ注文commitmentへ結合する。
+- 独立host/運営者のvalidator、WAN、timeout、reorg相当を試験する。
 - zkPI verifier、asset schema、participant moduleをgenesis/configから固定する。
-- submit、finality待ち、readback、timeout、reorg相当、二重送信を試験する。
-- consensus receiptとOCLOBの確定表示を結合する。
+- 正本を匿名commitment口座から、口座を持たないnote方式へ移す。
+- consensus receiptと認証済みOCLOB API/画面の確定表示を結合する。
 
 ### P0-4 永続状態と鍵を同じ世代で復旧する
 

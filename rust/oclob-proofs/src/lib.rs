@@ -15,6 +15,7 @@ use thiserror::Error;
 
 const STATEMENT_DOMAIN: &[u8] = b"OCLOB:TRANSITION-STATEMENT:v2";
 const FILL_DOMAIN: &[u8] = b"OCLOB:PUBLIC-FILL:v1";
+const COMMITTEE_TRUST_DOMAIN: &[u8] = b"OCLOB:TRANSITION-COMMITTEE:v1";
 const CANCELLATION_STATEMENT_DOMAIN: &[u8] = b"OCLOB:CANCELLATION-STATEMENT:v1";
 const EXPIRY_STATEMENT_DOMAIN: &[u8] = b"OCLOB:EXPIRY-STATEMENT:v1";
 
@@ -63,7 +64,7 @@ impl TransitionStatement {
             public_after_root: transition.public_after.state_root,
             mpc_program_digest: mpc.program_sha256,
             mpc_output_digest: mpc.public_output_sha256,
-            fill_digest: fills_digest(&transition.fills),
+            fill_digest: public_fills_digest(&transition.fills),
         })
     }
 
@@ -98,7 +99,7 @@ impl TransitionStatement {
             public_after_root: transition.public_after.state_root,
             mpc_program_digest: mpc.program_sha256,
             mpc_output_digest: mpc.public_output_sha256,
-            fill_digest: fills_digest(&transition.fills),
+            fill_digest: public_fills_digest(&transition.fills),
         })
     }
 
@@ -130,6 +131,16 @@ pub struct TransitionAttestation {
 pub struct TransitionProof {
     pub statement: TransitionStatement,
     pub attestations: Vec<TransitionAttestation>,
+}
+
+/// Proof that has passed the frozen 5-of-7 OCLOB committee policy. The inner
+/// proof is intentionally private and this type is not deserializable, so an
+/// application cannot accidentally treat untrusted wire bytes as settlement
+/// authority.
+#[derive(Clone, Debug)]
+pub struct VerifiedTransitionProof {
+    proof: TransitionProof,
+    committee_trust_root: Digest32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -419,12 +430,129 @@ impl TransitionProof {
         Ok(())
     }
 
+    pub fn into_verified(
+        self,
+        keys: &BTreeMap<u16, VerifyingKey>,
+        policy: CommitteePolicy,
+    ) -> Result<VerifiedTransitionProof, ProofError> {
+        self.verify(keys, policy)?;
+        Ok(VerifiedTransitionProof {
+            proof: self,
+            committee_trust_root: committee_trust_root(keys, policy)?,
+        })
+    }
+
     pub fn digest(&self) -> Digest32 {
         self.statement.digest()
     }
 }
 
-fn fills_digest(fills: &[PublicFill]) -> Digest32 {
+impl VerifiedTransitionProof {
+    pub fn digest(&self) -> Digest32 {
+        self.proof.digest()
+    }
+
+    pub fn proof(&self) -> &TransitionProof {
+        &self.proof
+    }
+
+    /// Bind a no-fill book admission to the exact certificate whose order
+    /// commitment is about to receive a canonical pre-trade reservation.
+    pub fn verify_admission_binding(
+        &self,
+        certificate: &OrderCertificate,
+        expected_committee_trust_root: Digest32,
+    ) -> Result<(), ProofError> {
+        if self.committee_trust_root != expected_committee_trust_root
+            || self.proof.statement.market_id != certificate.market_id
+            || self.proof.statement.sequence != certificate.sequence
+            || self.proof.statement.order_certificate_digest != certificate.digest()
+            || self.proof.statement.fill_digest != public_fills_digest(&[])
+        {
+            return Err(ProofError::StatementMismatch);
+        }
+        Ok(())
+    }
+
+    /// Rebind the signed statement to the exact fills about to become zkPI.
+    /// Signature verification alone is insufficient if a caller can swap a
+    /// different public fill list after matching.
+    pub fn verify_settlement_binding(
+        &self,
+        market_id: &str,
+        arriving: oclob_core::OrderCommitment,
+        fills: &[PublicFill],
+        expected_committee_trust_root: Digest32,
+    ) -> Result<(), ProofError> {
+        if self.committee_trust_root != expected_committee_trust_root
+            || self.proof.statement.market_id != market_id
+            || self.proof.statement.fill_digest != public_fills_digest(fills)
+            || fills.iter().any(|fill| fill.taker_order != arriving)
+        {
+            return Err(ProofError::StatementMismatch);
+        }
+        Ok(())
+    }
+
+    /// Bind a filled admission to both the exact ordering certificate and the
+    /// exact MPC fill list. This is stronger than checking the fill digest in
+    /// isolation because it prevents a valid transition from being attached to
+    /// another certified admission at the same venue.
+    pub fn verify_execution_binding(
+        &self,
+        certificate: &OrderCertificate,
+        arriving: oclob_core::OrderCommitment,
+        fills: &[PublicFill],
+        expected_committee_trust_root: Digest32,
+    ) -> Result<(), ProofError> {
+        self.verify_settlement_binding(
+            &certificate.market_id,
+            arriving,
+            fills,
+            expected_committee_trust_root,
+        )?;
+        if self.proof.statement.sequence != certificate.sequence
+            || self.proof.statement.order_certificate_digest != certificate.digest()
+        {
+            return Err(ProofError::StatementMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Stable trust anchor for the full configured committee, not merely the
+/// subset that signed one transition. A proof verified under attacker-chosen
+/// keys therefore cannot be re-used by a settlement engine configured for a
+/// different committee.
+pub fn committee_trust_root(
+    keys: &BTreeMap<u16, VerifyingKey>,
+    policy: CommitteePolicy,
+) -> Result<Digest32, ProofError> {
+    policy
+        .validate()
+        .map_err(|_| ProofError::InvalidCommittee)?;
+    if keys.len() != policy.nodes || keys.keys().any(|node_id| *node_id == 0) {
+        return Err(ProofError::InvalidCommittee);
+    }
+    let mut hash = Sha256::new();
+    hash.update(COMMITTEE_TRUST_DOMAIN);
+    for value in [
+        policy.nodes,
+        policy.max_corrupt_nodes,
+        policy.reconstruction_quorum,
+        policy.ordering_quorum,
+        policy.settlement_authorization_quorum,
+    ] {
+        hash.update((value as u64).to_be_bytes());
+    }
+    for (node_id, key) in keys {
+        hash.update(node_id.to_be_bytes());
+        hash.update(key.as_bytes());
+    }
+    Ok(hash.finalize().into())
+}
+
+pub fn public_fills_digest(fills: &[PublicFill]) -> Digest32 {
     let mut hash = Sha256::new();
     hash.update(FILL_DOMAIN);
     hash.update((fills.len() as u64).to_be_bytes());

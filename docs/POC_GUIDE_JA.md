@@ -143,6 +143,23 @@ make remote-distributed-e2e \
 
 結果は `artifacts/oclob_distributed_e2e.json` に保存されます。`operator_hosts` が `1`、`independent_operators_claimed` が `false` であることを必ず確認してください。このゲートだけを根拠に「7社で独立運用済み」「WAN検証済み」「Avalanche決済済み」と記載してはいけません。
 
+### 5.2 非EVM DeFMI Avalanche L1経路
+
+```bash
+make remote-avalanche-e2e \
+  REMOTE_TEST_HOST=omenx_ubuntu_zerotier
+```
+
+このゲートは、1台のLinuxホスト上で5つのAvalancheGo validatorとRust DeFMI VMを起動し、次を確認します。
+
+1. Maker最大在庫の閾値zkPI予約を確定してから注文を板へ載せる。
+2. Taker最大資金の予約、約定、未使用予約の解放、資金・証券DvPを一つの正本遷移にする。
+3. 5 validatorのstate rootが一致する。
+4. 同じ遷移の再送を拒否する。
+5. validator 1台を再起動し、確定rootまで復旧する。
+
+結果は `artifacts/oclob_avalanche_acceptance.json` に保存されます。`environment` と `non_claims` を必ず併記してください。これは独立運営者やWANの証拠ではなく、分散MPC受入ともまだ別実行です。
+
 ## 6. デモサーバの起動
 
 イメージをLinux側で作ります。
@@ -289,7 +306,7 @@ PoCでも、次を別の指標として扱います。
 - ordering key、participant key、DeFMI keyがデモ固定値またはプロセスメモリだけにある。
 - restart後にキュー、予約、板、nullifier、正本を一貫して復旧できない。
 - TLS、相互認証、認可、rate limit、監査ログ、鍵交代がない。
-- 実Avalanche L1で原子的DvP、finality、再編、二重送信、障害復旧を受入していない。
+- 1ホストの実Avalanche L1では原子的DvP、finality、二重送信拒否、1検証者再起動復旧を受入済みだが、独立validator、WAN、再編、分散MPCとの統合を受入していない。
 - 代表的負荷でlatency、throughput、失敗率を統計的に確認していない。
 - 通信量・時刻・板差分を含む漏洩評価を終えていない。
 - 第三者暗号レビュー、運用レビュー、法務・市場規則レビューが未完了である。

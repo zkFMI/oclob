@@ -10,6 +10,7 @@ oclob-core.workspace = true
 oclob-dekyx.workspace = true
 oclob-service.workspace = true
 oclob-settlement.workspace = true
+qomm-defmi.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,3 +26,7 @@ path = "src/main.rs"
 [[bin]]
 name = "oclob-server"
 path = "src/bin/oclob_server.rs"
+
+[[bin]]
+name = "oclob-avalanche-acceptance"
+path = "src/bin/oclob_avalanche_acceptance.rs"

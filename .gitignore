@@ -2,5 +2,7 @@
 /artifacts/*.json
 !/artifacts/.gitkeep
 !/artifacts/oclob_rough_e2e.json
+!/artifacts/oclob_distributed_e2e.json
+!/artifacts/oclob_avalanche_acceptance.json
 /oclob_demo/react-flow/node_modules/
 .DS_Store

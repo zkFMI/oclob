@@ -6,7 +6,7 @@ REMOTE_TEST_CARGO_JOBS ?= 16
 REMOTE_TEST_COMMAND ?= cargo test --workspace --release -j $(REMOTE_TEST_CARGO_JOBS)
 REMOTE_TEST_EXPORTS ?=
 
-.PHONY: remote-test remote-distributed-e2e release-gate
+.PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e release-gate
 
 remote-test:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
@@ -22,6 +22,8 @@ remote-test:
 	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude 'artifacts/*.json' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
 	ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" \
 	  "set -eu; \
+	   find '$$remote_dir/oclob/rust' -type f -name '*.rs' -exec touch -- {} +; \
+	   touch '$$remote_dir/oclob/Cargo.toml' '$$remote_dir/oclob/Cargo.lock'; \
 	   if [ '$(REMOTE_TEST_REUSE_IMAGE)' = 1 ]; then docker image inspect '$(REMOTE_TEST_IMAGE)' >/dev/null; \
 	   else docker build --pull --network host --file '$$remote_dir/oclob/docker/Dockerfile' --target oclob-test --tag '$(REMOTE_TEST_IMAGE)' '$$remote_dir/oclob'; fi; \
 	   docker run --rm --init --network host \
@@ -89,6 +91,31 @@ remote-distributed-e2e:
 	  \$$compose ps; \
 	  \$$compose down --remove-orphans"; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_distributed_e2e.json" artifacts/oclob_distributed_e2e.json
+
+remote-avalanche-e2e:
+	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
+	  *" $(REMOTE_TEST_HOST) "*) ;; \
+	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
+	esac
+	@set -eu; \
+	remote_dir="$$(ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-avalanche.XXXXXX')"; \
+	case "$$remote_dir" in /tmp/oclob-avalanche.*) ;; *) echo "refusing unsafe remote directory: $$remote_dir" >&2; exit 2 ;; esac; \
+	image="oclob-avalanche:$$(git rev-parse --short=12 HEAD)-$$(date +%s)"; \
+	cleanup() { ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT INT TERM; \
+	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
+	ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set -eu; \
+	  install -d -m 0777 '$$remote_dir/out'; \
+	  built=0; \
+	  for build_attempt in 1 2 3; do \
+	    if docker build --network host --file '$$remote_dir/oclob/docker/Dockerfile' --target oclob-avalanche-acceptance --tag '$$image' '$$remote_dir/oclob'; then built=1; break; fi; \
+	    [ \"\$$build_attempt\" -eq 3 ] || sleep 3; \
+	  done; \
+	  [ \"\$$built\" -eq 1 ] || { echo 'OCLOB Avalanche image build failed after three attempts' >&2; exit 1; }; \
+	  docker run --rm --init --network host --mount type=bind,src='$$remote_dir/out',dst=/out '$$image'; \
+	  test -s '$$remote_dir/out/oclob_avalanche_acceptance.json'; \
+	  cp '$$remote_dir/out/oclob_avalanche_acceptance.json' '$$remote_dir/oclob/artifacts/oclob_avalanche_acceptance.json'"; \
+	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_avalanche_acceptance.json" artifacts/oclob_avalanche_acceptance.json
 
 release-gate:
 	$(MAKE) remote-test \

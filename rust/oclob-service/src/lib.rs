@@ -13,11 +13,13 @@ use oclob_mpc::{MpcBatchReceipt, MpcRunner};
 use oclob_ordering::{OrderCertificate, OrderingCommittee};
 use oclob_proofs::{
     CancellationProof, CancellationStatement, ExpiryProof, ExpiryStatement, TransitionProof,
-    TransitionStatement,
+    TransitionStatement, VerifiedTransitionProof,
 };
 use oclob_settlement::{
-    OclobSettlementReceipt, ParticipantPortfolio, ReservationBatchReleaseReceipt,
-    ReservationReceipt, ReservationReleaseReceipt, SettlementEngine, SettlementStateSnapshot,
+    AppliedCanonicalTransition, CanonicalAdmissionBatch, CanonicalSettlementAcceptance,
+    OclobSettlementReceipt, ParticipantPortfolio, PreparedCanonicalTransition,
+    ReservationBatchReleaseReceipt, ReservationReceipt, ReservationReleaseReceipt,
+    SettlementEngine, SettlementStateSnapshot,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,114 @@ pub struct OclobExecutionReceipt {
     pub transition_proof: TransitionProof,
     pub settlement: Option<OclobSettlementReceipt>,
     pub reservation_release: Option<ReservationReleaseReceipt>,
+}
+
+/// One complete private match whose public book and local settlement state
+/// have not yet changed. The object cannot be serialized or cloned: it carries
+/// the staged private book and can be consumed only after the exact DeFMI
+/// transition reaches canonical finality.
+pub struct PreparedOclobSubmission {
+    base_book_root: Digest32,
+    base_settlement: SettlementStateSnapshot,
+    staged_book: PrivateBook,
+    staged_ordering: OrderingCommittee,
+    staged_settlement: SettlementEngine,
+    staged_eligibility: OclobEligibilityVerifier,
+    certificate: OrderCertificate,
+    reservation: ReservationReceipt,
+    eligibility: VerifiedOrderEligibility,
+    mpc: MpcBatchReceipt,
+    book_transition: BookTransition,
+    transition_proof: TransitionProof,
+    canonical: PreparedCanonicalTransition,
+}
+
+impl PreparedOclobSubmission {
+    pub fn certificate(&self) -> &OrderCertificate {
+        &self.certificate
+    }
+
+    pub fn mpc(&self) -> &MpcBatchReceipt {
+        &self.mpc
+    }
+
+    pub fn book_transition(&self) -> &BookTransition {
+        &self.book_transition
+    }
+
+    pub fn transition_proof(&self) -> &TransitionProof {
+        &self.transition_proof
+    }
+
+    pub fn canonical_transition(&self) -> &PreparedCanonicalTransition {
+        &self.canonical
+    }
+
+    /// Commit the private book, ordering log, DeKYX replay ledger and local
+    /// confidential balances only after canonical DeFMI finality for the exact
+    /// prepared zkPI/DvP batch has been verified.
+    pub fn accept(
+        self,
+        service: &mut OclobService,
+        acceptance: CanonicalSettlementAcceptance,
+    ) -> Result<OclobExecutionReceipt, ServiceError> {
+        if service.book.public_snapshot().state_root != self.base_book_root
+            || service.settlement.state_snapshot() != self.base_settlement
+        {
+            return Err(ServiceError::Settlement(
+                "prepared OCLOB execution is stale against current service state".into(),
+            ));
+        }
+        let Self {
+            staged_book,
+            staged_ordering,
+            mut staged_settlement,
+            staged_eligibility,
+            certificate,
+            reservation,
+            eligibility,
+            mpc,
+            book_transition,
+            transition_proof,
+            canonical,
+            ..
+        } = self;
+        let applied = canonical
+            .accept(&mut staged_settlement, acceptance)
+            .map_err(|error| ServiceError::Settlement(error.to_string()))?;
+        let (reservation, settlement) = match applied {
+            AppliedCanonicalTransition::Reservation(reservation) => (reservation, None),
+            AppliedCanonicalTransition::Settlement(settlement) => {
+                let mut accepted_reservation = reservation;
+                accepted_reservation.state_root = settlement.reservation_after_root;
+                accepted_reservation.canonical_receipt_digest = settlement.canonical_receipt_digest;
+                accepted_reservation.canonical_height = settlement.canonical_height;
+                accepted_reservation.zkpi_digest = settlement.arriving_reservation_zkpi_digest;
+                accepted_reservation.instruction_nullifier =
+                    settlement.arriving_reservation_instruction_nullifier;
+                accepted_reservation.proof_digest = settlement.arriving_reservation_proof_digest;
+                accepted_reservation.avalanche_transaction_id =
+                    settlement.avalanche_transaction_id.clone();
+                accepted_reservation.avalanche_block_id = settlement.avalanche_block_id.clone();
+                (accepted_reservation, Some(settlement))
+            }
+        };
+        service.book = staged_book;
+        service.ordering = staged_ordering;
+        service.settlement = staged_settlement;
+        service.eligibility = staged_eligibility;
+        Ok(OclobExecutionReceipt {
+            expired_before: None,
+            certificate,
+            reservation,
+            eligibility,
+            mpc,
+            book_transition,
+            transition_proof,
+            settlement,
+            reservation_release: None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -359,6 +469,21 @@ impl DurableOclobQueue {
     }
 }
 
+struct StagedSubmission {
+    settlement_order: SecretOrder,
+    staged_book: PrivateBook,
+    staged_ordering: OrderingCommittee,
+    staged_settlement: SettlementEngine,
+    staged_eligibility: OclobEligibilityVerifier,
+    certificate: OrderCertificate,
+    reservation: ReservationReceipt,
+    eligibility: VerifiedOrderEligibility,
+    mpc: MpcBatchReceipt,
+    book_transition: BookTransition,
+    transition_proof: TransitionProof,
+    verified_transition: VerifiedTransitionProof,
+}
+
 pub struct OclobService {
     market_id: String,
     book: PrivateBook,
@@ -406,6 +531,20 @@ impl OclobService {
         self.settlement.state_snapshot()
     }
 
+    /// Re-verify a wire-safe transition receipt against this service's frozen
+    /// ordering committee before another component can use it as settlement
+    /// authority. `VerifiedTransitionProof` cannot be deserialized, so this is
+    /// the only hand-off from a public receipt into the canonical settlement
+    /// path.
+    pub fn verify_transition_for_settlement(
+        &self,
+        proof: TransitionProof,
+    ) -> Result<VerifiedTransitionProof, ServiceError> {
+        proof
+            .into_verified(&self.ordering.verifying_keys(), self.ordering.policy())
+            .map_err(|error| ServiceError::Proof(error.to_string()))
+    }
+
     /// Corporate-module-only portfolio view. A public operator endpoint must
     /// never enumerate this method for arbitrary participant handles.
     pub fn participant_portfolio(
@@ -424,6 +563,142 @@ impl OclobService {
         eligibility_evidence: AnonymousPresentation,
         now: u64,
     ) -> Result<OclobExecutionReceipt, ServiceError> {
+        let expired_before = self.expire_due(now)?;
+        let staged = self.stage_submission(order, authority, eligibility_evidence, now)?;
+        let StagedSubmission {
+            settlement_order,
+            staged_book,
+            staged_ordering,
+            mut staged_settlement,
+            staged_eligibility,
+            certificate,
+            reservation,
+            eligibility,
+            mpc,
+            book_transition,
+            transition_proof,
+            verified_transition,
+        } = staged;
+        let (settlement, reservation_release) = if book_transition.fills.is_empty() {
+            let release =
+                if settlement_order.time_in_force() == oclob_core::TimeInForce::ImmediateOrCancel {
+                    Some(
+                        staged_settlement
+                            .release_order(settlement_order.commitment().0)
+                            .map_err(|error| ServiceError::Settlement(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+            (None, release)
+        } else {
+            let settled = staged_settlement
+                .settle_batch(
+                    &book_transition.fills,
+                    &verified_transition,
+                    &settlement_order,
+                    book_transition.arriving_remaining,
+                    now,
+                )
+                .map_err(|error| ServiceError::Settlement(error.to_string()))?;
+            (Some(settled), None)
+        };
+        self.book = staged_book;
+        self.ordering = staged_ordering;
+        self.settlement = staged_settlement;
+        self.eligibility = staged_eligibility;
+        Ok(OclobExecutionReceipt {
+            expired_before,
+            certificate,
+            reservation,
+            eligibility,
+            mpc,
+            book_transition,
+            transition_proof,
+            settlement,
+            reservation_release,
+        })
+    }
+
+    /// Prepare one admission without changing any live OCLOB state. This path
+    /// is for a canonical DeFMI adapter: the caller submits
+    /// `canonical_transition()` and
+    /// consumes the returned acceptance through `PreparedOclobSubmission::accept`.
+    pub fn prepare_canonical_submit(
+        &mut self,
+        order: SecretOrder,
+        authority: OrderAuthority,
+        eligibility_evidence: AnonymousPresentation,
+        now: u64,
+    ) -> Result<PreparedOclobSubmission, ServiceError> {
+        if !self.book.expired_commitments(now).is_empty() {
+            return Err(ServiceError::Settlement(
+                "expired reservations must reach canonical finality before a new execution".into(),
+            ));
+        }
+        let base_book_root = self.book.public_snapshot().state_root;
+        let base_settlement = self.settlement.state_snapshot();
+        let staged = self.stage_submission(order, authority, eligibility_evidence, now)?;
+        if staged.book_transition.fills.is_empty()
+            && staged.settlement_order.time_in_force() == oclob_core::TimeInForce::ImmediateOrCancel
+        {
+            return Err(ServiceError::Settlement(
+                "a no-fill immediate-or-cancel order needs one atomic reserve-release transition"
+                    .into(),
+            ));
+        }
+        let canonical = if staged.book_transition.fills.is_empty() {
+            self.settlement
+                .prepare_canonical_reservation(
+                    staged.staged_settlement.clone(),
+                    staged.reservation.clone(),
+                    &staged.settlement_order,
+                    &staged.certificate,
+                    &staged.verified_transition,
+                    now,
+                )
+                .map_err(|error| ServiceError::Settlement(error.to_string()))?
+        } else {
+            self.settlement
+                .prepare_canonical_admission_batch(CanonicalAdmissionBatch {
+                    reserved_candidate: staged.staged_settlement.clone(),
+                    reservation_receipt: &staged.reservation,
+                    fills: &staged.book_transition.fills,
+                    transition: &staged.verified_transition,
+                    certificate: &staged.certificate,
+                    arriving: &staged.settlement_order,
+                    arriving_remaining: staged.book_transition.arriving_remaining,
+                    now,
+                })
+                .map_err(|error| ServiceError::Settlement(error.to_string()))?
+        };
+        Ok(PreparedOclobSubmission {
+            base_book_root,
+            base_settlement,
+            staged_book: staged.staged_book,
+            staged_ordering: staged.staged_ordering,
+            // The opaque canonical plan owns the candidate. Acceptance must
+            // begin from the live finalized base, never from the locally staged
+            // reservation that has not reached DeFMI yet.
+            staged_settlement: self.settlement.clone(),
+            staged_eligibility: staged.staged_eligibility,
+            certificate: staged.certificate,
+            reservation: staged.reservation,
+            eligibility: staged.eligibility,
+            mpc: staged.mpc,
+            book_transition: staged.book_transition,
+            transition_proof: staged.transition_proof,
+            canonical,
+        })
+    }
+
+    fn stage_submission(
+        &mut self,
+        order: SecretOrder,
+        authority: OrderAuthority,
+        eligibility_evidence: AnonymousPresentation,
+        now: u64,
+    ) -> Result<StagedSubmission, ServiceError> {
         self.check_eligibility(&order)?;
         authority
             .verify(&order, now)
@@ -431,7 +706,6 @@ impl OclobService {
         order
             .validate_market_rules(oclob_core::MarketRules::p1())
             .map_err(|error| ServiceError::Order(error.to_string()))?;
-        let expired_before = self.expire_due(now)?;
         if self.book.exceeds_fixed_match_capacity(&order, now) {
             return Err(ServiceError::Order(format!(
                 "one order may match at most {} resting orders in the fixed circuit",
@@ -506,44 +780,23 @@ impl OclobService {
         transition_proof
             .verify(&staged_ordering.verifying_keys(), staged_ordering.policy())
             .map_err(|error| ServiceError::Proof(error.to_string()))?;
-        let (settlement, reservation_release) = if book_transition.fills.is_empty() {
-            let release =
-                if settlement_order.time_in_force() == oclob_core::TimeInForce::ImmediateOrCancel {
-                    Some(
-                        staged_settlement
-                            .release_order(settlement_order.commitment().0)
-                            .map_err(|error| ServiceError::Settlement(error.to_string()))?,
-                    )
-                } else {
-                    None
-                };
-            (None, release)
-        } else {
-            let settled = staged_settlement
-                .settle_batch(
-                    &book_transition.fills,
-                    &transition_proof,
-                    &settlement_order,
-                    book_transition.arriving_remaining,
-                    now,
-                )
-                .map_err(|error| ServiceError::Settlement(error.to_string()))?;
-            (Some(settled), None)
-        };
-        self.book = staged_book;
-        self.ordering = staged_ordering;
-        self.settlement = staged_settlement;
-        self.eligibility = staged_eligibility;
-        Ok(OclobExecutionReceipt {
-            expired_before,
+        let verified_transition = transition_proof
+            .clone()
+            .into_verified(&staged_ordering.verifying_keys(), staged_ordering.policy())
+            .map_err(|error| ServiceError::Proof(error.to_string()))?;
+        Ok(StagedSubmission {
+            settlement_order,
+            staged_book,
+            staged_ordering,
+            staged_settlement,
+            staged_eligibility,
             certificate,
             reservation,
             eligibility: verified_eligibility,
             mpc,
             book_transition,
             transition_proof,
-            settlement,
-            reservation_release,
+            verified_transition,
         })
     }
 
@@ -761,5 +1014,76 @@ mod tests {
             .windows(first.request_id.len())
             .any(|window| window == first.request_id.as_bytes()));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_preparation_does_not_commit_book_or_balances() {
+        let (verifier, issuer) = deterministic_demo_environment("JGB10Y-JPY").unwrap();
+        let seller_wallet = issuer
+            .issue_wallet(11, b"prepared-seller", &mut OsRng)
+            .unwrap();
+        let buyer_wallet = issuer
+            .issue_wallet(22, b"prepared-buyer", &mut OsRng)
+            .unwrap();
+        let mut service = OclobService::new(
+            "JGB10Y-JPY",
+            std::env::var("MP_SPDZ_ROOT").unwrap_or_else(|_| "/opt/MP-SPDZ".into()),
+            verifier,
+        )
+        .unwrap();
+        let (seller, buyer) = service.demo_participant_handles();
+        let maker = SecretOrder::new_with_dekyx_nullifier(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            100,
+            TimeInForce::GoodTilCancelled,
+            2_000,
+            seller,
+            seller_wallet.subject_nullifier(),
+            [31; 32],
+            [41; 32],
+        )
+        .unwrap();
+        let maker_authority =
+            authorize_order(&maker, 2_100, &SigningKey::from_bytes(&[51; 32])).unwrap();
+        let maker_evidence = seller_wallet
+            .present(maker.commitment().0, [61; 32], 2_000, &mut OsRng)
+            .unwrap();
+        service
+            .submit(maker, maker_authority, maker_evidence, 1_000)
+            .unwrap();
+
+        let taker = SecretOrder::new_with_dekyx_nullifier(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            40,
+            TimeInForce::ImmediateOrCancel,
+            2_000,
+            buyer,
+            buyer_wallet.subject_nullifier(),
+            [32; 32],
+            [42; 32],
+        )
+        .unwrap();
+        let taker_authority =
+            authorize_order(&taker, 2_100, &SigningKey::from_bytes(&[52; 32])).unwrap();
+        let taker_evidence = buyer_wallet
+            .present(taker.commitment().0, [62; 32], 2_000, &mut OsRng)
+            .unwrap();
+        let book_before = service.public_book();
+        let settlement_before = service.settlement_state();
+        let prepared = service
+            .prepare_canonical_submit(taker, taker_authority, taker_evidence, 1_001)
+            .unwrap();
+        assert_eq!(prepared.book_transition().fills.len(), 1);
+        assert_eq!(prepared.book_transition().fills[0].price, 100);
+        assert_eq!(prepared.book_transition().fills[0].quantity, 40);
+        assert_eq!(service.public_book(), book_before);
+        assert_eq!(service.settlement_state(), settlement_before);
+        drop(prepared);
+        assert_eq!(service.public_book(), book_before);
+        assert_eq!(service.settlement_state(), settlement_before);
     }
 }

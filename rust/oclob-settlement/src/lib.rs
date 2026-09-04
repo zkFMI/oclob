@@ -2,9 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod avalanche;
+
 use curve25519_dalek::scalar::Scalar;
 use oclob_core::{Digest32, PublicFill, SecretOrder, Side, TimeInForce};
-use oclob_proofs::TransitionProof;
+use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
+use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::ledger::Ledger;
 use qomm_defmi::settlement::{
@@ -22,7 +25,7 @@ use rand::rngs::OsRng;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::finality::{
@@ -50,9 +53,21 @@ pub struct OclobSettlementReceipt {
     pub cash_after_root: Digest32,
     pub reservation_before_root: Digest32,
     pub reservation_after_root: Digest32,
+    /// Threshold zkPI evidence for the arriving order's pre-trade maximum.
+    /// On the canonical admission path this reservation and all resulting DvP
+    /// fills are one compare-and-swap; the compatibility path leaves these
+    /// fields empty.
+    pub arriving_reservation_zkpi_digest: Option<Digest32>,
+    pub arriving_reservation_instruction_nullifier: Option<Digest32>,
+    pub arriving_reservation_proof_digest: Option<Digest32>,
     pub canonical_state_root: Digest32,
     pub canonical_receipt_digest: Digest32,
     pub canonical_height: u64,
+    /// Present only when the transition was accepted by Avalanche consensus.
+    /// The legacy in-process demonstrator deliberately leaves these fields
+    /// empty and therefore cannot be mistaken for live L1 finality.
+    pub avalanche_transaction_id: Option<String>,
+    pub avalanche_block_id: Option<String>,
     pub replay_rejected: bool,
     pub solvent: bool,
 }
@@ -60,11 +75,349 @@ pub struct OclobSettlementReceipt {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OclobSettlementMemberReceipt {
     pub instruction_nullifier: Digest32,
+    pub zkpi_digest: Digest32,
     pub package_digest: Digest32,
     pub maker_order: Digest32,
     pub taker_order: Digest32,
     pub maker_reservation_remaining: u64,
     pub taker_reservation_remaining: u64,
+}
+
+/// One confidential-ledger account that must exist in canonical DeFMI state
+/// before a prepared OCLOB settlement can be submitted.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CanonicalAccountOpening {
+    pub handle: Digest32,
+    pub asset_id: Digest32,
+    pub commitment: Digest32,
+}
+
+/// One net account change for an atomic OCLOB batch. Multiple fills touching
+/// the same participant are collapsed into one compare-and-swap leg.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CanonicalAccountDelta {
+    pub handle: Digest32,
+    pub asset_id: Digest32,
+    pub before_commitment: Digest32,
+    pub after_commitment: Digest32,
+}
+
+/// Consensus evidence returned by the canonical settlement adapter.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CanonicalSettlementAcceptance {
+    transaction_id: String,
+    block_id: String,
+    height: u64,
+    statement: Digest32,
+    before_state_root: Digest32,
+    after_state_root: Digest32,
+    receipt_digest: Digest32,
+    application_binding: Digest32,
+    binding_digest: Digest32,
+}
+
+impl CanonicalSettlementAcceptance {
+    pub fn transaction_id(&self) -> &str {
+        &self.transaction_id
+    }
+
+    pub fn block_id(&self) -> &str {
+        &self.block_id
+    }
+
+    pub const fn height(&self) -> u64 {
+        self.height
+    }
+
+    pub const fn statement(&self) -> Digest32 {
+        self.statement
+    }
+
+    pub const fn before_state_root(&self) -> Digest32 {
+        self.before_state_root
+    }
+
+    pub const fn after_state_root(&self) -> Digest32 {
+        self.after_state_root
+    }
+
+    pub const fn receipt_digest(&self) -> Digest32 {
+        self.receipt_digest
+    }
+
+    pub const fn application_binding(&self) -> Digest32 {
+        self.application_binding
+    }
+
+    pub const fn binding_digest(&self) -> Digest32 {
+        self.binding_digest
+    }
+}
+
+/// Opaque, locally verified state candidate. It is intentionally neither
+/// serializable nor clonable: callers may inspect only public commitments and
+/// can apply it exactly once after canonical finality is proven.
+pub struct PreparedCanonicalBatch {
+    candidate: SettlementEngine,
+    base_snapshot: SettlementStateSnapshot,
+    receipt: OclobSettlementReceipt,
+    market_id: String,
+    transition_digest: Digest32,
+    payment_instruction_digest: Digest32,
+    proof_digest: Digest32,
+    application_binding: Digest32,
+    binding_digest: Digest32,
+    account_openings: Vec<CanonicalAccountOpening>,
+    account_deltas: Vec<CanonicalAccountDelta>,
+    deadline: u64,
+}
+
+impl PreparedCanonicalBatch {
+    pub fn receipt(&self) -> &OclobSettlementReceipt {
+        &self.receipt
+    }
+
+    pub fn market_id(&self) -> &str {
+        &self.market_id
+    }
+
+    pub const fn transition_digest(&self) -> Digest32 {
+        self.transition_digest
+    }
+
+    pub const fn payment_instruction_digest(&self) -> Digest32 {
+        self.payment_instruction_digest
+    }
+
+    pub const fn proof_digest(&self) -> Digest32 {
+        self.proof_digest
+    }
+
+    pub const fn application_binding(&self) -> Digest32 {
+        self.application_binding
+    }
+
+    pub const fn binding_digest(&self) -> Digest32 {
+        self.binding_digest
+    }
+
+    pub fn account_openings(&self) -> &[CanonicalAccountOpening] {
+        &self.account_openings
+    }
+
+    pub fn account_deltas(&self) -> &[CanonicalAccountDelta] {
+        &self.account_deltas
+    }
+
+    pub const fn deadline(&self) -> u64 {
+        self.deadline
+    }
+
+    /// Apply the already-verified candidate only after the canonical adapter
+    /// proves that the exact application binding reached finality.
+    pub fn accept(
+        mut self,
+        engine: &mut SettlementEngine,
+        acceptance: CanonicalSettlementAcceptance,
+    ) -> Result<OclobSettlementReceipt, SettlementError> {
+        if engine.state_snapshot() != self.base_snapshot {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        verify_acceptance(&acceptance, self.application_binding, self.binding_digest)?;
+        self.candidate.height = acceptance.height;
+        self.receipt.canonical_state_root = acceptance.after_state_root;
+        self.receipt.canonical_receipt_digest = acceptance.receipt_digest;
+        self.receipt.canonical_height = acceptance.height;
+        self.receipt.avalanche_transaction_id = Some(acceptance.transaction_id);
+        self.receipt.avalanche_block_id = Some(acceptance.block_id);
+        *engine = self.candidate;
+        Ok(self.receipt)
+    }
+}
+
+/// A pre-trade reserve that has been proved as a threshold zkPI but has not
+/// yet changed either the local reservation ledger or the order book. The
+/// canonical DeFMI transition advances a dedicated reservation-state account,
+/// so concurrent admissions are serialized by the same compare-and-swap rule
+/// as cash and securities settlement.
+pub struct PreparedCanonicalReservation {
+    candidate: SettlementEngine,
+    base_snapshot: SettlementStateSnapshot,
+    receipt: ReservationReceipt,
+    market_id: String,
+    transition_digest: Digest32,
+    payment_instruction_digest: Digest32,
+    proof_digest: Digest32,
+    instruction_nullifier: Digest32,
+    application_binding: Digest32,
+    binding_digest: Digest32,
+    account_openings: Vec<CanonicalAccountOpening>,
+    account_deltas: Vec<CanonicalAccountDelta>,
+    deadline: u64,
+}
+
+impl PreparedCanonicalReservation {
+    fn accept(
+        mut self,
+        engine: &mut SettlementEngine,
+        acceptance: CanonicalSettlementAcceptance,
+    ) -> Result<ReservationReceipt, SettlementError> {
+        if engine.state_snapshot() != self.base_snapshot {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        verify_acceptance(&acceptance, self.application_binding, self.binding_digest)?;
+        self.candidate.height = acceptance.height;
+        self.receipt.canonical_receipt_digest = acceptance.receipt_digest;
+        self.receipt.canonical_height = acceptance.height;
+        self.receipt.avalanche_transaction_id = Some(acceptance.transaction_id);
+        self.receipt.avalanche_block_id = Some(acceptance.block_id);
+        *engine = self.candidate;
+        Ok(self.receipt)
+    }
+}
+
+/// The only two canonical state changes an admitted order may request. Keeping
+/// one opaque enum lets the service follow the same two-phase protocol for a
+/// resting reservation and for an immediately matched DvP batch.
+pub enum PreparedCanonicalTransition {
+    Reservation(PreparedCanonicalReservation),
+    Settlement(PreparedCanonicalBatch),
+}
+
+pub enum AppliedCanonicalTransition {
+    Reservation(ReservationReceipt),
+    Settlement(OclobSettlementReceipt),
+}
+
+/// Inputs already checked by the OCLOB admission pipeline and consumed while
+/// constructing one atomic taker-reservation plus DvP transition.
+pub struct CanonicalAdmissionBatch<'a> {
+    pub reserved_candidate: SettlementEngine,
+    pub reservation_receipt: &'a ReservationReceipt,
+    pub fills: &'a [PublicFill],
+    pub transition: &'a VerifiedTransitionProof,
+    pub certificate: &'a OrderCertificate,
+    pub arriving: &'a SecretOrder,
+    pub arriving_remaining: u64,
+    pub now: u64,
+}
+
+impl PreparedCanonicalTransition {
+    pub fn market_id(&self) -> &str {
+        match self {
+            Self::Reservation(value) => &value.market_id,
+            Self::Settlement(value) => &value.market_id,
+        }
+    }
+
+    pub fn transition_digest(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.transition_digest,
+            Self::Settlement(value) => value.transition_digest,
+        }
+    }
+
+    pub fn payment_instruction_digest(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.payment_instruction_digest,
+            Self::Settlement(value) => value.payment_instruction_digest,
+        }
+    }
+
+    pub fn proof_digest(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.proof_digest,
+            Self::Settlement(value) => value.proof_digest,
+        }
+    }
+
+    pub fn application_binding(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.application_binding,
+            Self::Settlement(value) => value.application_binding,
+        }
+    }
+
+    pub fn binding_digest(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.binding_digest,
+            Self::Settlement(value) => value.binding_digest,
+        }
+    }
+
+    pub fn account_openings(&self) -> &[CanonicalAccountOpening] {
+        match self {
+            Self::Reservation(value) => &value.account_openings,
+            Self::Settlement(value) => &value.account_openings,
+        }
+    }
+
+    pub fn account_deltas(&self) -> &[CanonicalAccountDelta] {
+        match self {
+            Self::Reservation(value) => &value.account_deltas,
+            Self::Settlement(value) => &value.account_deltas,
+        }
+    }
+
+    pub fn deadline(&self) -> u64 {
+        match self {
+            Self::Reservation(value) => value.deadline,
+            Self::Settlement(value) => value.deadline,
+        }
+    }
+
+    pub fn operation_id(&self) -> Digest32 {
+        digest(
+            b"OCLOB:DEFMI:CANONICAL-OPERATION:v1",
+            &self.binding_digest(),
+        )
+    }
+
+    pub fn nullifier(&self) -> Digest32 {
+        match self {
+            Self::Reservation(value) => value.instruction_nullifier,
+            Self::Settlement(value) => digest(
+                b"OCLOB:DEFMI:SETTLEMENT-NULLIFIER:v1",
+                &value.receipt.batch_digest,
+            ),
+        }
+    }
+
+    pub fn accept(
+        self,
+        engine: &mut SettlementEngine,
+        acceptance: CanonicalSettlementAcceptance,
+    ) -> Result<AppliedCanonicalTransition, SettlementError> {
+        match self {
+            Self::Reservation(value) => value
+                .accept(engine, acceptance)
+                .map(AppliedCanonicalTransition::Reservation),
+            Self::Settlement(value) => value
+                .accept(engine, acceptance)
+                .map(AppliedCanonicalTransition::Settlement),
+        }
+    }
+}
+
+fn verify_acceptance(
+    acceptance: &CanonicalSettlementAcceptance,
+    application_binding: Digest32,
+    binding_digest: Digest32,
+) -> Result<(), SettlementError> {
+    if acceptance.transaction_id.is_empty()
+        || acceptance.block_id.is_empty()
+        || acceptance.height == 0
+        || acceptance.statement == [0; 32]
+        || acceptance.receipt_digest == [0; 32]
+        || acceptance.before_state_root == acceptance.after_state_root
+        || acceptance.application_binding != application_binding
+        || acceptance.binding_digest != binding_digest
+    {
+        return Err(SettlementError::Finality(
+            "canonical settlement acceptance is incomplete".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -111,6 +464,13 @@ pub struct ReservationReceipt {
     pub state_root: Digest32,
     pub canonical_receipt_digest: Digest32,
     pub canonical_height: u64,
+    /// Set only when the reservation itself was authorized as a threshold
+    /// zkPI and accepted by a canonical Avalanche DeFMI transition.
+    pub zkpi_digest: Option<Digest32>,
+    pub instruction_nullifier: Option<Digest32>,
+    pub proof_digest: Option<Digest32>,
+    pub avalanche_transaction_id: Option<String>,
+    pub avalanche_block_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -286,7 +646,40 @@ impl ReservationBook {
             state_root: self.root(),
             canonical_receipt_digest: [0; 32],
             canonical_height: 0,
+            zkpi_digest: None,
+            instruction_nullifier: None,
+            proof_digest: None,
+            avalanche_transaction_id: None,
+            avalanche_block_id: None,
         })
+    }
+
+    fn validate_active_order(&self, order: &SecretOrder) -> Result<(), SettlementError> {
+        let record_id = self
+            .record_id_for(order.commitment().0)
+            .ok_or_else(|| SettlementError::Reservation("reservation is absent".into()))?;
+        let record = self
+            .records
+            .get(&record_id)
+            .ok_or_else(|| SettlementError::Reservation("reservation is absent".into()))?;
+        let expected_kind = match order.side() {
+            Side::Buy => ReservationKind::Cash,
+            Side::Sell => ReservationKind::Securities,
+        };
+        if record.reservation_id != order.reservation_id()
+            || record.order_commitment != order.commitment().0
+            || record.participant_handle != order.participant_handle()
+            || record.entity_nullifier != order.dekyx_nullifier()
+            || record.kind != expected_kind
+            || record.reserved != order.reservation_limit()
+            || record.remaining != order.reservation_limit()
+            || record.status != ReservationStatus::Active
+        {
+            return Err(SettlementError::Reservation(
+                "reservation candidate does not match the admitted order".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn consume_fill(&mut self, fill: &PublicFill) -> Result<ConsumedFill, SettlementError> {
@@ -459,56 +852,60 @@ struct ParticipantBalances {
     cash: (u64, Scalar),
 }
 
-#[derive(Clone)]
 pub struct SettlementEngine {
     key: Pedersen,
     registry: AssetRegistry,
-    defmi: Defmi,
     signing_shares: BTreeMap<frost::Identifier, frost::keys::KeyPackage>,
     public_key: frost::keys::PublicKeyPackage,
     participants: BTreeMap<Digest32, ParticipantBalances>,
     demo_handles: (Digest32, Digest32),
     reservations: ReservationBook,
+    spent_instructions: BTreeSet<Digest32>,
+    transition_committee_trust_root: Digest32,
     height: u64,
+}
+
+impl Clone for SettlementEngine {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            registry: AssetRegistry::new(self.key.clone(), 16),
+            signing_shares: self.signing_shares.clone(),
+            public_key: self.public_key.clone(),
+            participants: self.participants.clone(),
+            demo_handles: self.demo_handles,
+            reservations: self.reservations.clone(),
+            spent_instructions: self.spent_instructions.clone(),
+            transition_committee_trust_root: self.transition_committee_trust_root,
+            height: self.height,
+        }
+    }
 }
 
 impl SettlementEngine {
     pub fn new<R: RngCore + CryptoRng>(rng: &mut R) -> Result<Self, SettlementError> {
+        let committee = OrderingCommittee::deterministic_for_demo()
+            .map_err(|error| SettlementError::Proof(error.to_string()))?;
+        Self::new_with_transition_committee(rng, &committee.verifying_keys(), committee.policy())
+    }
+
+    pub fn new_with_transition_committee<R: RngCore + CryptoRng>(
+        rng: &mut R,
+        keys: &BTreeMap<u16, ed25519_dalek::VerifyingKey>,
+        policy: CommitteePolicy,
+    ) -> Result<Self, SettlementError> {
+        let transition_committee_trust_root = committee_trust_root(keys, policy)
+            .map_err(|error| SettlementError::Proof(error.to_string()))?;
         let key = Pedersen::new(b"qomm:defmi:v1");
         let registry = AssetRegistry::new(key.clone(), 16);
         let (signing_shares, public_key) =
             distributed_key_generation(7, 3, rng).map_err(SettlementError::Cryptography)?;
-        let bounds = Bounds {
-            amount_bits: RANGE_BITS,
-            price_bits: RANGE_BITS,
-            max_horizon: 3_600,
-        };
-        let venue = Venue::new(key.clone(), &bounds, public_key.clone()).require_threshold_ranges();
         let first = Identity::from_seed([11; 32]).handle(VENUE_DOMAIN);
         let second = Identity::from_seed([22; 32]).handle(VENUE_DOMAIN);
         let first_securities = (10_000_u64, Scalar::random(&mut *rng));
         let first_cash = (100_000_000_u64, Scalar::random(&mut *rng));
         let second_securities = (10_000_u64, Scalar::random(&mut *rng));
         let second_cash = (100_000_000_u64, Scalar::random(&mut *rng));
-        let mut securities = Ledger::new(key.clone(), RANGE_BITS);
-        let mut cash = Ledger::new(key.clone(), RANGE_BITS);
-        let asset_key = key.with_value_generator(registry.tags[ASSET_INDEX as usize]);
-        securities.open(
-            &account_of(&first.point, SECURITIES_RAIL),
-            asset_key.commit_u64(first_securities.0, &first_securities.1),
-        );
-        securities.open(
-            &account_of(&second.point, SECURITIES_RAIL),
-            asset_key.commit_u64(second_securities.0, &second_securities.1),
-        );
-        cash.open(
-            &account_of(&first.point, CASH_RAIL),
-            key.commit_u64(first_cash.0, &first_cash.1),
-        );
-        cash.open(
-            &account_of(&second.point, CASH_RAIL),
-            key.commit_u64(second_cash.0, &second_cash.1),
-        );
         let first_handle = *first.point.compress().as_bytes();
         let second_handle = *second.point.compress().as_bytes();
         let participants = BTreeMap::from([
@@ -530,7 +927,6 @@ impl SettlementEngine {
             ),
         ]);
         Ok(Self {
-            defmi: Defmi::new(key.clone(), securities, cash, venue),
             key,
             registry,
             signing_shares,
@@ -538,6 +934,8 @@ impl SettlementEngine {
             participants,
             demo_handles: (first_handle, second_handle),
             reservations: ReservationBook::default(),
+            spent_instructions: BTreeSet::new(),
+            transition_committee_trust_root,
             height: 0,
         })
     }
@@ -667,9 +1065,10 @@ impl SettlementEngine {
     }
 
     pub fn state_snapshot(&self) -> SettlementStateSnapshot {
+        let (securities, cash) = self.ledgers();
         SettlementStateSnapshot {
-            securities_root: self.defmi.securities.snapshot(),
-            cash_root: self.defmi.cash.snapshot(),
+            securities_root: securities.snapshot(),
+            cash_root: cash.snapshot(),
             reservation_root: self.reservations.root(),
             height: self.height,
         }
@@ -700,6 +1099,453 @@ impl SettlementEngine {
         })
     }
 
+    /// Public commitment-only account bootstrap for canonical DeFMI. No
+    /// balance opening, participant identity, price, quantity or blinding is
+    /// returned.
+    pub fn canonical_account_openings(
+        &self,
+        market_id: &str,
+    ) -> Result<Vec<CanonicalAccountOpening>, SettlementError> {
+        if market_id.is_empty() || market_id.len() > 64 {
+            return Err(SettlementError::Reservation(
+                "canonical market identifier is invalid".into(),
+            ));
+        }
+        let (securities, cash) = self.ledgers();
+        let securities_asset = canonical_securities_asset_id(market_id);
+        let cash_asset = canonical_cash_asset_id();
+        let mut accounts = Vec::with_capacity(self.participants.len() * 2 + 1);
+        for balances in self.participants.values() {
+            for (rail, asset_id, ledger) in [
+                (SECURITIES_RAIL, securities_asset, &securities),
+                (CASH_RAIL, cash_asset, &cash),
+            ] {
+                let raw_handle = account_of(&balances.handle.point, rail);
+                let handle: Digest32 = raw_handle.try_into().map_err(|_| {
+                    SettlementError::Finality("canonical account handle is not 32 bytes".into())
+                })?;
+                let commitment = ledger
+                    .balance(&handle)
+                    .ok_or(SettlementError::CanonicalDivergence)?
+                    .compress()
+                    .to_bytes();
+                accounts.push(CanonicalAccountOpening {
+                    handle,
+                    asset_id,
+                    commitment,
+                });
+            }
+        }
+        accounts.push(CanonicalAccountOpening {
+            handle: canonical_reservation_state_handle(market_id),
+            asset_id: canonical_reservation_state_asset_id(market_id),
+            commitment: self.reservations.root(),
+        });
+        accounts.sort_by_key(|account| account.handle);
+        if accounts
+            .windows(2)
+            .any(|pair| pair[0].handle == pair[1].handle)
+        {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        Ok(accounts)
+    }
+
+    fn ledgers(&self) -> (Ledger, Ledger) {
+        ledgers_from_participants(&self.key, &self.registry, &self.participants)
+    }
+
+    /// Turn a staged no-fill order reservation into an exact canonical DeFMI
+    /// compare-and-swap. The threshold zkPI authorizes the hidden maximum,
+    /// while the only L1-visible state change is the reservation-ledger root.
+    /// Neither the live engine nor the public book is mutated here.
+    pub fn prepare_canonical_reservation(
+        &self,
+        candidate: SettlementEngine,
+        mut receipt: ReservationReceipt,
+        order: &SecretOrder,
+        certificate: &OrderCertificate,
+        transition: &VerifiedTransitionProof,
+        now: u64,
+    ) -> Result<PreparedCanonicalTransition, SettlementError> {
+        transition
+            .verify_admission_binding(certificate, self.transition_committee_trust_root)
+            .map_err(|error| SettlementError::Proof(error.to_string()))?;
+        candidate.reservations.validate_active_order(order)?;
+        let base_snapshot = self.state_snapshot();
+        let candidate_snapshot = candidate.state_snapshot();
+        if candidate_snapshot.height != base_snapshot.height.saturating_add(1)
+            || receipt.order_commitment != order.commitment().0
+            || receipt.reservation_id != order.reservation_id()
+            || receipt.reserved != order.reservation_limit()
+            || receipt.state_root != candidate_snapshot.reservation_root
+            || candidate_snapshot.securities_root != base_snapshot.securities_root
+            || candidate_snapshot.cash_root != base_snapshot.cash_root
+        {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        let account_openings = self.canonical_account_openings(order.market_id())?;
+        let after_accounts = candidate.canonical_account_openings(order.market_id())?;
+        let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
+        if account_deltas.len() != 1
+            || account_deltas[0].handle != canonical_reservation_state_handle(order.market_id())
+            || account_deltas[0].asset_id != canonical_reservation_state_asset_id(order.market_id())
+            || account_deltas[0].before_commitment != base_snapshot.reservation_root
+            || account_deltas[0].after_commitment != candidate_snapshot.reservation_root
+        {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        let transition_digest = transition.digest();
+        let (payment_instruction_digest, instruction_nullifier, range_proof_digest) =
+            self.build_reservation_zkpi(order, transition_digest, now)?;
+        let proof_digest = digest(
+            b"OCLOB:DEFMI:RESERVATION-PROOF:v1",
+            &[
+                transition_digest.as_slice(),
+                transition
+                    .proof()
+                    .statement
+                    .eligibility_proof_digest
+                    .as_slice(),
+                range_proof_digest.as_slice(),
+            ]
+            .concat(),
+        );
+        let application_binding = oclob_manifest_v1()
+            .digest()
+            .map_err(|error| SettlementError::Finality(error.to_string()))?;
+        let deadline = order.expires_at();
+        let binding_digest = canonical_binding_digest(
+            application_binding,
+            receipt.order_commitment,
+            transition_digest,
+            payment_instruction_digest,
+            proof_digest,
+            base_snapshot.reservation_root,
+            candidate_snapshot.reservation_root,
+            &account_deltas,
+        );
+        receipt.zkpi_digest = Some(payment_instruction_digest);
+        receipt.instruction_nullifier = Some(instruction_nullifier);
+        receipt.proof_digest = Some(proof_digest);
+        Ok(PreparedCanonicalTransition::Reservation(
+            PreparedCanonicalReservation {
+                candidate,
+                base_snapshot,
+                receipt,
+                market_id: order.market_id().to_owned(),
+                transition_digest,
+                payment_instruction_digest,
+                proof_digest,
+                instruction_nullifier,
+                application_binding,
+                binding_digest,
+                account_openings,
+                account_deltas,
+                deadline,
+            },
+        ))
+    }
+
+    fn build_reservation_zkpi(
+        &self,
+        order: &SecretOrder,
+        transition_digest: Digest32,
+        now: u64,
+    ) -> Result<(Digest32, Digest32, Digest32), SettlementError> {
+        if order.expires_at() < now || order.expires_at() > now.saturating_add(3_600) {
+            return Err(SettlementError::Reservation(
+                "canonical reservation expiry is outside the one-hour zkPI horizon".into(),
+            ));
+        }
+        let participant = self
+            .participants
+            .get(&order.participant_handle())
+            .ok_or_else(|| SettlementError::Reservation("participant account is absent".into()))?;
+        let mut rng = OsRng;
+        let amount_blinding = Scalar::random(&mut rng);
+        let price_blinding = Scalar::random(&mut rng);
+        let amount = deal_bits(
+            &self.key,
+            order.reservation_limit(),
+            &amount_blinding,
+            RANGE_BITS,
+            &PROOF_PARTIES,
+            PROOF_THRESHOLD,
+            &mut rng,
+        )
+        .map_err(SettlementError::Proof)?;
+        let price = deal_bits(
+            &self.key,
+            1,
+            &price_blinding,
+            RANGE_BITS,
+            &PROOF_PARTIES,
+            PROOF_THRESHOLD,
+            &mut rng,
+        )
+        .map_err(SettlementError::Proof)?;
+        let amount_range = prove_range(&self.key, &amount, AMOUNT_RANGE_CONTEXT, &mut rng)?;
+        let price_range = prove_range(&self.key, &price, PRICE_RANGE_CONTEXT, &mut rng)?;
+        let asset_index = match order.side() {
+            Side::Buy => 0,
+            Side::Sell => ASSET_INDEX,
+        };
+        let asset_commitment = self
+            .key
+            .commit(&Scalar::from(asset_index as u64), &Scalar::random(&mut rng));
+        let escrow_scalar = Scalar::from_bytes_mod_order(digest(
+            b"OCLOB:DEFMI:RESERVATION-HANDLE:v1",
+            &order.reservation_id(),
+        ));
+        let escrow_handle = self.key.g * escrow_scalar;
+        let nonce = digest(
+            b"OCLOB:ZKPI:RESERVATION-NONCE:v1",
+            &[
+                order.commitment().0.as_slice(),
+                transition_digest.as_slice(),
+            ]
+            .concat(),
+        );
+        let bounds = Bounds {
+            amount_bits: RANGE_BITS,
+            price_bits: RANGE_BITS,
+            max_horizon: 3_600,
+        };
+        let partial = PartialInstruction::from_threshold_ranges(
+            &self.key,
+            &bounds,
+            amount.commitment,
+            price.commitment,
+            asset_commitment,
+            amount_range,
+            price_range,
+            participant.handle.point,
+            escrow_handle,
+            order.expires_at(),
+            nonce,
+            transition_digest,
+        )
+        .map_err(SettlementError::Cryptography)?;
+        let signature = sign_threshold(
+            &self.signing_shares,
+            &self.public_key,
+            &partial.digest(),
+            &mut rng,
+        )?;
+        let instruction = partial.sealed(signature);
+        Venue::new(self.key.clone(), &bounds, self.public_key.clone())
+            .require_threshold_ranges()
+            .verify(&instruction, now)
+            .map_err(SettlementError::Cryptography)?;
+        let wire = qomm_zkpi::wire::encode(&instruction);
+        let payment_instruction_digest = Sha256::digest(&wire).into();
+        let range_proof_digest = digest(b"OCLOB:ZKPI:RESERVATION-RANGES:v1", &wire);
+        Ok((
+            payment_instruction_digest,
+            instruction.nullifier(),
+            range_proof_digest,
+        ))
+    }
+
+    /// Verify a complete zkPI/DvP batch against an isolated clone and return a
+    /// one-use candidate for Avalanche submission. The live engine remains
+    /// unchanged if proof construction, RPC submission or consensus fails.
+    pub fn prepare_canonical_batch(
+        &self,
+        fills: &[PublicFill],
+        transition: &VerifiedTransitionProof,
+        arriving: &SecretOrder,
+        arriving_remaining: u64,
+        now: u64,
+    ) -> Result<PreparedCanonicalBatch, SettlementError> {
+        let base_snapshot = self.state_snapshot();
+        let account_openings = self.canonical_account_openings(arriving.market_id())?;
+        let mut candidate = self.clone();
+        let receipt =
+            candidate.settle_batch(fills, transition, arriving, arriving_remaining, now)?;
+        let after_accounts = candidate.canonical_account_openings(arriving.market_id())?;
+        let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
+        if account_deltas.is_empty() {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        let transition_digest = transition.digest();
+        let application_binding = oclob_manifest_v1()
+            .digest()
+            .map_err(|error| SettlementError::Finality(error.to_string()))?;
+        let payment_instruction_digest =
+            digest_member_field(b"OCLOB:ZKPI-BATCH:v1", &receipt.members, |member| {
+                member.zkpi_digest
+            });
+        let proof_digest =
+            digest_member_field(b"OCLOB:DVP-PROOF-BATCH:v1", &receipt.members, |member| {
+                member.package_digest
+            });
+        let deadline = now
+            .checked_add(600)
+            .ok_or_else(|| SettlementError::Finality("settlement deadline overflowed".into()))?;
+        let binding_digest = canonical_binding_digest(
+            application_binding,
+            receipt.batch_digest,
+            transition_digest,
+            payment_instruction_digest,
+            proof_digest,
+            receipt.reservation_before_root,
+            receipt.reservation_after_root,
+            &account_deltas,
+        );
+        Ok(PreparedCanonicalBatch {
+            candidate,
+            base_snapshot,
+            receipt,
+            market_id: arriving.market_id().to_owned(),
+            transition_digest,
+            payment_instruction_digest,
+            proof_digest,
+            application_binding,
+            binding_digest,
+            account_openings,
+            account_deltas,
+            deadline,
+        })
+    }
+
+    /// Prepare one filled order as a single canonical transition beginning at
+    /// the currently finalized DeFMI state. The caller supplies the isolated
+    /// candidate produced while validating the order; its new reservation is
+    /// verified here, then consumed together with all DvP fills. Consequently
+    /// neither a taker reserve nor a book mutation exists unless the complete
+    /// transition reaches Avalanche finality.
+    pub fn prepare_canonical_admission_batch(
+        &self,
+        admission: CanonicalAdmissionBatch<'_>,
+    ) -> Result<PreparedCanonicalTransition, SettlementError> {
+        let CanonicalAdmissionBatch {
+            reserved_candidate,
+            reservation_receipt,
+            fills,
+            transition,
+            certificate,
+            arriving,
+            arriving_remaining,
+            now,
+        } = admission;
+        transition
+            .verify_execution_binding(
+                certificate,
+                arriving.commitment(),
+                fills,
+                self.transition_committee_trust_root,
+            )
+            .map_err(|error| SettlementError::Proof(error.to_string()))?;
+        reserved_candidate
+            .reservations
+            .validate_active_order(arriving)?;
+
+        let base_snapshot = self.state_snapshot();
+        let reserved_snapshot = reserved_candidate.state_snapshot();
+        if reserved_snapshot.height != base_snapshot.height.saturating_add(1)
+            || reserved_snapshot.securities_root != base_snapshot.securities_root
+            || reserved_snapshot.cash_root != base_snapshot.cash_root
+            || reservation_receipt.order_commitment != arriving.commitment().0
+            || reservation_receipt.reservation_id != arriving.reservation_id()
+            || reservation_receipt.reserved != arriving.reservation_limit()
+            || reservation_receipt.state_root != reserved_snapshot.reservation_root
+            || reserved_candidate.spent_instructions != self.spent_instructions
+        {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+
+        let account_openings = self.canonical_account_openings(arriving.market_id())?;
+        let reserved_accounts =
+            reserved_candidate.canonical_account_openings(arriving.market_id())?;
+        let reservation_delta = canonical_account_deltas(&account_openings, &reserved_accounts)?;
+        if reservation_delta.len() != 1
+            || reservation_delta[0].handle
+                != canonical_reservation_state_handle(arriving.market_id())
+            || reservation_delta[0].asset_id
+                != canonical_reservation_state_asset_id(arriving.market_id())
+        {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+
+        let transition_digest = transition.digest();
+        let (reservation_zkpi_digest, reservation_nullifier, reservation_range_digest) =
+            self.build_reservation_zkpi(arriving, transition_digest, now)?;
+        let reservation_proof_digest = digest(
+            b"OCLOB:DEFMI:ADMISSION-RESERVATION-PROOF:v1",
+            &[
+                transition_digest.as_slice(),
+                certificate.digest().as_slice(),
+                transition
+                    .proof()
+                    .statement
+                    .eligibility_proof_digest
+                    .as_slice(),
+                reservation_range_digest.as_slice(),
+            ]
+            .concat(),
+        );
+
+        let mut prepared = reserved_candidate.prepare_canonical_batch(
+            fills,
+            transition,
+            arriving,
+            arriving_remaining,
+            now,
+        )?;
+        let after_accounts = prepared
+            .candidate
+            .canonical_account_openings(arriving.market_id())?;
+        let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
+        if !account_deltas.iter().any(|delta| {
+            delta.handle == canonical_reservation_state_handle(arriving.market_id())
+                && delta.asset_id == canonical_reservation_state_asset_id(arriving.market_id())
+                && delta.before_commitment == base_snapshot.reservation_root
+                && delta.after_commitment == prepared.receipt.reservation_after_root
+        }) {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+
+        let dvp_payment_digest = prepared.payment_instruction_digest;
+        let dvp_proof_digest = prepared.proof_digest;
+        prepared.base_snapshot = base_snapshot;
+        prepared.account_openings = account_openings;
+        prepared.account_deltas = account_deltas;
+        prepared.receipt.reservation_before_root = base_snapshot.reservation_root;
+        prepared.receipt.arriving_reservation_zkpi_digest = Some(reservation_zkpi_digest);
+        prepared.receipt.arriving_reservation_instruction_nullifier = Some(reservation_nullifier);
+        prepared.receipt.arriving_reservation_proof_digest = Some(reservation_proof_digest);
+        prepared.payment_instruction_digest = digest(
+            b"OCLOB:ZKPI-ADMISSION-AND-DVP:v1",
+            &[
+                reservation_zkpi_digest.as_slice(),
+                dvp_payment_digest.as_slice(),
+            ]
+            .concat(),
+        );
+        prepared.proof_digest = digest(
+            b"OCLOB:ADMISSION-AND-DVP-PROOF:v1",
+            &[
+                reservation_proof_digest.as_slice(),
+                dvp_proof_digest.as_slice(),
+            ]
+            .concat(),
+        );
+        prepared.deadline = prepared.deadline.min(arriving.expires_at());
+        prepared.binding_digest = canonical_binding_digest(
+            prepared.application_binding,
+            prepared.receipt.batch_digest,
+            prepared.transition_digest,
+            prepared.payment_instruction_digest,
+            prepared.proof_digest,
+            prepared.receipt.reservation_before_root,
+            prepared.receipt.reservation_after_root,
+            &prepared.account_deltas,
+        );
+        Ok(PreparedCanonicalTransition::Settlement(prepared))
+    }
+
     /// Settle every fill produced by one arriving order as one atomic DeFMI
     /// transition.  Packages are constructed against an isolated state clone,
     /// then the generic DeFMI batch verifier replays the whole bundle into a
@@ -708,7 +1554,7 @@ impl SettlementEngine {
     pub fn settle_batch(
         &mut self,
         fills: &[PublicFill],
-        transition: &TransitionProof,
+        transition: &VerifiedTransitionProof,
         arriving: &SecretOrder,
         arriving_remaining: u64,
         now: u64,
@@ -728,13 +1574,23 @@ impl SettlementEngine {
                 "atomic batch contains a fill from another arriving order".into(),
             ));
         }
+        transition
+            .verify_settlement_binding(
+                arriving.market_id(),
+                arriving.commitment(),
+                fills,
+                self.transition_committee_trust_root,
+            )
+            .map_err(|error| SettlementError::Proof(error.to_string()))?;
         let mut rng = OsRng;
         let reservation_before_root = self.reservations.root();
         let mut staged_reservations = self.reservations.clone();
-        let mut builder_defmi = self.defmi.clone();
         let mut staged_participants = self.participants.clone();
-        let mut packages = Vec::with_capacity(fills.len());
+        let mut staged_spent = self.spent_instructions.clone();
         let mut members = Vec::with_capacity(fills.len());
+        let (initial_securities, initial_cash) = self.ledgers();
+        let securities_before = initial_securities.snapshot();
+        let cash_before = initial_cash.snapshot();
         let bounds = Bounds {
             amount_bits: RANGE_BITS,
             price_bits: RANGE_BITS,
@@ -816,6 +1672,7 @@ impl SettlementEngine {
                 &mut rng,
             )?;
             let instruction = partial.sealed(signature);
+            let zkpi_digest: Digest32 = Sha256::digest(instruction.digest()).into();
             if !instruction.ranges.is_threshold() {
                 return Err(SettlementError::Proof(
                     "zkPI was not assembled from threshold range proofs".into(),
@@ -829,11 +1686,13 @@ impl SettlementEngine {
                 .registry
                 .blind(ASSET_INDEX, false, &mut rng)
                 .map_err(SettlementError::Cryptography)?;
+            let (current_securities, current_cash) =
+                ledgers_from_participants(&self.key, &self.registry, &staged_participants);
             let (package, carry) = build_package(
                 &self.key,
                 instruction,
-                &builder_defmi.securities,
-                &builder_defmi.cash,
+                &current_securities,
+                &current_cash,
                 fill.quantity,
                 fill.price,
                 &Holdings {
@@ -852,7 +1711,14 @@ impl SettlementEngine {
             .map_err(SettlementError::Cryptography)?;
             let package_digest = package.digest();
             let instruction_nullifier = package.instruction.nullifier();
-            let build_receipt = builder_defmi.settle(&package, now, &mut rng);
+            if !staged_spent.insert(instruction_nullifier) {
+                return Err(SettlementError::ReplayAccepted);
+            }
+            let venue = Venue::new(self.key.clone(), &bounds, self.public_key.clone())
+                .require_threshold_ranges();
+            let mut verifier =
+                Defmi::new(self.key.clone(), current_securities, current_cash, venue);
+            let build_receipt = verifier.settle(&package, now, &mut rng);
             build_receipt
                 .status
                 .map_err(SettlementError::Cryptography)?;
@@ -861,28 +1727,44 @@ impl SettlementEngine {
                 .checked_mul(fill.quantity)
                 .ok_or_else(|| SettlementError::Reservation("cash fill overflowed".into()))?;
             let mut seller_after = seller;
-            seller_after.securities = (carry.securities_balance, carry.securities_blinding);
+            // `carry.securities_blinding` opens the remainder under the
+            // one-use blinded generator A + gamma*H. Canonical accounts remain
+            // under the registered asset generator A, so convert the opening
+            // without changing the public commitment.
+            seller_after.securities = (
+                carry.securities_balance,
+                carry.securities_blinding + gamma * Scalar::from(carry.securities_balance),
+            );
             seller_after.cash = (
                 checked_credit(seller.cash.0, cash_value)?,
-                seller.cash.1 + carry.cash_payee_delta,
+                seller.cash.1 + carry.cash_amount_blinding,
             );
             let mut buyer_after = buyer;
             buyer_after.cash = (carry.cash_balance, carry.cash_blinding);
             buyer_after.securities = (
                 checked_credit(buyer.securities.0, fill.quantity)?,
-                buyer.securities.1 + carry.securities_payee_delta,
+                buyer.securities.1
+                    + carry.securities_amount_blinding
+                    + gamma * Scalar::from(fill.quantity),
             );
             staged_participants.insert(consumed.seller_handle, seller_after);
             staged_participants.insert(consumed.buyer_handle, buyer_after);
+            let (expected_securities, expected_cash) =
+                ledgers_from_participants(&self.key, &self.registry, &staged_participants);
+            if build_receipt.securities_after != expected_securities.snapshot()
+                || build_receipt.cash_after != expected_cash.snapshot()
+            {
+                return Err(SettlementError::CanonicalDivergence);
+            }
             members.push(OclobSettlementMemberReceipt {
                 instruction_nullifier,
+                zkpi_digest,
                 package_digest,
                 maker_order: fill.maker_order.0,
                 taker_order: fill.taker_order.0,
                 maker_reservation_remaining: consumed.maker_remaining,
                 taker_reservation_remaining: consumed.taker_remaining,
             });
-            packages.push(package);
         }
         let taker_reservation_remaining =
             staged_reservations.reconcile_arriving(arriving, arriving_remaining)?;
@@ -898,38 +1780,21 @@ impl SettlementEngine {
         }
         let reservation_after_root = staged_reservations.root();
 
-        let mut committed_defmi = self.defmi.clone();
-        let receipt = committed_defmi.settle_batch(&packages, now, &mut rng);
-        receipt.status.map_err(SettlementError::Cryptography)?;
-        if receipt.securities_after != builder_defmi.securities.snapshot()
-            || receipt.cash_after != builder_defmi.cash.snapshot()
-        {
-            return Err(SettlementError::CanonicalDivergence);
+        let (final_securities, final_cash) =
+            ledgers_from_participants(&self.key, &self.registry, &staged_participants);
+        let securities_after = final_securities.snapshot();
+        let cash_after = final_cash.snapshot();
+        if !final_securities.conserved() || !final_cash.conserved() {
+            return Err(SettlementError::Insolvent);
         }
-        let replay_rejected = packages.iter().all(|package| {
-            let replay = committed_defmi.settle(package, now, &mut rng);
-            replay.status.is_err()
-                && replay.securities_before == replay.securities_after
-                && replay.cash_before == replay.cash_after
-        });
+        let replay_rejected = staged_spent.len() == self.spent_instructions.len() + fills.len();
         if !replay_rejected {
             return Err(SettlementError::ReplayAccepted);
         }
-        if !committed_defmi.solvent() {
-            return Err(SettlementError::Insolvent);
-        }
 
         let batch_digest = settlement_batch_digest(transition_digest, &members);
-        let before_root = combined_root(
-            receipt.securities_before,
-            receipt.cash_before,
-            reservation_before_root,
-        );
-        let after_root = combined_root(
-            receipt.securities_after,
-            receipt.cash_after,
-            reservation_after_root,
-        );
+        let before_root = combined_root(securities_before, cash_before, reservation_before_root);
+        let after_root = combined_root(securities_after, cash_after, reservation_after_root);
         self.height = self
             .height
             .checked_add(1)
@@ -974,9 +1839,9 @@ impl SettlementEngine {
             &readbacks,
         )
         .map_err(|error| SettlementError::Finality(error.to_string()))?;
-        self.defmi = committed_defmi;
         self.reservations = staged_reservations;
         self.participants = staged_participants;
+        self.spent_instructions = staged_spent;
         Ok(OclobSettlementReceipt {
             batch_digest,
             members,
@@ -984,19 +1849,147 @@ impl SettlementEngine {
             price_range_is_threshold: true,
             settlement_authorization_quorum: PROOF_QUORUM.len(),
             post_match_participant_signatures: 0,
-            securities_before_root: receipt.securities_before,
-            securities_after_root: receipt.securities_after,
-            cash_before_root: receipt.cash_before,
-            cash_after_root: receipt.cash_after,
+            securities_before_root: securities_before,
+            securities_after_root: securities_after,
+            cash_before_root: cash_before,
+            cash_after_root: cash_after,
             reservation_before_root,
             reservation_after_root,
+            arriving_reservation_zkpi_digest: None,
+            arriving_reservation_instruction_nullifier: None,
+            arriving_reservation_proof_digest: None,
             canonical_state_root: after_root,
             canonical_receipt_digest: finality.receipt_digest,
             canonical_height: self.height,
+            avalanche_transaction_id: None,
+            avalanche_block_id: None,
             replay_rejected,
             solvent: true,
         })
     }
+}
+
+fn ledgers_from_participants(
+    key: &Pedersen,
+    registry: &AssetRegistry,
+    participants: &BTreeMap<Digest32, ParticipantBalances>,
+) -> (Ledger, Ledger) {
+    let mut securities = Ledger::new(key.clone(), RANGE_BITS);
+    let mut cash = Ledger::new(key.clone(), RANGE_BITS);
+    let asset_key = key.with_value_generator(registry.tags[ASSET_INDEX as usize]);
+    for balances in participants.values() {
+        securities.open(
+            &account_of(&balances.handle.point, SECURITIES_RAIL),
+            asset_key.commit_u64(balances.securities.0, &balances.securities.1),
+        );
+        cash.open(
+            &account_of(&balances.handle.point, CASH_RAIL),
+            key.commit_u64(balances.cash.0, &balances.cash.1),
+        );
+    }
+    (securities, cash)
+}
+
+pub fn canonical_cash_asset_id() -> Digest32 {
+    Sha256::new()
+        .chain_update(b"OCLOB:DEFMI:ASSET:CASH:v1")
+        .finalize()
+        .into()
+}
+
+pub fn canonical_securities_asset_id(market_id: &str) -> Digest32 {
+    Sha256::new()
+        .chain_update(b"OCLOB:DEFMI:ASSET:SECURITIES:v1")
+        .chain_update((market_id.len() as u64).to_be_bytes())
+        .chain_update(market_id.as_bytes())
+        .finalize()
+        .into()
+}
+
+pub fn canonical_reservation_state_asset_id(market_id: &str) -> Digest32 {
+    Sha256::new()
+        .chain_update(b"OCLOB:DEFMI:ASSET:RESERVATION-STATE:v1")
+        .chain_update((market_id.len() as u64).to_be_bytes())
+        .chain_update(market_id.as_bytes())
+        .finalize()
+        .into()
+}
+
+pub fn canonical_reservation_state_handle(market_id: &str) -> Digest32 {
+    Sha256::new()
+        .chain_update(b"OCLOB:DEFMI:ACCOUNT:RESERVATION-STATE:v1")
+        .chain_update((market_id.len() as u64).to_be_bytes())
+        .chain_update(market_id.as_bytes())
+        .finalize()
+        .into()
+}
+
+fn canonical_account_deltas(
+    before_accounts: &[CanonicalAccountOpening],
+    after_accounts: &[CanonicalAccountOpening],
+) -> Result<Vec<CanonicalAccountDelta>, SettlementError> {
+    if before_accounts.len() != after_accounts.len() {
+        return Err(SettlementError::CanonicalDivergence);
+    }
+    let mut deltas = Vec::new();
+    for (before, after) in before_accounts.iter().zip(after_accounts) {
+        if before.handle != after.handle || before.asset_id != after.asset_id {
+            return Err(SettlementError::CanonicalDivergence);
+        }
+        if before.commitment != after.commitment {
+            deltas.push(CanonicalAccountDelta {
+                handle: before.handle,
+                asset_id: before.asset_id,
+                before_commitment: before.commitment,
+                after_commitment: after.commitment,
+            });
+        }
+    }
+    Ok(deltas)
+}
+
+fn digest_member_field(
+    domain: &[u8],
+    members: &[OclobSettlementMemberReceipt],
+    field: impl Fn(&OclobSettlementMemberReceipt) -> Digest32,
+) -> Digest32 {
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    hash.update((members.len() as u64).to_be_bytes());
+    for member in members {
+        hash.update(field(member));
+    }
+    hash.finalize().into()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn canonical_binding_digest(
+    application_binding: Digest32,
+    batch_digest: Digest32,
+    transition_digest: Digest32,
+    payment_instruction_digest: Digest32,
+    proof_digest: Digest32,
+    reservation_before_root: Digest32,
+    reservation_after_root: Digest32,
+    deltas: &[CanonicalAccountDelta],
+) -> Digest32 {
+    let mut hash = Sha256::new();
+    hash.update(b"OCLOB:DEFMI:CANONICAL-BINDING:v1");
+    hash.update(application_binding);
+    hash.update(batch_digest);
+    hash.update(transition_digest);
+    hash.update(payment_instruction_digest);
+    hash.update(proof_digest);
+    hash.update(reservation_before_root);
+    hash.update(reservation_after_root);
+    hash.update((deltas.len() as u64).to_be_bytes());
+    for delta in deltas {
+        hash.update(delta.handle);
+        hash.update(delta.asset_id);
+        hash.update(delta.before_commitment);
+        hash.update(delta.after_commitment);
+    }
+    hash.finalize().into()
 }
 
 fn prove_range<R: RngCore + CryptoRng>(
@@ -1057,6 +2050,14 @@ fn combined_root(securities: Digest32, cash: Digest32, reservations: Digest32) -
         .chain_update(reservations)
         .finalize()
         .into()
+}
+
+fn digest(domain: &[u8], body: &[u8]) -> Digest32 {
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    hash.update((body.len() as u64).to_be_bytes());
+    hash.update(body);
+    hash.finalize().into()
 }
 
 fn reservation_receipt_digest(
@@ -1158,8 +2159,12 @@ impl Default for SettlementEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use oclob_core::{OrderCommitment, PublicFill};
-    use oclob_proofs::{TransitionProof, TransitionStatement};
+    use oclob_ordering::OrderingCommittee;
+    use oclob_proofs::{
+        public_fills_digest, TransitionProof, TransitionStatement, VerifiedTransitionProof,
+    };
 
     fn buy(handle: Digest32, nonce: u8, price: u64) -> SecretOrder {
         SecretOrder::new(
@@ -1205,9 +2210,10 @@ mod tests {
         engine
     }
 
-    fn transition() -> TransitionProof {
-        TransitionProof {
-            statement: TransitionStatement {
+    fn transition(fills: &[PublicFill]) -> VerifiedTransitionProof {
+        let committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let proof = TransitionProof::attest(
+            TransitionStatement {
                 market_id: "JGB10Y-JPY".into(),
                 sequence: 3,
                 order_certificate_digest: [1; 32],
@@ -1218,10 +2224,40 @@ mod tests {
                 public_after_root: [5; 32],
                 mpc_program_digest: [6; 32],
                 mpc_output_digest: [7; 32],
-                fill_digest: [8; 32],
+                fill_digest: public_fills_digest(fills),
             },
-            attestations: Vec::new(),
-        }
+            &committee.transition_signers(),
+            committee.policy(),
+        )
+        .unwrap();
+        proof
+            .into_verified(&committee.verifying_keys(), committee.policy())
+            .unwrap()
+    }
+
+    fn rogue_transition(fills: &[PublicFill]) -> VerifiedTransitionProof {
+        let policy = CommitteePolicy::seven_node();
+        let signing_keys = (1_u16..=7)
+            .map(|node_id| {
+                (
+                    node_id,
+                    SigningKey::from_bytes(&[(node_id as u8).saturating_add(40); 32]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let signer_refs = signing_keys
+            .iter()
+            .map(|(node_id, key)| (*node_id, key))
+            .collect::<Vec<_>>();
+        let verifying_keys = signing_keys
+            .iter()
+            .map(|(node_id, key)| (*node_id, key.verifying_key()))
+            .collect::<BTreeMap<_, _>>();
+        let statement = transition(fills).proof().statement.clone();
+        TransitionProof::attest(statement, &signer_refs, policy)
+            .unwrap()
+            .into_verified(&verifying_keys, policy)
+            .unwrap()
     }
 
     #[test]
@@ -1283,7 +2319,7 @@ mod tests {
         ];
         let before = engine.state_snapshot();
         let receipt = engine
-            .settle_batch(&fills, &transition(), &arriving, 0, 1_000)
+            .settle_batch(&fills, &transition(&fills), &arriving, 0, 1_000)
             .unwrap();
         let after = engine.state_snapshot();
         assert_eq!(receipt.members.len(), 2);
@@ -1323,8 +2359,30 @@ mod tests {
         ];
         let before = engine.state_snapshot();
         assert!(engine
-            .settle_batch(&fills, &transition(), &arriving, 0, 1_000)
+            .settle_batch(&fills, &transition(&fills), &arriving, 0, 1_000)
             .is_err());
+        assert_eq!(engine.state_snapshot(), before);
+    }
+
+    #[test]
+    fn settlement_rejects_a_valid_quorum_from_an_untrusted_committee() {
+        let mut engine = engine();
+        let (seller, buyer) = engine.demo_participant_handles();
+        let resting = sell(seller, 9, 10, 100);
+        let arriving = buy(buyer, 10, 100);
+        engine.reserve_order(&resting).unwrap();
+        engine.reserve_order(&arriving).unwrap();
+        let fills = [PublicFill {
+            maker_order: resting.commitment(),
+            taker_order: arriving.commitment(),
+            price: 100,
+            quantity: 1,
+        }];
+        let before = engine.state_snapshot();
+        assert!(matches!(
+            engine.settle_batch(&fills, &rogue_transition(&fills), &arriving, 0, 1_000),
+            Err(SettlementError::Proof(_))
+        ));
         assert_eq!(engine.state_snapshot(), before);
     }
 
@@ -1348,15 +2406,16 @@ mod tests {
         .unwrap();
         engine.reserve_order(&first_sale).unwrap();
         engine.reserve_order(&second_purchase).unwrap();
+        let first_fills = [PublicFill {
+            maker_order: first_sale.commitment(),
+            taker_order: second_purchase.commitment(),
+            price: 100,
+            quantity: 10,
+        }];
         engine
             .settle_batch(
-                &[PublicFill {
-                    maker_order: first_sale.commitment(),
-                    taker_order: second_purchase.commitment(),
-                    price: 100,
-                    quantity: 10,
-                }],
-                &transition(),
+                &first_fills,
+                &transition(&first_fills),
                 &second_purchase,
                 0,
                 1_000,
@@ -1390,15 +2449,16 @@ mod tests {
         engine.reserve_order(&first_purchase).unwrap();
         engine.reserve_order(&second_sale).unwrap();
         let before_reverse = engine.state_snapshot();
+        let reverse_fills = [PublicFill {
+            maker_order: first_purchase.commitment(),
+            taker_order: second_sale.commitment(),
+            price: 101,
+            quantity: 5,
+        }];
         let reverse = engine
             .settle_batch(
-                &[PublicFill {
-                    maker_order: first_purchase.commitment(),
-                    taker_order: second_sale.commitment(),
-                    price: 101,
-                    quantity: 5,
-                }],
-                &transition(),
+                &reverse_fills,
+                &transition(&reverse_fills),
                 &second_sale,
                 0,
                 1_001,

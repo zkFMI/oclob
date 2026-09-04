@@ -1,0 +1,128 @@
+{
+  "bootstrap_root": "a52d245e2ea7643cce30fcc06e18c16643beed3906e526a4b73000c7c6d8d88e",
+  "canonical_settlement": {
+    "all_validator_roots_after_restart": [
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4"
+    ],
+    "all_validator_roots_before_restart": [
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+      "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4"
+    ],
+    "application_binding": "2c5056f9a39aa9ffaf1031b692e62c2083fbfeadc10721326f7c29381a9bed68",
+    "binding_digest": "f89edaccbb7ee95a1bb8439efc7987f74eeeaecf90de0f78b2c105644ff18bce",
+    "block_id": "48ugdXVwWCiDyHqXnmtyiuJJNBHR7f3o3PLEwkvMLUqNr1riD",
+    "height": 10,
+    "local_state_unchanged_before_acceptance": true,
+    "receipt_chain_verified": true,
+    "receipt_digest": "3a7092b9e8cfe60ef06bda8178b13d19d8e378d95c9d453e8daa33fe0b4bc01b",
+    "replay_rejected": true,
+    "state_root": "868d13bcf77027439b2eead44d6d492cf919fc241745c7cdf30e18028e1c63e4",
+    "transaction_id": "2VSM5iS7SRtHi1YmN9sp9ATwbFvCDA1tNyBrp3PpH3AUfzsKkB"
+  },
+  "chain_id": "KBMSgbHY6BRCgNvCGF5PabFW1DvACR8RZtoju9evUv44Qcirg",
+  "environment": "five local AvalancheGo validator processes on one OmenX host",
+  "evm_used": false,
+  "external_binaries": {
+    "avalanche_network_runner": {
+      "sha256": "c67d0d59b63c8486c5995da6bcaa93ff5821327b12c82bc80dc7dabbc726b93f",
+      "version": "avalanche-network-runner version 1.8.3"
+    },
+    "avalanchego": {
+      "sha256": "023da7976ba7ab9a1ded2280ba26575649066078dd89805f826592e06c035c8b",
+      "version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]"
+    }
+  },
+  "initial_roots": [
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60"
+  ],
+  "last_accepted_block_id": "48ugdXVwWCiDyHqXnmtyiuJJNBHR7f3o3PLEwkvMLUqNr1riD",
+  "matching": {
+    "maker_remainder": 60,
+    "mpc_output_agreed": true,
+    "mpc_parties": 7,
+    "mpc_protocol": "MP-SPDZ malicious-shamir",
+    "ordering_votes": 5,
+    "price": 100,
+    "quantity": 40,
+    "taker_remainder": 0,
+    "transition_attestations": 5
+  },
+  "network": {
+    "chainID": "KBMSgbHY6BRCgNvCGF5PabFW1DvACR8RZtoju9evUv44Qcirg",
+    "networkID": 1337,
+    "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
+  },
+  "non_claims": [
+    "Five validator processes on one host are not independent validator operators or WAN evidence.",
+    "This gate uses the compatibility coordinator for matching; participant-edge distributed matching is proven by a separate acceptance and is not yet one atomic run with this L1 gate.",
+    "The DeFMI approval keys are deterministic laboratory keys in one process, not production HSM custody.",
+    "Canonical DeFMI state currently uses pseudonymous commitment accounts and a commitment-only reservation root; the account-free note rail remains a separate production cutover."
+  ],
+  "private_portfolios_after": {
+    "maker": {
+      "available_cash": 100004000,
+      "available_securities": 9900,
+      "cash": 100004000,
+      "reserved_cash": 0,
+      "reserved_securities": 60,
+      "securities": 9960
+    },
+    "taker": {
+      "available_cash": 99996000,
+      "available_securities": 10040,
+      "cash": 99996000,
+      "reserved_cash": 0,
+      "reserved_securities": 0,
+      "securities": 10040
+    }
+  },
+  "restart": {
+    "elapsed_ms": 1388.4729390000002,
+    "node": "node3",
+    "root_recovered": true
+  },
+  "schema": "oclob.avalanche-acceptance/v1",
+  "timings_ms": {
+    "bootstrap": 2432.079253,
+    "maker_pretrade_reservation": 407.213967,
+    "settlement": 473.180008,
+    "whole_acceptance": 38474.275691
+  },
+  "validator_rpc_endpoints": 5,
+  "verdict": "accepted",
+  "zkpi": {
+    "authorization_quorum": 3,
+    "dvp_package_digest": "972cd57bc8cdc9e4bee11a3d988dae4886d952adf9b099f8b0201a8f1b552b4a",
+    "maker_pretrade_reservation": {
+      "block_id": "2ran1mf5GjcDknCEZCxCWwBxpQoiDonvFyDamWeKvm8dPewHre",
+      "finalized_before_book_admission": true,
+      "height": 9,
+      "instruction_nullifier": "db2ee03f4237fce95dd2d9f77090c2cde5ad8b5dc4d85fa6682dfbfc157d8680",
+      "proof_digest": "dd768d3e2d9cfbb7ded63804db958f93d4777a06f5308d255b1cf693e78ca1bd",
+      "state_root": "1caf3d14bd05c9f344593758594c5441b0774de8c772205855d88b5e057b41c0",
+      "transaction_id": "JtLW9MU4str8M3oCKmoTDzB1wGS7ZuHHrRycsf9rHGHmzuE2b",
+      "zkpi_digest": "0d9663c97c1ed4ac91325217db33a0dc1f163faa95e535324c9bb883f6e3ab58"
+    },
+    "payment_instruction_digest": "310fc53b780df80bed88bbcced81fd5bc40432096ebb12f5243255e490aa1888",
+    "post_match_participant_signatures": 0,
+    "taker_atomic_reservation": {
+      "finalized_with_dvp": true,
+      "instruction_nullifier": "d6e723923c8172022cab2f2565a3db08e4178554bb908597e09013a6eb51766e",
+      "proof_digest": "8bc33174c841e7de09fb8a8ec31bb2fcf4992cb37b8413fe263b15dfe91d626e",
+      "zkpi_digest": "fe1ec4c3303eaaad57329534a73310d9a4871161e05c500f2f29454e57eda2fb"
+    },
+    "threshold_amount_range": true,
+    "threshold_price_range": true
+  }
+}

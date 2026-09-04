@@ -84,6 +84,8 @@
 - `mpc_topology=seven_processes_on_one_host`: 7社独立運営ではなく、同一host上の7 MP-SPDZ process。
 - `defmi_topology=in_process_state_machine`: Avalanche validator consensusではなく、RustのDeFMI正本状態機械を同一process内で実行する。
 
+上記はブラウザ用デモAPIの表示境界です。`oclob-avalanche-acceptance` は別の受入binaryであり、5つの実AvalancheGo validatorへRPC送信します。デモAPIがそのL1経路へ切り替わったことを意味しません。
+
 ## 4. `POST /api/order`
 
 デモ参加者として注文を作り、署名し、DeKYX提示を生成し、暗号化queueを通してOCLOBへ送ります。
