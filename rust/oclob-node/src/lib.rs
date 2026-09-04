@@ -10,13 +10,14 @@
 pub mod edge_client;
 pub mod executor;
 pub mod network;
+pub mod proof_network;
 
 use oclob_core::{Digest32, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_edge::{
     CapabilityKeyShare, EdgeOrderManifest, NodeDecryptionKey, SealedCapabilityKeyShare,
     SealedPartyShare, MPC_PARTIES,
 };
-use oclob_mpc::public_output_digest;
+use oclob_mpc::{public_output_digest, PERSISTENCE_WIRES, PRIVATE_BOOK_WIRES, PRIVATE_ORDER_WIRES};
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderCertificate};
 use qomm_mpc::persistence::{from_montgomery, read as read_persistence};
 use serde::{Deserialize, Serialize};
@@ -475,26 +476,28 @@ impl NodeShareStore {
         }
         let arriving_share = self.open_record(arriving, market_id, now)?;
         let arriving_values = arriving_share.value_share_decimals();
-        let mut fields = Vec::with_capacity(MAX_MATCH_SLOTS * 4 + 4);
+        let arriving_private = self.original_private_fields(arriving, market_id, now)?;
+        let mut fields = Vec::with_capacity(PRIVATE_BOOK_WIRES);
         for slot in 0..MAX_MATCH_SLOTS {
             if let Some(commitment) = resting.get(slot) {
-                fields.extend(self.private_match_fields(*commitment, market_id, now)?);
+                fields.extend(self.private_order_fields(*commitment, market_id, now)?);
             } else {
-                fields.extend([
-                    "0".to_owned(),
-                    "0".to_owned(),
-                    "0".to_owned(),
-                    "0".to_owned(),
-                ]);
+                fields.extend(std::array::from_fn::<_, PRIVATE_ORDER_WIRES, _>(|_| {
+                    "0".to_owned()
+                }));
             }
         }
         fields.extend([
-            arriving_values[0].clone(),
-            arriving_values[1].clone(),
-            arriving_values[2].clone(),
+            arriving_private[1].clone(),
+            arriving_private[2].clone(),
+            arriving_private[3].clone(),
             arriving_values[5].clone(),
+            arriving_private[4].clone(),
+            arriving_private[5].clone(),
+            arriving_private[6].clone(),
+            arriving_private[7].clone(),
         ]);
-        debug_assert_eq!(fields.len(), MAX_MATCH_SLOTS * 4 + 4);
+        debug_assert_eq!(fields.len(), PRIVATE_BOOK_WIRES);
         let mut contents = fields.join(" ").into_bytes();
         contents.push(b'\n');
         let round_commitment = round_commitment(
@@ -636,7 +639,7 @@ impl NodeShareStore {
                 PrivateBookStateRef {
                     round_id: plan.round_id,
                     private_state_sha256: receipt.private_state_sha256,
-                    wire_offset: u16::try_from(slot * 4).map_err(|_| {
+                    wire_offset: u16::try_from(slot * PRIVATE_ORDER_WIRES).map_err(|_| {
                         NodeError::PrivateState("private wire offset overflowed".into())
                     })?,
                     transition_digest: finality.transition_digest,
@@ -651,9 +654,9 @@ impl NodeShareStore {
                 PrivateBookStateRef {
                     round_id: plan.round_id,
                     private_state_sha256: receipt.private_state_sha256,
-                    wire_offset: u16::try_from(MAX_MATCH_SLOTS * 4).map_err(|_| {
-                        NodeError::PrivateState("private wire offset overflowed".into())
-                    })?,
+                    wire_offset: u16::try_from(MAX_MATCH_SLOTS * PRIVATE_ORDER_WIRES).map_err(
+                        |_| NodeError::PrivateState("private wire offset overflowed".into()),
+                    )?,
                     transition_digest: finality.transition_digest,
                     canonical_receipt_digest: finality.canonical_receipt_digest,
                     canonical_height: finality.canonical_height,
@@ -762,21 +765,51 @@ impl NodeShareStore {
             .map_err(|error| NodeError::Admission(error.to_string()))
     }
 
-    fn private_match_fields(
+    fn original_private_fields(
         &self,
         commitment: OrderCommitment,
         market_id: &str,
         now: u64,
-    ) -> Result<[String; 4], NodeError> {
+    ) -> Result<[String; PRIVATE_ORDER_WIRES], NodeError> {
         let share = self.open_record(commitment, market_id, now)?;
-        let original = share.value_share_decimals();
+        let values = share.value_share_decimals();
+        let blindings = share.blinding_share_decimals();
+        let record = self
+            .state
+            .records
+            .get(&commitment.hex())
+            .ok_or(NodeError::UnknownOrder)?;
+        let (handle, reserve, reserve_blinding) = if record.manifest.settlement_proof_enabled {
+            let settlement = share.settlement_value_share_decimals();
+            let settlement_blindings = share.settlement_blinding_share_decimals();
+            (
+                settlement[0].clone(),
+                settlement[1].clone(),
+                settlement_blindings[1].clone(),
+            )
+        } else {
+            ("0".to_owned(), "0".to_owned(), "0".to_owned())
+        };
+        Ok([
+            "1".to_owned(),
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            blindings[1].clone(),
+            reserve,
+            reserve_blinding,
+            handle,
+        ])
+    }
+
+    fn private_order_fields(
+        &self,
+        commitment: OrderCommitment,
+        market_id: &str,
+        now: u64,
+    ) -> Result<[String; PRIVATE_ORDER_WIRES], NodeError> {
         let Some(head) = self.state.private_heads.get(&commitment.hex()) else {
-            return Ok([
-                "1".to_owned(),
-                original[0].clone(),
-                original[1].clone(),
-                original[2].clone(),
-            ]);
+            return self.original_private_fields(commitment, market_id, now);
         };
         let root = self
             .private_state_root
@@ -790,12 +823,12 @@ impl NodeShareStore {
             .map_err(|error| NodeError::PrivateState(error.to_string()))?;
         let start = usize::from(head.wire_offset);
         let end = start
-            .checked_add(4)
+            .checked_add(PRIVATE_ORDER_WIRES)
             .filter(|end| *end <= file.shares.len())
             .ok_or_else(|| {
                 NodeError::PrivateState("private state wire offset is invalid".into())
             })?;
-        let mut decoded = Vec::with_capacity(4);
+        let mut decoded = Vec::with_capacity(PRIVATE_ORDER_WIRES);
         for stored in &file.shares[start..end] {
             let value = if file.montgomery {
                 from_montgomery(stored, &file.prime, file.element_bytes)
@@ -838,7 +871,7 @@ impl NodeShareStore {
         }
         let file = read_persistence(&path, usize::from(self.state.party))
             .map_err(|error| NodeError::PrivateState(error.to_string()))?;
-        let expected = MAX_MATCH_SLOTS * 4 + 4;
+        let expected = PERSISTENCE_WIRES;
         if file.shares.len() != expected {
             return Err(NodeError::PrivateState(format!(
                 "private state contains {} shares; expected {expected}",
@@ -1376,7 +1409,7 @@ mod tests {
         let input_path = path.parent().unwrap().join("Input-P0-0");
         prepared.write_exclusive(&input_path).unwrap();
         let text = fs::read_to_string(&input_path).unwrap();
-        assert_eq!(text.split_whitespace().count(), MAX_MATCH_SLOTS * 4 + 4);
+        assert_eq!(text.split_whitespace().count(), PRIVATE_BOOK_WIRES);
         assert!(!text.contains("JGB10Y-JPY"));
         assert!(!text.contains(&first_manifest.commitment.hex()));
         assert!(prepared.write_exclusive(&input_path).is_err());

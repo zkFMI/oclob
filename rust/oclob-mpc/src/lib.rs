@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::net::TcpListener;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -22,6 +23,11 @@ use thiserror::Error;
 
 pub const MPC_PARTIES: usize = 7;
 pub const MAX_CORRUPT_NODES: usize = 2;
+pub const PRIVATE_ORDER_WIRES: usize = 8;
+pub const PRIVATE_BOOK_WIRES: usize = (MAX_MATCH_SLOTS + 1) * PRIVATE_ORDER_WIRES;
+pub const SETTLEMENT_PROOF_WIRES_PER_FILL: usize = 616;
+pub const PERSISTENCE_WIRES: usize =
+    PRIVATE_BOOK_WIRES + MAX_MATCH_SLOTS * SETTLEMENT_PROOF_WIRES_PER_FILL;
 pub const SHAMIR_FIELD_ORDER: &str = ED25519_ORDER;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -157,25 +163,7 @@ impl MpcRunner {
                 "a batch supports at most {MAX_MATCH_SLOTS} resting slots"
             )));
         }
-        let mut values = Vec::with_capacity(MAX_MATCH_SLOTS * 4 + 4);
-        for slot in 0..MAX_MATCH_SLOTS {
-            if let Some(resting) = input.resting.get(slot) {
-                values.extend([
-                    1,
-                    i128::from(resting.side.wire()),
-                    i128::from(resting.price),
-                    i128::from(resting.quantity),
-                ]);
-            } else {
-                values.extend([0, 0, 0, 0]);
-            }
-        }
-        values.extend([
-            i128::from(input.arriving_side.wire()),
-            i128::from(input.arriving_price),
-            i128::from(input.arriving_quantity),
-            i128::from(input.arriving_can_rest),
-        ]);
+        let values = compatibility_private_values(input)?;
         let mut sharing_rng = OsRng;
         let party_files = build_shamir_party_files_secure(
             &values,
@@ -186,6 +174,9 @@ impl MpcRunner {
         .map_err(|error| MpcError::Input(error.to_string()))?;
         let round = self.work.0.join(format!("round-{}", self.rounds));
         fs::create_dir_all(&round)?;
+        fs::create_dir(round.join("Persistence"))?;
+        symlink(self.root.join("Programs"), round.join("Programs"))?;
+        symlink(self.root.join("Player-Data"), round.join("Player-Data"))?;
         let input_prefix = round.join("Input");
         for (party, contents) in party_files.iter().enumerate() {
             fs::write(round.join(format!("Input-P{party}-0")), contents)?;
@@ -207,7 +198,10 @@ impl MpcRunner {
             let stderr = stdout.try_clone()?;
             let mut command = Command::new(&self.binary);
             command
-                .current_dir(&self.root)
+                // The canonical circuit writes owner-local Persistence. Keep
+                // this compatibility runner isolated per round so concurrent
+                // tests cannot share or overwrite proof material.
+                .current_dir(&round)
                 .arg(party.to_string())
                 .arg(&self.program)
                 .args(["-N", &MPC_PARTIES.to_string()])
@@ -308,11 +302,11 @@ def secret_input():
     );
     for slot in 0..MAX_MATCH_SLOTS {
         source.push_str(&format!(
-            "active_{slot} = secret_input()\nresting_side_{slot} = secret_input()\nresting_price_{slot} = secret_input()\nresting_quantity_{slot} = secret_input()\n"
+            "active_{slot} = secret_input()\nresting_side_{slot} = secret_input()\nresting_price_{slot} = secret_input()\nresting_quantity_{slot} = secret_input()\nresting_price_blinding_{slot} = secret_input()\nresting_reserve_{slot} = secret_input()\nresting_reserve_blinding_{slot} = secret_input()\nresting_handle_{slot} = secret_input()\n"
         ));
     }
     source.push_str(
-        "arriving_side = secret_input()\narriving_price = secret_input()\narriving_quantity = secret_input()\narriving_can_rest = secret_input()\nremaining = arriving_quantity\nprivate_book_wires = []\n",
+        "arriving_side = secret_input()\narriving_price = secret_input()\narriving_quantity = secret_input()\narriving_can_rest = secret_input()\narriving_price_blinding = secret_input()\narriving_reserve = secret_input()\narriving_reserve_blinding = secret_input()\narriving_handle = secret_input()\nremaining = arriving_quantity\narriving_reserve_remaining = arriving_reserve\narriving_reserve_blinding_remaining = arriving_reserve_blinding\nprivate_book_wires = []\nsettlement_proof_wires = []\n",
     );
     for slot in 0..MAX_MATCH_SLOTS {
         source.push_str(&format!(
@@ -323,16 +317,66 @@ matched_{slot} = active_{slot} * opposite_{slot} * price_cross_{slot} * positive
 minimum_{slot} = (resting_quantity_{slot} <= remaining).if_else(resting_quantity_{slot}, remaining)\n\
 trade_quantity_{slot} = matched_{slot} * minimum_{slot}\n\
 trade_price_{slot} = matched_{slot} * resting_price_{slot}\n\
+trade_price_blinding_{slot} = matched_{slot} * resting_price_blinding_{slot}\n\
 resting_remaining_{slot} = resting_quantity_{slot} - trade_quantity_{slot}\n\
 remaining = remaining - trade_quantity_{slot}\n\
-private_book_wires += [active_{slot}, resting_side_{slot}, resting_price_{slot}, resting_remaining_{slot}]\n\
+fill_quantity_blinding_{slot} = sint.get_random()\n\
+cash_{slot} = trade_quantity_{slot} * trade_price_{slot}\n\
+cash_blinding_{slot} = sint.get_random()\n\
+product_cross_{slot} = cash_blinding_{slot} - fill_quantity_blinding_{slot} * trade_price_{slot}\n\
+limit_difference_{slot} = matched_{slot} * arriving_side.if_else(trade_price_{slot} - arriving_price, arriving_price - trade_price_{slot})\n\
+limit_difference_blinding_{slot} = matched_{slot} * arriving_side.if_else(trade_price_blinding_{slot} - arriving_price_blinding, arriving_price_blinding - trade_price_blinding_{slot})\n\
+securities_reserve_{slot} = arriving_side.if_else(arriving_reserve_remaining, resting_reserve_{slot})\n\
+securities_reserve_blinding_{slot} = arriving_side.if_else(arriving_reserve_blinding_remaining, resting_reserve_blinding_{slot})\n\
+cash_reserve_{slot} = arriving_side.if_else(resting_reserve_{slot}, arriving_reserve_remaining)\n\
+cash_reserve_blinding_{slot} = arriving_side.if_else(resting_reserve_blinding_{slot}, arriving_reserve_blinding_remaining)\n\
+securities_remainder_{slot} = securities_reserve_{slot} - trade_quantity_{slot}\n\
+securities_remainder_blinding_{slot} = securities_reserve_blinding_{slot} - fill_quantity_blinding_{slot}\n\
+cash_remainder_{slot} = cash_reserve_{slot} - cash_{slot}\n\
+cash_remainder_blinding_{slot} = cash_reserve_blinding_{slot} - cash_blinding_{slot}\n\
+maker_delivery_{slot} = resting_side_{slot}.if_else(trade_quantity_{slot}, cash_{slot})\n\
+maker_delivery_blinding_{slot} = matched_{slot} * resting_side_{slot}.if_else(fill_quantity_blinding_{slot}, cash_blinding_{slot})\n\
+maker_pool_remainder_{slot} = resting_reserve_{slot} - maker_delivery_{slot}\n\
+maker_pool_remainder_blinding_{slot} = resting_reserve_blinding_{slot} - maker_delivery_blinding_{slot}\n\
+arriving_delivery_{slot} = arriving_side.if_else(trade_quantity_{slot}, cash_{slot})\n\
+arriving_delivery_blinding_{slot} = matched_{slot} * arriving_side.if_else(fill_quantity_blinding_{slot}, cash_blinding_{slot})\n\
+arriving_reserve_remaining = arriving_reserve_remaining - arriving_delivery_{slot}\n\
+arriving_reserve_blinding_remaining = arriving_reserve_blinding_remaining - arriving_delivery_blinding_{slot}\n\
+resting_active_next_{slot} = active_{slot} * (resting_remaining_{slot} > 0)\n\
+private_book_wires += [resting_active_next_{slot}, resting_side_{slot}, resting_price_{slot}, resting_remaining_{slot}, resting_price_blinding_{slot}, maker_pool_remainder_{slot}, maker_pool_remainder_blinding_{slot}, resting_handle_{slot}]\n\
+qty_bits_{slot} = trade_quantity_{slot}.bit_decompose(32)\n\
+price_bits_{slot} = trade_price_{slot}.bit_decompose(32)\n\
+limit_bits_{slot} = limit_difference_{slot}.bit_decompose(32)\n\
+securities_remainder_bits_{slot} = securities_remainder_{slot}.bit_decompose(32)\n\
+cash_remainder_bits_{slot} = cash_remainder_{slot}.bit_decompose(32)\n\
+maker_pool_remainder_bits_{slot} = maker_pool_remainder_{slot}.bit_decompose(32)\n\
+qty_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+price_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+limit_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+securities_remainder_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+cash_remainder_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+maker_pool_remainder_bit_blindings_{slot} = [sint.get_random() for _ in range(32)]\n\
+proof_{slot} = [sint({slot_plus_one}), trade_quantity_{slot}] + [sint(0) for _ in range(23)]\n\
+proof_{slot} += [matched_{slot} * resting_handle_{slot}, trade_price_{slot}, fill_quantity_blinding_{slot}, trade_price_blinding_{slot}]\n\
+proof_{slot} += [item for _b in range(32) for item in [qty_bits_{slot}[_b], qty_bit_blindings_{slot}[_b], qty_bit_blindings_{slot}[_b] * (1 - qty_bits_{slot}[_b])]]\n\
+proof_{slot} += [item for _b in range(32) for item in [price_bits_{slot}[_b], price_bit_blindings_{slot}[_b], price_bit_blindings_{slot}[_b] * (1 - price_bits_{slot}[_b])]]\n\
+proof_{slot} += [limit_difference_{slot}, limit_difference_blinding_{slot}]\n\
+proof_{slot} += [item for _b in range(32) for item in [limit_bits_{slot}[_b], limit_bit_blindings_{slot}[_b], limit_bit_blindings_{slot}[_b] * (1 - limit_bits_{slot}[_b])]]\n\
+proof_{slot} += [cash_{slot}, cash_blinding_{slot}, product_cross_{slot}, securities_remainder_{slot}, securities_remainder_blinding_{slot}]\n\
+proof_{slot} += [item for _b in range(32) for item in [securities_remainder_bits_{slot}[_b], securities_remainder_bit_blindings_{slot}[_b], securities_remainder_bit_blindings_{slot}[_b] * (1 - securities_remainder_bits_{slot}[_b])]]\n\
+proof_{slot} += [cash_remainder_{slot}, cash_remainder_blinding_{slot}]\n\
+proof_{slot} += [item for _b in range(32) for item in [cash_remainder_bits_{slot}[_b], cash_remainder_bit_blindings_{slot}[_b], cash_remainder_bit_blindings_{slot}[_b] * (1 - cash_remainder_bits_{slot}[_b])]]\n\
+proof_{slot} += [maker_pool_remainder_{slot}, maker_pool_remainder_blinding_{slot}]\n\
+proof_{slot} += [item for _b in range(32) for item in [maker_pool_remainder_bits_{slot}[_b], maker_pool_remainder_bit_blindings_{slot}[_b], maker_pool_remainder_bit_blindings_{slot}[_b] * (1 - maker_pool_remainder_bits_{slot}[_b])]]\n\
+settlement_proof_wires += proof_{slot}\n\
 print_ln('OCLOB_SLOT_{slot}_MATCHED=%s', matched_{slot}.reveal())\n\
 print_ln('OCLOB_SLOT_{slot}_PRICE=%s', trade_price_{slot}.reveal())\n\
 print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
+            , slot_plus_one = slot + 1
         ));
     }
     source.push_str(
-        "published_remaining = remaining * arriving_can_rest\nprivate_book_wires += [arriving_can_rest, arriving_side, arriving_price, published_remaining]\nsint.write_to_file(private_book_wires)\nprint_ln('OCLOB_ARRIVING_REMAINING=%s', published_remaining.reveal())\n",
+        "published_remaining = remaining * arriving_can_rest\narriving_active_next = arriving_can_rest * (published_remaining > 0)\nprivate_book_wires += [arriving_active_next, arriving_side, arriving_price, published_remaining, arriving_price_blinding, arriving_reserve_remaining, arriving_reserve_blinding_remaining, arriving_handle]\nsint.write_to_file(private_book_wires + settlement_proof_wires)\nprint_ln('OCLOB_ARRIVING_REMAINING=%s', published_remaining.reveal())\n",
     );
     Ok(source)
 }
@@ -367,6 +411,59 @@ pub fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
         slots,
         arriving_remaining: value("OCLOB_ARRIVING_REMAINING")?,
     })
+}
+
+/// Populate the settlement-only inputs required by the canonical circuit when
+/// the legacy single-process runner is used by the browser demo or reference
+/// state-machine tests. Distributed execution instead receives the actual
+/// participant-generated VSS shares for all eight fields.
+fn compatibility_private_values(input: &PrivateMatchBatch) -> Result<Vec<i128>, MpcError> {
+    let reserve = |side: oclob_core::Side, price: u64, quantity: u64| {
+        let value = match side {
+            oclob_core::Side::Sell => quantity,
+            oclob_core::Side::Buy => price
+                .checked_mul(quantity)
+                .ok_or_else(|| MpcError::Input("compatibility reserve overflowed".into()))?,
+        };
+        Ok::<i128, MpcError>(i128::from(value))
+    };
+    let mut values = Vec::with_capacity((MAX_MATCH_SLOTS + 1) * PRIVATE_ORDER_WIRES);
+    for slot in 0..MAX_MATCH_SLOTS {
+        if let Some(resting) = input.resting.get(slot) {
+            values.extend([
+                1,
+                i128::from(resting.side.wire()),
+                i128::from(resting.price),
+                i128::from(resting.quantity),
+                0,
+                reserve(resting.side, resting.price, resting.quantity)?,
+                0,
+                (slot + 1) as i128,
+            ]);
+        } else {
+            values.extend([0; PRIVATE_ORDER_WIRES]);
+        }
+    }
+    values.extend([
+        i128::from(input.arriving_side.wire()),
+        i128::from(input.arriving_price),
+        i128::from(input.arriving_quantity),
+        i128::from(input.arriving_can_rest),
+        0,
+        reserve(
+            input.arriving_side,
+            input.arriving_price,
+            input.arriving_quantity,
+        )?,
+        0,
+        (MAX_MATCH_SLOTS + 1) as i128,
+    ]);
+    if values.len() != PRIVATE_BOOK_WIRES {
+        return Err(MpcError::Input(
+            "compatibility input does not match the canonical circuit width".into(),
+        ));
+    }
+    Ok(values)
 }
 
 /// Domain-separated commitment to the public matching result.
@@ -486,7 +583,32 @@ mod tests {
         assert!(!source.contains("malicious"));
         assert!(!source.contains("SLOT_0_REMAINING"));
         assert!(source.contains("published_remaining"));
-        assert!(source.contains("sint.write_to_file(private_book_wires)"));
+        assert!(source.contains("sint.write_to_file(private_book_wires + settlement_proof_wires)"));
         assert!(source.contains("resting_remaining_0"));
+        assert!(source.contains("maker_pool_remainder_0"));
+        assert!(source.contains("matched_0 * resting_handle_0"));
+        assert_eq!(PRIVATE_BOOK_WIRES, 72);
+        assert_eq!(SETTLEMENT_PROOF_WIRES_PER_FILL, 616);
+        assert_eq!(PERSISTENCE_WIRES, 5_000);
+    }
+
+    #[test]
+    fn compatibility_input_matches_eight_wire_order_schema() {
+        let input = PrivateMatchBatch {
+            resting: vec![PrivateRestingInput {
+                commitment: OrderCommitment([1; 32]),
+                side: oclob_core::Side::Sell,
+                price: 100,
+                quantity: 60,
+            }],
+            arriving_side: oclob_core::Side::Buy,
+            arriving_price: 101,
+            arriving_quantity: 40,
+            arriving_can_rest: false,
+        };
+        let values = compatibility_private_values(&input).unwrap();
+        assert_eq!(values.len(), PRIVATE_BOOK_WIRES);
+        assert_eq!(values[5], 60);
+        assert_eq!(values[MAX_MATCH_SLOTS * PRIVATE_ORDER_WIRES + 5], 4_040);
     }
 }

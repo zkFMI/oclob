@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod avalanche;
+pub mod collaborative;
 
 use curve25519_dalek::scalar::Scalar;
 use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeInForce};

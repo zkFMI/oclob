@@ -20,5 +20,6 @@ hex.workspace = true
 thiserror.workspace = true
 qomm-zkpi.workspace = true
 qomm-mpc.workspace = true
+qomm-transport.workspace = true
 
 [dev-dependencies]

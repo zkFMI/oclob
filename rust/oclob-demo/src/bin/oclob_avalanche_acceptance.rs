@@ -2,10 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
 use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
 use oclob_edge::SealedSettlementCapability;
+use oclob_mpc::{PERSISTENCE_WIRES, PRIVATE_BOOK_WIRES, SETTLEMENT_PROOF_WIRES_PER_FILL};
 use oclob_node::edge_client::{
     collect_order_certificate, collect_threshold_capability_release, execute_agreed_round,
     finalize_agreed_private_state, AgreedRoundExecution, EdgeAdmissionReceipt,
@@ -21,9 +23,17 @@ use oclob_proofs::{
 };
 use oclob_service::OclobService;
 use oclob_settlement::avalanche::AvalancheCanonicalGateway;
-use oclob_settlement::{CanonicalAdmissionBatch, SettlementEngine};
+use oclob_settlement::collaborative::{
+    collaborative_job_id, load_fill, prove_fill, setup_frost, CollaborativeFillProof,
+    CollaborativeFillRequest,
+};
+use oclob_settlement::{canonical_securities_asset_id, CanonicalAdmissionBatch, SettlementEngine};
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
 use qomm_defmi::facility::{DefmiFacility, QuorumAuthorizer};
+use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides};
+use qomm_proofs::price_limit::PriceLimitDirection;
+use qomm_transport::node_service::client_ssl_context as proof_tls_context;
+use qomm_transport::proof_client::ProofPartyTlsClient;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -433,6 +443,16 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         private_after_maker,
         public_after_maker,
     )?;
+    let collaborative_settlement = verify_collaborative_fill(
+        &cluster,
+        &coordinator_identity,
+        &maker_receipt,
+        &taker_receipt,
+        &taker_certificate,
+        &taker_plan,
+        &taker_execution,
+        now,
+    )?;
     let taker_base_snapshot = settlement.state_snapshot();
     let mut taker_candidate = settlement.clone();
     taker_candidate
@@ -593,7 +613,9 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "max_corrupt_parties": 2,
             "maker_round_receipts": maker_execution.receipts.len(),
             "taker_round_receipts": taker_execution.receipts.len(),
-            "private_state_wires_per_node": MAX_MATCH_SLOTS * 4 + 4,
+            "private_book_wires_per_node": PRIVATE_BOOK_WIRES,
+            "persistence_wires_per_node": PERSISTENCE_WIRES,
+            "proof_wires_per_fill_slot": SETTLEMENT_PROOF_WIRES_PER_FILL,
             "distinct_maker_private_state_digests": distinct_private_state_digests(&maker_execution),
             "distinct_taker_private_state_digests": distinct_private_state_digests(&taker_execution),
             "taker_parent_heads_are_party_local": taker_execution.receipts.iter().map(|receipt| receipt.private_parent_digest).collect::<BTreeSet<_>>().len() == cluster.nodes.len(),
@@ -621,6 +643,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "validator_roots_before_restart": roots_before_restart,
             "validator_roots_after_restart": roots_after_restart,
         },
+        "collaborative_settlement": collaborative_settlement,
         "restart": {
             "node": options.restart_node,
             "elapsed_ms": restart_ms,
@@ -633,12 +656,191 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         "elapsed_ms": started.elapsed().as_secs_f64() * 1_000.0,
         "non_claims": [
             "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-            "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover even though matching state is now node-local.",
+            "The collaborative zkPI and DvP proof is independently verified in this run, while the current clear-balance compatibility projection still opens one-order settlement capabilities to update its legacy in-memory reservation view.",
             "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
             "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
             "One functional scenario is not throughput, security-attack or economic-effect evidence."
         ]
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_collaborative_fill(
+    cluster: &ClusterPublicConfig,
+    coordinator_identity: &ClientIdentityConfig,
+    maker_receipt: &EdgeAdmissionReceipt,
+    taker_receipt: &EdgeAdmissionReceipt,
+    taker_certificate: &OrderCertificate,
+    taker_plan: &RoundPlan,
+    taker_execution: &AgreedRoundExecution,
+    now: u64,
+) -> RunResult<Value> {
+    if !maker_receipt.manifest.settlement_proof_enabled
+        || !taker_receipt.manifest.settlement_proof_enabled
+        || taker_execution.receipts.len() != cluster.nodes.len()
+    {
+        return Err(failure(
+            "the matched orders do not carry seven-node settlement witnesses",
+        ));
+    }
+    let tls = proof_tls_context(
+        &coordinator_identity.tls_certificate,
+        &coordinator_identity.tls_private_key,
+        &coordinator_identity.tls_ca,
+    )
+    .map_err(failure)?;
+    let mut parties = cluster
+        .nodes
+        .iter()
+        .map(|node| {
+            ProofPartyTlsClient::new(
+                node.host.clone(),
+                node.proof_port,
+                tls.clone(),
+                node.server_name.clone(),
+                Duration::from_secs(120),
+            )
+        })
+        .collect::<Vec<_>>();
+    let frost_session = tagged_digest(b"OCLOB:COLLABORATIVE-FROST:v1", MARKET.as_bytes());
+    let frost_public = setup_frost(&mut parties, frost_session).map_err(failure)?;
+    let output_digest = taker_execution.receipts[0].public_output_sha256;
+    let job_id = collaborative_job_id(taker_plan.round_id, 0, output_digest).map_err(failure)?;
+    // Every proof node independently checks this value against the owner-only
+    // sidecar written by the exact MP-SPDZ execution that produced its 616
+    // settlement wires. The later transition proof separately commits to the
+    // same public output, composing matching finality with zkPI settlement.
+    let market_proof_digest = output_digest;
+    load_fill(
+        &mut parties,
+        taker_plan.round_id,
+        0,
+        job_id,
+        market_proof_digest,
+    )
+    .map_err(failure)?;
+
+    let maker_handle = manifest_point(
+        maker_receipt.manifest.settlement_field_commitments[0][0],
+        "Maker settlement handle",
+    )?;
+    let taker_handle = manifest_point(
+        taker_receipt.manifest.settlement_field_commitments[0][0],
+        "Taker settlement handle",
+    )?;
+    let maker_reserve = manifest_point(
+        maker_receipt.manifest.settlement_field_commitments[1][0],
+        "Maker reserve",
+    )?;
+    let taker_reserve = manifest_point(
+        taker_receipt.manifest.settlement_field_commitments[1][0],
+        "Taker reserve",
+    )?;
+    let limit_commitment = manifest_point(
+        taker_receipt.manifest.field_commitments[1][0],
+        "Taker limit",
+    )?;
+    let limit_context: [u8; 32] = Sha256::new()
+        .chain_update(b"OCLOB:SIGNED-TAKER-LIMIT:v1")
+        .chain_update(taker_receipt.manifest.commitment.0)
+        .chain_update(taker_certificate.digest())
+        .chain_update(market_proof_digest)
+        .finalize()
+        .into();
+    let proof = prove_fill(
+        &mut parties,
+        frost_public,
+        CollaborativeFillRequest {
+            job_id,
+            market_proof_digest,
+            limit_direction: PriceLimitDirection::MaximumBuyPrice,
+            limit_commitment,
+            limit_context,
+            taker_handle,
+            asset_id: canonical_securities_asset_id(MARKET),
+            deadline: now.saturating_add(600),
+            now,
+        },
+    )
+    .map_err(failure)?;
+    verify_collaborative_statements(&proof, maker_handle, maker_reserve, taker_reserve)?;
+    let package = build_threshold_package_from_proofs(
+        &qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1"),
+        proof.instruction.clone(),
+        Sides::of(&proof.instruction),
+        maker_reserve,
+        taker_reserve,
+        proof.cash_commitment,
+        proof.dvp_proofs.clone(),
+        32,
+    )
+    .map_err(failure)?;
+    let instruction_digest: [u8; 32] =
+        Sha256::digest(qomm_zkpi::wire::encode(&proof.instruction)).into();
+    let frost_public_digest: [u8; 32] = Sha256::digest(
+        proof
+            .frost_public
+            .serialize()
+            .map_err(|_| failure("FROST public package could not be encoded"))?,
+    )
+    .into();
+    Ok(json!({
+        "proof_job_id": hex::encode(proof.job_id),
+        "market_proof_digest": hex::encode(market_proof_digest),
+        "zkpi_digest": hex::encode(instruction_digest),
+        "instruction_nullifier": hex::encode(proof.instruction.nullifier()),
+        "dvp_package_digest": hex::encode(package.digest()),
+        "frost_public_package_sha256": hex::encode(frost_public_digest),
+        "proof_parties": cluster.nodes.len(),
+        "signing_quorum": 3,
+        "central_order_reconstruction_for_proof": false,
+        "threshold_amount_range": proof.instruction.ranges.is_threshold(),
+        "threshold_price_range": proof.instruction.ranges.is_threshold(),
+        "limit_proof_verified": true,
+        "dvp_product_and_remainders_verified": true,
+        "recipient_scoped_openings_verified": true,
+    }))
+}
+
+fn verify_collaborative_statements(
+    proof: &CollaborativeFillProof,
+    maker_handle: RistrettoPoint,
+    maker_reserve: RistrettoPoint,
+    taker_reserve: RistrettoPoint,
+) -> RunResult<()> {
+    let key = qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1");
+    let expected_asset = key.commit(
+        &qomm_zkpi::asset_scalar(&canonical_securities_asset_id(MARKET)),
+        &proof.asset_blinding,
+    );
+    if proof.maker_handle != maker_handle
+        || proof.instruction.payee_handle != maker_handle
+        || proof.instruction.payer_handle == maker_handle
+        || proof.instruction.asset_commitment != expected_asset
+        || proof.securities_remainder + proof.instruction.amount_commitment != maker_reserve
+        || proof.cash_remainder + proof.cash_commitment != taker_reserve
+        || proof.maker_pool_remainder != proof.securities_remainder
+        || !proof.instruction.ranges.is_threshold()
+    {
+        return Err(failure(
+            "collaborative proof statements differ from the signed edge manifests",
+        ));
+    }
+    for opening in [
+        &proof.securities_delivery_opening,
+        &proof.securities_refund_opening,
+        &proof.cash_delivery_opening,
+        &proof.cash_refund_opening,
+    ] {
+        opening.validate().map_err(failure)?;
+    }
+    Ok(())
+}
+
+fn manifest_point(encoded: [u8; 32], name: &str) -> RunResult<RistrettoPoint> {
+    CompressedRistretto(encoded)
+        .decompress()
+        .ok_or_else(|| failure(format!("{name} commitment is not canonical")))
 }
 
 fn validate_integrated_research_binding(
@@ -663,13 +865,13 @@ fn validate_integrated_research_binding(
         .and_then(Value::as_str)
         .ok_or_else(|| failure("integrated research manifest has no contract digest"))?;
     let actual_sha: [u8; 32] = Sha256::digest(&contract_bytes).into();
-    if contract_id != "oclob-node-local-private-book-v1"
+    if contract_id != "oclob-collaborative-settlement-v1"
         || manifest_contract != Some(contract_id)
         || expected_sha != hex::encode(actual_sha)
         || manifest.get("stage").and_then(Value::as_str)
             != Some("RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC")
         || manifest.get("primary_metric").and_then(Value::as_str)
-            != Some("complete_private_state_carry_forward_avalanche_path")
+            != Some("collaborative_zkpi_dvp_proof_from_node_local_persistence")
     {
         return Err(failure(
             "integrated research contract and manifest are not the approved pair",
@@ -680,7 +882,7 @@ fn validate_integrated_research_binding(
         "contract_sha256": expected_sha,
         "manifest_id": manifest_id,
         "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
-        "primary_metric": "complete_private_state_carry_forward_avalanche_path",
+        "primary_metric": "collaborative_zkpi_dvp_proof_from_node_local_persistence",
         "observed_value": 1
     }))
 }

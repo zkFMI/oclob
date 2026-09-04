@@ -2,7 +2,7 @@
 
 ## 判定
 
-OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7決済鍵、7 MPCノードの秘密照合、ノードごとの秘密板の持越し、Maker予約、Taker予約とDvP、5検証者の非EVM DeFMI Avalanche L1確定までを一続きに実装し、1ホスト上で受入済みです。約定前に全注文を開ける単一の決済鍵と、次回照合のために中央で平文板を持つ必要は廃止しました。ただし、本番移行可能と判定できる段階ではありません。特に、独立したMPC/validator運営者、鍵・証明nonceを含む世代整合、本番APIの認証・運用制御、約定後も注文全文を一か所へ復元しない共同zkPI生成がP0です。
+OCLOBは、研究用MVPとして、法人側の注文分割、7 MPCノードの秘密照合、ノードごとの秘密板の持越し、秘密共有からの共同zkPI/DvP証明、Maker予約、Taker予約とDvP、5検証者の非EVM DeFMI Avalanche L1確定までを一続きに実装し、1ホスト上で受入済みです。約定前に全注文を開ける単一の決済鍵と、次回照合のために中央で平文板を持つ必要は廃止しました。共同証明の生成にも価格・数量・予約額の中央復元は不要です。ただし正本更新は、共同証明を検証しつつ従来互換の予約・残高処理を並行利用しており、後者は照合後に注文全文を開きます。本番移行には、共同証明を正本更新の唯一の入力にする切替、独立したMPC/validator運営者、鍵・証明nonceを含む世代整合、本番APIの認証・運用制御がP0です。
 
 「実装済み」はsourceがあるだけではなく、repositoryのremote release gateで動かす対象になっていることを示します。「未受入」は設計や一部codeがあっても、本番の信頼境界または実環境で確認できていないことを示します。
 
@@ -18,12 +18,12 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 | 受付順5-of-7 | 実装済み・1ホスト受入済み | 7ノード投票、証明本体、連鎖、署名前の永続化、各MPCノードでの再検証、二重投票拒否 | HSM key、epoch交代、独立node/WAN、公平到着順の定義 |
 | 法人側の注文分割と直接配送 | 実装済み・1ホスト受入済み | Pedersen検証付き3-of-7分割、ノード別暗号文、固定長mTLS通信、各ノードの署名付き保存受領証、7コンテナE2E | 別運営者WAN、鍵の個別生成・保管 |
 | 注文別の決済鍵解放 | 実装済み・1ホスト受入済み | 注文ごとの乱数鍵、署名付き3-of-7 Shamir/Feldman分割、ノード別暗号保管、MPC結果永続化後の決済専用mTLS解放、2片・事前解放・未約定IOC・誤権限・改ざんの拒否 | 独立運営者での鍵生成、HSM、約定後の共同zkPI生成 |
-| MP-SPDZ秘密照合と板持越し | 実装済み・1ホスト受入済み | 公式compilerとmalicious-shamir、1コンテナ1 party、各ノード36秘密値のPersistence、DeFMI確定後だけ親状態を更新、次回照合でMaker残量shareを再利用 | 別host 7 party、秘密板の圧縮・取消・深い板、通信量・障害評価 |
+| MP-SPDZ秘密照合と板持越し | 実装済み・1ホスト受入済み | 公式compilerとmalicious-shamir、1コンテナ1 party、各ノード72秘密値の板状態と最大8×616決済証明値を含む5000値のPersistence、DeFMI確定後だけ親状態を更新、次回照合でMaker残量shareを再利用 | 別host 7 party、秘密板の圧縮・取消・深い板、通信量・障害評価 |
 | 平文fallback禁止 | 実装済み | binary不在・party失敗時fail closed | 運用SLOとbackpressure |
 | DeKYX参加資格 | 実装済み | pinned `dekyx-core` adapter test | issuer governance、失効配布、HSM |
 | 法人単位の枠合算 | 実装済み | DeKYX entity単位reservation test | CCP/DeFMI外部設定、権限・更新監査 |
-| 閾値zkPI | 実装済み | 金額・価格3-of-7共同range proof | 独立prover、distributed nonce管理 |
-| DeFMI原子的DvP | 実装済み・統合1ホストL1受入済み | 分散MPC結果後の3-of-7鍵解放からMakerのDeKYX紐付け＋予約を確定し、TakerのDeKYX紐付け＋予約＋DvPを単一遷移で確定。5 validator root一致、replay拒否、再起動復旧 | 約定後の共同zkPI生成、独立validator、reorg試験、note方式 |
+| 共同zkPI/DvP証明 | 実装済み・1ホスト受入済み | 7ノードが各自の616秘密値だけから金額・価格範囲、数量×価格、3種の決済後残高、Maker予約残を証明。3-of-7署名、受取人別暗号化opening、署名済みMPC結果への固定を検証 | 証明を正本更新の唯一の入力へ切替、独立prover、全nonceの世代整合 |
+| DeFMI原子的DvP | 実装済み・統合1ホストL1受入済み | 分散MPCと共同証明の後、Maker予約、Taker予約＋DvPを確定。5 validator root一致、replay拒否、再起動復旧 | 互換用の注文復元を廃止、共同証明から直接予約消費・commitment残高更新、独立validator、reorg試験、note方式 |
 | 暗号化耐久queue | 実装済み | AEAD、idempotency、順序、cover slot test | 鍵永続化、世代整合restart、HA |
 | 公開板 | 実装済み | price level aggregateのみ | 差分漏洩測定、公開頻度・粒度の市場実験 |
 | React Flowデモ | 実装済み・研究用受入済み | OmenX Docker runtimeをIABの1440×1000/390×844で操作。売りGTC 100口、買いIOC 40口、残60口、参加者別残高、5/7受付、7-process MPC、閾値zkPI、DeFMI高さ3を確認。横overflow 0、console error/warn 0 | 認証済み本番APIとの接続、継続的a11y試験 |
@@ -39,10 +39,10 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 - `oclob-dekyx`: DeKYX匿名法人資格を注文用途へ結合するadapter。
 - `oclob-ordering`: 受付番号、5-of-7 certificate、連鎖、二重投票拒否。
 - `oclob-edge`: 法人端末で注文と決済鍵を分割し、各ノード向け固定長暗号文と公開manifestを作る。
-- `oclob-node`: 自ノードの暗号文保管、受付順投票、MP-SPDZ実行、秘密板shareの保存、DeFMI確定後の親状態更新、結果永続化後の署名付き鍵片解放。
-- `oclob-mpc`: MP-SPDZ回路生成、公式compile、7 party実行、公開output一致確認とノード別秘密状態の書出し。
+- `oclob-node`: 自ノードの暗号文保管、受付順投票、MP-SPDZ実行、秘密板shareの保存、DeFMI確定後の親状態更新、署名済み実行結果へ固定した共同証明寄与、結果永続化後の署名付き鍵片解放。
+- `oclob-mpc`: MP-SPDZ回路生成、公式compile、7 party実行、公開output一致確認、ノード別秘密状態と約定別決済証明shareの書出し。
 - `oclob-proofs`: 受付証明、MPC出力、板の前後root、fillを一つの遷移statementへ結合。
-- `oclob-settlement`: 法人枠、reservation、threshold zkPI、原子的multi-fill DeFMI DvP。
+- `oclob-settlement`: 法人枠、reservation、共同zkPI/DvP証明、受取人別暗号化opening、原子的multi-fill DeFMI DvP。
 - `oclob-service`: 下流失敗時にbook/ordering/settlementをcommitしない調整、暗号化queue。
 - `oclob-demo`: outcome-first E2E受領証とReact Flow HTTPデモ。
 
@@ -61,6 +61,7 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 9. 同じinstructionの再実行を拒否する。
 10. 公開板、参加法人、自社portfolio、MPC、zkPI、DeFMIを実browserで確認する。
 11. 約定前には決済権限を開けず、正しいMPC結果の永続化後だけ3ノード以上の鍵片で開ける。
+12. 各約定の共同証明が、7ノードの秘密共有と同じ署名済みMPC公開結果へ固定される。
 
 ## P0: 本番移行を止める課題
 
@@ -77,7 +78,7 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 残る変更:
 
 - React Flowデモと公開APIを分散経路へ切り替え、中央経路を研究用互換モードへ限定する。
-- 約定後も一つの決済プロセスへ注文全文を復元しない共同zkPI生成を追加する。
+- 受入済みの共同zkPI/DvP証明をDeFMI正本更新の唯一の入力にし、互換用の注文復元を削除する。
 
 ### P0-2 7 partyを独立運営する
 
@@ -95,11 +96,13 @@ OCLOBは、研究用MVPとして、法人側の注文分割、注文別の3-of-7
 
 5検証者の実AvalancheGo上へRust DeFMI VMを載せ、法人側分割、7ノードMP-SPDZ照合、DeKYX検証、Maker事前予約、Taker予約＋DvP、root/height/readback、二重送信拒否、1検証者再起動後のroot復旧までを同じ実行で確認しました。EVMは使っていません。MPCで使う売買方向・指値・数量・注文種別・期限・板残留可否の6項目は、Pedersen VSSの定数項と決済権限内の値の一致を検査します。
 
-現在、注文ごとの決済暗号鍵は3-of-7でMPCノードへ分散されます。各ノードは、その注文が約定した、またはGTCとして板へ正式掲載されるというMPC結果を自分の永続領域へ記録した後だけ、決済専用の相互TLS接続へ署名付き鍵片を返します。二片、結果前、未約定IOC、別権限、別round、別outputでは開きません。統合受入では、各注文について7件の有効な鍵片を検証し、三片以上で注文別鍵を復元しました。
+現在、各約定について7ノードが自分の616個の秘密共有だけを読み、金額・価格範囲、数量×価格、証券・資金・Maker予約の残りを共同証明します。証明専用の相互TLS口は、ノード署名付きのラウンド、約定枠、公開MPC結果、ファイル要約値、そこから一意に決まる処理番号を検査します。統合受入では、価格・数量・予約額・暗号用乱数を決済担当へ復元せず、3-of-7共同署名付きzkPI、DvP証明、受取人別openingを生成・検証しました。
+
+注文ごとの決済暗号鍵を3-of-7で解放する旧経路も互換用に残っています。現在のAvalanche正本遷移は、この旧経路が復元した注文から予約・残高の従来表現を更新します。そのため共同証明は同じ実行で検証済みでも、まだ正本更新を単独では駆動していません。
 
 必要な変更:
 
-- 約定後に一つの決済プロセスが注文別鍵と注文全文を復元する段階を、MPC内の共同zkPI生成へ移す。
+- DeFMIが共同証明済みcommitmentを直接加減し、注文別鍵や平文残高を使わずに予約消費とDvPを行うよう切り替える。
 - 独立host/運営者のvalidator、WAN、timeout、reorg相当を試験する。
 - zkPI verifier、asset schema、participant moduleをgenesis/configから固定する。
 - 正本を匿名commitment口座から、口座を持たないnote方式へ移す。

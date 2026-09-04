@@ -431,7 +431,7 @@ impl NodePrivateStateReceipt {
 
 #[derive(Clone)]
 pub struct ServerTlsConfig {
-    acceptor: Arc<SslAcceptor>,
+    pub(crate) acceptor: Arc<SslAcceptor>,
 }
 
 #[derive(Clone)]
@@ -632,6 +632,7 @@ pub struct ClusterNodePublic {
     pub party: u16,
     pub host: String,
     pub rpc_port: u16,
+    pub proof_port: u16,
     pub server_name: String,
     pub tls_certificate_sha256: Digest32,
     pub share_encryption_key: oclob_edge::NodeEncryptionKey,
@@ -662,7 +663,7 @@ pub struct ClusterPublicConfig {
 
 impl ClusterPublicConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 2
+        if self.version != 3
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
@@ -675,6 +676,7 @@ impl ClusterPublicConfig {
             if usize::from(node.party) != party
                 || node.host.is_empty()
                 || node.rpc_port == 0
+                || node.proof_port == 0
                 || node.server_name.is_empty()
                 || node.tls_certificate_sha256 == [0; 32]
                 || node.share_encryption_key.0 == [0; 32]

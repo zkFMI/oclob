@@ -1,0 +1,54 @@
+{
+  "manifest_id": "oclob-collaborative-settlement-rough-001",
+  "contract_id": "oclob-collaborative-settlement-v1",
+  "contract_path": "research/oclob_collaborative_settlement_contract.json",
+  "contract_sha256": "b0531ef6b9bc63f5912e71e49b58e6b5ee1297fcb5cc045fd4f442a4660b7d3b",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The distributed matcher retains private book state by party, but the accepted path still creates settlement proofs in one compatibility process after reconstructing complete order capabilities.",
+  "causal_hypothesis": "Extending the matching circuit with the established 616-field DeFMI proof ABI and running a resident ProofParty beside each OCLOB node will generate verifier-complete zkPI and DvP evidence from node-local shares without reconstructing the matched order values at the proof coordinator.",
+  "single_intended_change": "Add participant-edge settlement witness commitments, per-fill MP-SPDZ Persistence slices, seven mTLS ProofParty services, OCLOB-specific collaborative proof assembly, and verification of the resulting threshold DvP package in the integrated acceptance path.",
+  "baseline": {
+    "manifest": "research/manifests/oclob_private_book_e2e_001.json",
+    "verdict": "accepted",
+    "limitation": "One settlement process reconstructed complete post-match order capabilities and generated zkPI and DvP evidence from scalar openings."
+  },
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "matched_fill_slots": 1,
+    "mpc_nodes": 7,
+    "proof_parties": 7,
+    "proof_signing_quorum": 3,
+    "avalanche_validators": 5,
+    "validator_restarts": 1
+  },
+  "primary_metric": "collaborative_zkpi_dvp_proof_from_node_local_persistence",
+  "point_prediction": {
+    "collaborative_zkpi_dvp_proof_from_node_local_persistence": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "expected_proof_parties": 7,
+    "expected_signing_quorum": 3
+  },
+  "most_likely_prediction_error": "The OCLOB circuit's 616-field per-fill Persistence layout or field-generator binding may differ from the established DeFMI ProofParty ABI, causing a statement mismatch before the zkPI can be authorized.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "the exact circuit does not compile with official MP-SPDZ compile.py",
+    "any node fails to retain or load exactly one 616-field fill slice",
+    "any signed edge commitment differs from its MPC-derived proof statement",
+    "threshold zkPI, signed limit, DvP product, reserve remainder, asset, or opening-envelope verification fails",
+    "trade price is not 100 or quantity is not 40",
+    "Taker DvP does not reach canonical Avalanche finality",
+    "validator roots diverge or restart recovery fails",
+    "the public artifact exposes private order material or overclaims the tested topology and state model"
+  ],
+  "promotion_rules": [
+    "the complete participant-edge, seven-node matching, collaborative proof, threshold-package verification, Avalanche finality, replay-rejection, and restart path succeeds",
+    "all rejection rules remain false",
+    "the artifact records the exact contract SHA-256 and this manifest identifier",
+    "remote formatting, Clippy, workspace tests, and official circuit compilation remain green",
+    "the observed result is recorded once in the append-only experiment ledger"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}

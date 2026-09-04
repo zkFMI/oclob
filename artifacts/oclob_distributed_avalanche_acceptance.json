@@ -1,45 +1,63 @@
 {
   "canonical_settlement": {
-    "bootstrap_root": "1c6f5149444b9e61aebcdb4f909fe718136997af3fdc8d9d325efbbacc0e6698",
+    "bootstrap_root": "61377259be0b705d9765125f9b21ff20eb1a3c6f27d5c3682711ce9f4372dffc",
     "maker_reservation_height": 9,
-    "maker_reservation_transaction_id": "LRrTLcp1WFKEgQUqzsMzzX5SXVVMEFNRsjCo5X43Xhv7Fwkiz",
-    "maker_reservation_zkpi": "b0f5503ad0c7dabbc7336a1fa6e67193faabb30907869000eacfe0dc82242e00",
+    "maker_reservation_transaction_id": "6HaGtWHDjbLkqfUYbHHJyWkNRY5snk31nKHLFCHKVNoebg297",
+    "maker_reservation_zkpi": "15731f1cff0064fd1e5fda64708ec2f9dd280ee468d2d3d40b30f052d30d85d3",
     "receipt_chain_verified": true,
     "replay_rejected": true,
-    "state_root": "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
+    "state_root": "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
     "taker_dvp_height": 10,
-    "taker_dvp_transaction_id": "CQttQwoCqtdQziRHc52oVsptkbi2ZLsbL94SboyAMduLPhogn",
+    "taker_dvp_transaction_id": "2S34d3F41hnvMtsPKQ34ruH96VqcZxtKNYNX6nCiWyVXDyuhi1",
     "taker_reservation_finalized_with_dvp": true,
     "threshold_amount_range": true,
     "threshold_price_range": true,
     "validator_roots_after_restart": [
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324"
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45"
     ],
     "validator_roots_before_restart": [
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324",
-      "0fe66f1e116617bee6ae3873973b2a28f2b7d6963086b518f9a04d379b36e324"
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45"
     ]
   },
-  "chain_id": "tCmk6WM743MnMtGMxNxM6PNiH3of5dikCsvSeLhaxnn4k3e7Q",
+  "chain_id": "Bo3o4DzB7z1q9FMxpnAsenhoZr5PkSYQVBw7iZZ4wwzzEof6A",
+  "collaborative_settlement": {
+    "central_order_reconstruction_for_proof": false,
+    "dvp_package_digest": "c4215b82ce16c16a6486bb14d5e9c7d9cc52fd8db4771cad7543c8b75322352f",
+    "dvp_product_and_remainders_verified": true,
+    "frost_public_package_sha256": "2f403310d089fc13374bca1a0ab9b001dfce06963ecc524c71636d1b2712e66b",
+    "instruction_nullifier": "c12b0ad7e8d421a1a6c46cb8d3f760fd46c7020207227aeea46d947dff1996c4",
+    "limit_proof_verified": true,
+    "market_proof_digest": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
+    "proof_job_id": "c3f5ef43141ce51bed6fbb2cccb7a49b76d0cf7235d01f45b7ded836ab034b4b",
+    "proof_parties": 7,
+    "recipient_scoped_openings_verified": true,
+    "signing_quorum": 3,
+    "threshold_amount_range": true,
+    "threshold_price_range": true,
+    "zkpi_digest": "c28d591021b1c19bf37d6bd9497e1b105a28da639288fa3638ed89d146de9d56"
+  },
   "distributed_matching": {
     "all_outputs_agreed": true,
-    "artifact_sha256": "49fcd6a92516b2116a9c09a750586b5580ded3c5a24045624c3374954283dea9",
+    "artifact_sha256": "d8749053afcdfce44ae6aef84b32f41464c0bf6f36494440db31b1b73f99880b",
     "distinct_maker_private_state_digests": 7,
     "distinct_taker_private_state_digests": 7,
     "maker_remainder": 20,
     "maker_round_receipts": 7,
     "max_corrupt_parties": 2,
     "parties": 7,
+    "persistence_wires_per_node": 5000,
     "price": 100,
-    "private_state_wires_per_node": 36,
-    "program_sha256": "442604d2aa3465f6ebe7a3769617e843ae02a2756aeb306370ff2428fff6231e",
+    "private_book_wires_per_node": 72,
+    "program_sha256": "903bcd8d2f4d1a41f63fd70aadf18a0e771f2ef291b35acbb4807bf66ecfea55",
+    "proof_wires_per_fill_slot": 616,
     "protocol": "MP-SPDZ malicious-shamir",
     "quantity": 40,
     "taker_parent_heads_are_party_local": true,
@@ -54,7 +72,7 @@
     "taker_sequence": 2,
     "taker_votes": 7
   },
-  "elapsed_ms": 29956.254749,
+  "elapsed_ms": 16293.998423000001,
   "environment": "seven MPC containers plus five AvalancheGo validators on one host",
   "evm_used": false,
   "external_binaries": {
@@ -75,13 +93,13 @@
     "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60"
   ],
   "network": {
-    "chainID": "tCmk6WM743MnMtGMxNxM6PNiH3of5dikCsvSeLhaxnn4k3e7Q",
+    "chainID": "Bo3o4DzB7z1q9FMxpnAsenhoZr5PkSYQVBw7iZZ4wwzzEof6A",
     "networkID": 1337,
     "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
   },
   "non_claims": [
     "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-    "One laboratory settlement process reconstructs each one-order key after threshold release and creates zkPI; collaborative proof generation remains a production cutover even though matching state is now node-local.",
+    "The collaborative zkPI and DvP proof is independently verified in this run, while the current clear-balance compatibility projection still opens one-order settlement capabilities to update its legacy in-memory reservation view.",
     "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
     "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
     "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -123,15 +141,15 @@
     "taker_signed_admission_receipts": 7
   },
   "research": {
-    "contract_id": "oclob-node-local-private-book-v1",
-    "contract_sha256": "54536d70edc63063f40cfe577899ade375e16a7f7934326f2b2d3b8359d8ad45",
-    "manifest_id": "oclob-node-local-private-book-rough-001",
+    "contract_id": "oclob-collaborative-settlement-v1",
+    "contract_sha256": "b0531ef6b9bc63f5912e71e49b58e6b5ee1297fcb5cc045fd4f442a4660b7d3b",
+    "manifest_id": "oclob-collaborative-settlement-rough-001",
     "observed_value": 1,
-    "primary_metric": "complete_private_state_carry_forward_avalanche_path",
+    "primary_metric": "collaborative_zkpi_dvp_proof_from_node_local_persistence",
     "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
   },
   "restart": {
-    "elapsed_ms": 1206.027638,
+    "elapsed_ms": 665.165534,
     "node": "node3",
     "root_recovered": true
   },

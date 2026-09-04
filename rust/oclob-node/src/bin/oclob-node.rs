@@ -6,8 +6,10 @@ use oclob_node::executor::PartyExecutor;
 use oclob_node::network::{
     load_secret_32, server_tls_context, ClusterPublicConfig, NodeRpcServer, Principal,
 };
+use oclob_node::proof_network::{ProofRpcServer, ProofRpcServerConfig};
 use oclob_node::NodeShareStore;
 use oclob_ordering::CommitteePolicy;
+use qomm_transport::proof_party::{ProofParty, ProofPartyConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs::{self, File};
@@ -41,6 +43,10 @@ struct Config {
     rpc_timeout_seconds: u64,
     max_connections: usize,
     minimum_response_millis: u64,
+    proof_listen: SocketAddr,
+    proof_state_file: PathBuf,
+    proof_state_passphrase: PathBuf,
+    trusted_defmi_receipt_public: String,
 }
 
 fn main() {
@@ -53,7 +59,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let path = parse_config_path()?;
     let config: Config = read_json(&path)?;
-    if config.version != 1 {
+    if config.version != 2 {
         return Err("unsupported node configuration version".into());
     }
     let share_key = NodeDecryptionKey::from_raw(
@@ -96,9 +102,15 @@ fn run() -> Result<(), String> {
         &config.tls_ca,
     )
     .map_err(|error| error.to_string())?;
+    let coordinator_fingerprint = config
+        .principals
+        .iter()
+        .find(|principal| principal.role == oclob_node::network::PeerRole::Coordinator)
+        .map(|principal| principal.certificate_sha256)
+        .ok_or_else(|| "node configuration has no proof coordinator".to_owned())?;
     let server = NodeRpcServer::start(
         config.listen,
-        tls,
+        tls.clone(),
         config.principals,
         store,
         receipt_key,
@@ -110,6 +122,41 @@ fn run() -> Result<(), String> {
         Duration::from_millis(config.minimum_response_millis),
     )
     .map_err(|error| error.to_string())?;
+    let proof_party = ProofParty::new(ProofPartyConfig {
+        node: config.party,
+        allowed_root: config.mpc_work_root.join("private-state"),
+        state_file: config.proof_state_file,
+        state_passphrase: load_secret_32(&config.proof_state_passphrase)
+            .map_err(|error| error.to_string())?
+            .to_vec(),
+        n_mm: 1,
+        n_parties: 7,
+        threshold: 2,
+        amount_bits: 32,
+        price_bits: 32,
+        remainder_bits: 32,
+        complete_quote_proof: false,
+        quote_eligibility_bits: 34,
+        quote_span_bits: 32,
+        trusted_defmi_receipt_public: Some(parse_hex_32(
+            &config.trusted_defmi_receipt_public,
+            "trusted DeFMI receipt public key",
+        )?),
+        allow_health_signing: false,
+    })?;
+    let proof_server = ProofRpcServer::start(
+        ProofRpcServerConfig {
+            address: config.proof_listen,
+            tls,
+            coordinator_fingerprint,
+            persistence_root: config.mpc_work_root.join("private-state"),
+            expected_party: config.party,
+            expected_receipt_signer: public_node.receipt_verifying_key,
+            max_connections: config.max_connections,
+            timeout: Duration::from_secs(config.rpc_timeout_seconds),
+        },
+        proof_party,
+    )?;
     write_ready_file(&config.ready_file, config.party, server.address())?;
     println!(
         "{}",
@@ -117,12 +164,20 @@ fn run() -> Result<(), String> {
             "status": "ready",
             "party": config.party,
             "listen": server.address(),
+            "proof_listen": proof_server.address(),
             "program": config.program,
         })
     );
     loop {
         thread::park_timeout(Duration::from_secs(3600));
     }
+}
+
+fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
+    hex::decode(value)
+        .map_err(|_| format!("{label} is not hex"))?
+        .try_into()
+        .map_err(|_| format!("{label} is not 32 bytes"))
 }
 
 fn write_ready_file(path: &Path, party: u16, address: SocketAddr) -> Result<(), String> {

@@ -15,9 +15,11 @@ use oclob_core::{Digest32, OrderCommitment, SecretOrder, TimeInForce};
 use openssl::derive::Deriver;
 use openssl::pkey::{Id, PKey, Private, Public};
 use openssl::symm::{Cipher, Crypter, Mode};
+use qomm_zk::pedersen::Pedersen;
+use qomm_zkpi::handles::Handle;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
@@ -25,8 +27,9 @@ use thiserror::Error;
 pub const MPC_PARTIES: usize = 7;
 pub const MAX_CORRUPT_PARTIES: usize = 2;
 pub const MATCH_FIELD_COUNT: usize = 6;
+pub const SETTLEMENT_FIELD_COUNT: usize = 2;
 pub const VSS_COEFFICIENTS: usize = MAX_CORRUPT_PARTIES + 1;
-pub const SEALED_SHARE_CLEAR_BYTES: usize = 2_048;
+pub const SEALED_SHARE_CLEAR_BYTES: usize = 4_096;
 pub const SETTLEMENT_KEY_THRESHOLD: usize = MAX_CORRUPT_PARTIES + 1;
 pub const SETTLEMENT_KEY_COEFFICIENTS: usize = SETTLEMENT_KEY_THRESHOLD;
 pub const SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES: usize = 1_024;
@@ -37,7 +40,6 @@ const MANIFEST_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST-SIGNATURE:v1";
 const SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-SIGNATURE:v1";
 const SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-ENVELOPE:v1";
 const SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-CLEAR:v1";
-const VSS_SECOND_GENERATOR_DOMAIN: &[u8] = b"OCLOB:EDGE-VSS-H:v1";
 const SETTLEMENT_CAPABILITY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-COMMITMENT:v1";
 const SETTLEMENT_CAPABILITY_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-SIGNATURE:v1";
 const CAPABILITY_KEY_SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-SIGNATURE:v1";
@@ -46,7 +48,7 @@ const CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE
 const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CLEAR:v1";
 const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v1";
 const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -62,6 +64,12 @@ pub struct EdgeOrderManifest {
     #[serde(default)]
     pub settlement_key_commitments: [[u8; 32]; SETTLEMENT_KEY_COEFFICIENTS],
     pub field_commitments: [[[u8; 32]; VSS_COEFFICIENTS]; MATCH_FIELD_COUNT],
+    /// VSS commitments for the venue-handle scalar and pre-authorized reserve.
+    /// They are populated only by the settlement-capable constructor.
+    #[serde(default)]
+    pub settlement_proof_enabled: bool,
+    #[serde(default)]
+    pub settlement_field_commitments: [[[u8; 32]; VSS_COEFFICIENTS]; SETTLEMENT_FIELD_COUNT],
     pub signer: Digest32,
     pub signature: Vec<u8>,
 }
@@ -84,6 +92,27 @@ impl EdgeOrderManifest {
                     .decompress()
                     .ok_or(EdgeError::Manifest)?;
             }
+        }
+        if self.settlement_proof_enabled {
+            for field in &self.settlement_field_commitments {
+                for commitment in field {
+                    CompressedRistretto(*commitment)
+                        .decompress()
+                        .ok_or(EdgeError::Manifest)?;
+                }
+            }
+            if CompressedRistretto(self.settlement_field_commitments[0][0]).decompress()
+                == Some(RistrettoPoint::default())
+            {
+                return Err(EdgeError::Manifest);
+            }
+        } else if self
+            .settlement_field_commitments
+            .iter()
+            .flatten()
+            .any(|commitment| *commitment != [0; 32])
+        {
+            return Err(EdgeError::Manifest);
         }
         let mut settlement_key_points = Vec::with_capacity(SETTLEMENT_KEY_COEFFICIENTS);
         for commitment in &self.settlement_key_commitments {
@@ -124,6 +153,12 @@ impl EdgeOrderManifest {
                 body.extend_from_slice(commitment);
             }
         }
+        body.push(u8::from(self.settlement_proof_enabled));
+        for field in &self.settlement_field_commitments {
+            for commitment in field {
+                body.extend_from_slice(commitment);
+            }
+        }
         body.extend_from_slice(&self.signer);
         body
     }
@@ -138,6 +173,10 @@ pub struct PartyOrderShare {
     commitment: OrderCommitment,
     value_shares: [[u8; 32]; MATCH_FIELD_COUNT],
     blinding_shares: [[u8; 32]; MATCH_FIELD_COUNT],
+    #[serde(default)]
+    settlement_value_shares: [[u8; 32]; SETTLEMENT_FIELD_COUNT],
+    #[serde(default)]
+    settlement_blinding_shares: [[u8; 32]; SETTLEMENT_FIELD_COUNT],
     signer: Digest32,
     signature: Vec<u8>,
 }
@@ -175,6 +214,19 @@ impl PartyOrderShare {
         self.value_shares.map(scalar_le_bytes_to_decimal)
     }
 
+    pub fn blinding_share_decimals(&self) -> [String; MATCH_FIELD_COUNT] {
+        self.blinding_shares.map(scalar_le_bytes_to_decimal)
+    }
+
+    pub fn settlement_value_share_decimals(&self) -> [String; SETTLEMENT_FIELD_COUNT] {
+        self.settlement_value_shares.map(scalar_le_bytes_to_decimal)
+    }
+
+    pub fn settlement_blinding_share_decimals(&self) -> [String; SETTLEMENT_FIELD_COUNT] {
+        self.settlement_blinding_shares
+            .map(scalar_le_bytes_to_decimal)
+    }
+
     pub fn verify(
         &self,
         manifest: &EdgeOrderManifest,
@@ -196,11 +248,11 @@ impl PartyOrderShare {
         key.verify_strict(&self.signature_body(), &signature)
             .map_err(|_| EdgeError::Signature)?;
         let x = Scalar::from(u64::from(self.party) + 1);
-        let h = vss_second_generator();
+        let commitment_key = vss_key();
         for field in 0..MATCH_FIELD_COUNT {
             let value = canonical_scalar(self.value_shares[field])?;
             let blinding = canonical_scalar(self.blinding_shares[field])?;
-            let left = RISTRETTO_BASEPOINT_POINT * value + h * blinding;
+            let left = commitment_key.commit(&value, &blinding);
             let mut right = RistrettoPoint::default();
             let mut power = Scalar::ONE;
             for coefficient in 0..VSS_COEFFICIENTS {
@@ -213,6 +265,34 @@ impl PartyOrderShare {
             if left != right {
                 return Err(EdgeError::Vss);
             }
+        }
+        if manifest.settlement_proof_enabled {
+            for field in 0..SETTLEMENT_FIELD_COUNT {
+                let value = canonical_scalar(self.settlement_value_shares[field])?;
+                let blinding = canonical_scalar(self.settlement_blinding_shares[field])?;
+                let left = commitment_key.commit(&value, &blinding);
+                let mut right = RistrettoPoint::default();
+                let mut power = Scalar::ONE;
+                for coefficient in 0..VSS_COEFFICIENTS {
+                    let point = CompressedRistretto(
+                        manifest.settlement_field_commitments[field][coefficient],
+                    )
+                    .decompress()
+                    .ok_or(EdgeError::Manifest)?;
+                    right += point * power;
+                    power *= x;
+                }
+                if left != right {
+                    return Err(EdgeError::Vss);
+                }
+            }
+        } else if self
+            .settlement_value_shares
+            .iter()
+            .chain(self.settlement_blinding_shares.iter())
+            .any(|share| *share != [0; 32])
+        {
+            return Err(EdgeError::Share);
         }
         Ok(())
     }
@@ -227,6 +307,12 @@ impl PartyOrderShare {
             body.extend_from_slice(value);
         }
         for value in &self.blinding_shares {
+            body.extend_from_slice(value);
+        }
+        for value in &self.settlement_value_shares {
+            body.extend_from_slice(value);
+        }
+        for value in &self.settlement_blinding_shares {
             body.extend_from_slice(value);
         }
         body.extend_from_slice(&self.signer);
@@ -694,14 +780,66 @@ impl EdgeOrderBundle {
         node_keys: &[NodeEncryptionKey; MPC_PARTIES],
         rng: &mut R,
     ) -> Result<Self, EdgeError> {
+        Self::create_inner(
+            order,
+            None,
+            eligibility_commitment,
+            settlement_capability_commitment,
+            signer,
+            node_keys,
+            rng,
+        )
+    }
+
+    /// Build an order whose matched result can be turned into zkPI and DvP
+    /// evidence by the same MPC committee. The handle secret and reserve
+    /// opening are Shamir-shared here and never enter the public manifest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_settlement_handle<R: RngCore + CryptoRng>(
+        order: &SecretOrder,
+        handle: &Handle,
+        eligibility_commitment: Digest32,
+        settlement_capability_commitment: Digest32,
+        signer: &SigningKey,
+        node_keys: &[NodeEncryptionKey; MPC_PARTIES],
+        rng: &mut R,
+    ) -> Result<Self, EdgeError> {
+        Self::create_inner(
+            order,
+            Some(handle),
+            eligibility_commitment,
+            settlement_capability_commitment,
+            signer,
+            node_keys,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_inner<R: RngCore + CryptoRng>(
+        order: &SecretOrder,
+        handle: Option<&Handle>,
+        eligibility_commitment: Digest32,
+        settlement_capability_commitment: Digest32,
+        signer: &SigningKey,
+        node_keys: &[NodeEncryptionKey; MPC_PARTIES],
+        rng: &mut R,
+    ) -> Result<Self, EdgeError> {
         if eligibility_commitment == [0; 32]
             || settlement_capability_commitment == [0; 32]
             || node_keys.iter().any(|key| key.0 == [0; 32])
+            || handle.is_some_and(|handle| {
+                handle.point.compress().to_bytes() != order.participant_handle()
+            })
+            || handle.is_some()
+                && (order.limit_price() > u64::from(u32::MAX)
+                    || order.quantity() > u64::from(u32::MAX)
+                    || order.reservation_limit() > u64::from(u32::MAX))
         {
             return Err(EdgeError::Input);
         }
         let values = order_values(order);
-        let h = vss_second_generator();
+        let commitment_key = vss_key();
         let mut field_commitments = [[[0_u8; 32]; VSS_COEFFICIENTS]; MATCH_FIELD_COUNT];
         let mut value_evaluations = [[Scalar::ZERO; MATCH_FIELD_COUNT]; MPC_PARTIES];
         let mut blinding_evaluations = [[Scalar::ZERO; MATCH_FIELD_COUNT]; MPC_PARTIES];
@@ -719,9 +857,11 @@ impl EdgeOrderBundle {
             ];
             constant_blindings[field] = blinding_coefficients[0].to_bytes();
             for coefficient in 0..VSS_COEFFICIENTS {
-                field_commitments[field][coefficient] = (RISTRETTO_BASEPOINT_POINT
-                    * value_coefficients[coefficient]
-                    + h * blinding_coefficients[coefficient])
+                field_commitments[field][coefficient] = commitment_key
+                    .commit(
+                        &value_coefficients[coefficient],
+                        &blinding_coefficients[coefficient],
+                    )
                     .compress()
                     .to_bytes();
             }
@@ -729,6 +869,46 @@ impl EdgeOrderBundle {
                 let x = Scalar::from((party + 1) as u64);
                 value_evaluations[party][field] = evaluate(&value_coefficients, x);
                 blinding_evaluations[party][field] = evaluate(&blinding_coefficients, x);
+            }
+        }
+        let mut settlement_field_commitments =
+            [[[0_u8; 32]; VSS_COEFFICIENTS]; SETTLEMENT_FIELD_COUNT];
+        let mut settlement_value_evaluations =
+            [[Scalar::ZERO; SETTLEMENT_FIELD_COUNT]; MPC_PARTIES];
+        let mut settlement_blinding_evaluations =
+            [[Scalar::ZERO; SETTLEMENT_FIELD_COUNT]; MPC_PARTIES];
+        if let Some(handle) = handle {
+            let settlement_values = [handle.secret, Scalar::from(order.reservation_limit())];
+            for field in 0..SETTLEMENT_FIELD_COUNT {
+                let value_coefficients = [
+                    settlement_values[field],
+                    Scalar::random(&mut *rng),
+                    Scalar::random(&mut *rng),
+                ];
+                let blinding_coefficients = if field == 0 {
+                    [Scalar::ZERO; VSS_COEFFICIENTS]
+                } else {
+                    [
+                        Scalar::random(&mut *rng),
+                        Scalar::random(&mut *rng),
+                        Scalar::random(&mut *rng),
+                    ]
+                };
+                for coefficient in 0..VSS_COEFFICIENTS {
+                    settlement_field_commitments[field][coefficient] = commitment_key
+                        .commit(
+                            &value_coefficients[coefficient],
+                            &blinding_coefficients[coefficient],
+                        )
+                        .compress()
+                        .to_bytes();
+                }
+                for party in 0..MPC_PARTIES {
+                    let x = Scalar::from((party + 1) as u64);
+                    settlement_value_evaluations[party][field] = evaluate(&value_coefficients, x);
+                    settlement_blinding_evaluations[party][field] =
+                        evaluate(&blinding_coefficients, x);
+                }
             }
         }
         let settlement_key_scalar = random_nonzero_scalar(rng);
@@ -758,6 +938,8 @@ impl EdgeOrderBundle {
             settlement_capability_commitment,
             settlement_key_commitments,
             field_commitments,
+            settlement_proof_enabled: handle.is_some(),
+            settlement_field_commitments,
             signer: signer_public,
             signature: Vec::new(),
         };
@@ -778,6 +960,10 @@ impl EdgeOrderBundle {
                 commitment,
                 value_shares: value_evaluations[party].map(|value| value.to_bytes()),
                 blinding_shares: blinding_evaluations[party].map(|value| value.to_bytes()),
+                settlement_value_shares: settlement_value_evaluations[party]
+                    .map(|value| value.to_bytes()),
+                settlement_blinding_shares: settlement_blinding_evaluations[party]
+                    .map(|value| value.to_bytes()),
                 signer: signer_public,
                 signature: Vec::new(),
             };
@@ -978,8 +1164,11 @@ fn random_nonzero_scalar<R: RngCore + CryptoRng>(rng: &mut R) -> Scalar {
     }
 }
 
-fn vss_second_generator() -> RistrettoPoint {
-    RistrettoPoint::hash_from_bytes::<Sha512>(VSS_SECOND_GENERATOR_DOMAIN)
+fn vss_key() -> Pedersen {
+    // Settlement shares are consumed by DeFMI's threshold proof parties.
+    // Using the same generators makes the signed edge-manifest constants the
+    // public statements of the later zkPI, limit and reserve proofs.
+    Pedersen::new(b"qomm:defmi:v1")
 }
 
 fn verify_constant_terms(
@@ -987,12 +1176,10 @@ fn verify_constant_terms(
     blindings: &[[u8; 32]; MATCH_FIELD_COUNT],
     manifest: &EdgeOrderManifest,
 ) -> Result<(), EdgeError> {
-    let h = vss_second_generator();
+    let key = vss_key();
     for (field, value) in order_values(order).into_iter().enumerate() {
         let blinding = canonical_scalar(blindings[field])?;
-        let expected = (RISTRETTO_BASEPOINT_POINT * value + h * blinding)
-            .compress()
-            .to_bytes();
+        let expected = key.commit(&value, &blinding).compress().to_bytes();
         if expected != manifest.field_commitments[field][0] {
             return Err(EdgeError::Capability);
         }

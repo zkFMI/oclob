@@ -5,9 +5,10 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_mpc::{
     matching_program, parse_result, public_output_digest, MAX_CORRUPT_NODES, MPC_PARTIES,
-    SHAMIR_FIELD_ORDER,
+    PERSISTENCE_WIRES, PRIVATE_BOOK_WIRES, SETTLEMENT_PROOF_WIRES_PER_FILL, SHAMIR_FIELD_ORDER,
 };
 use oclob_ordering::{CommitteePolicy, OrderCertificate};
+use qomm_mpc::persistence::parse_header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -23,8 +24,63 @@ use thiserror::Error;
 const ROUND_PLAN_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-ROUND-PLAN:v1";
 const PARTY_RECEIPT_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-PARTY-RECEIPT:v1";
 const ARTIFACT_DOMAIN: &[u8] = b"OCLOB:MP-SPDZ-ARTIFACT:v1";
+const PROOF_SLOT_METADATA_DOMAIN: &[u8] = b"OCLOB:PROOF-SLOT-METADATA:v1";
 const VERSION: u16 = 1;
+const PROOF_SLOT_METADATA_VERSION: u16 = 1;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
+
+/// Owner-only binding between an extracted proof handoff and the exact public
+/// result emitted by the same MP-SPDZ execution.  The proof RPC validates this
+/// sidecar before it lets an untrusted coordinator open a proof job.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ProofSlotMetadata {
+    pub version: u16,
+    pub party: u16,
+    pub round_id: Digest32,
+    pub slot: u16,
+    pub public_output_sha256: Digest32,
+    pub private_state_sha256: Digest32,
+    pub persistence_sha256: Digest32,
+    pub proof_wires: usize,
+    pub signer: Digest32,
+    pub signature: Vec<u8>,
+}
+
+impl ProofSlotMetadata {
+    fn signature_body(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(192);
+        body.extend_from_slice(PROOF_SLOT_METADATA_DOMAIN);
+        body.extend_from_slice(&self.version.to_be_bytes());
+        body.extend_from_slice(&self.party.to_be_bytes());
+        body.extend_from_slice(&self.round_id);
+        body.extend_from_slice(&self.slot.to_be_bytes());
+        body.extend_from_slice(&self.public_output_sha256);
+        body.extend_from_slice(&self.private_state_sha256);
+        body.extend_from_slice(&self.persistence_sha256);
+        body.extend_from_slice(&(self.proof_wires as u64).to_be_bytes());
+        body.extend_from_slice(&self.signer);
+        body
+    }
+
+    pub(crate) fn verify_signature(&self, expected_signer: Digest32) -> bool {
+        if self.signer != expected_signer || self.signature.len() != 64 {
+            return false;
+        }
+        let Ok(key) = VerifyingKey::from_bytes(&expected_signer) else {
+            return false;
+        };
+        let Ok(signature) = Signature::try_from(self.signature.as_slice()) else {
+            return false;
+        };
+        key.verify_strict(&self.signature_body(), &signature)
+            .is_ok()
+    }
+
+    pub(crate) fn sign(&mut self, key: &SigningKey) {
+        self.signer = key.verifying_key().to_bytes();
+        self.signature = key.sign(&self.signature_body()).to_bytes().to_vec();
+    }
+}
 
 /// Public, coordinator-signed input to a matching round. It contains only the
 /// previously fixed order commitments and their certified sequence.
@@ -386,7 +442,9 @@ impl PartyExecutor {
         let output = read_bounded(&log_path, MAX_LOG_BYTES)?;
         let output = std::str::from_utf8(&output).map_err(|_| PartyExecutionError::Output)?;
         let result = parse_result(output).map_err(|_| PartyExecutionError::Output)?;
-        let private_state_sha256 = self.retain_private_state(&round, plan.round_id)?;
+        let public_output_sha256 = public_output_digest(&result);
+        let private_state_sha256 =
+            self.retain_private_state(&round, plan.round_id, public_output_sha256)?;
         let mut receipt = NodeExecutionReceipt {
             version: VERSION,
             party: self.party,
@@ -397,7 +455,7 @@ impl PartyExecutor {
             artifact_sha256: self.artifact_sha256,
             private_parent_digest: prepared.private_parent_digest(),
             private_state_sha256,
-            public_output_sha256: public_output_digest(&result),
+            public_output_sha256,
             result,
             execution_ms,
             signer: self.signing_key.verifying_key().to_bytes(),
@@ -419,6 +477,7 @@ impl PartyExecutor {
         &self,
         round: &Path,
         round_id: Digest32,
+        public_output_sha256: Digest32,
     ) -> Result<Digest32, PartyExecutionError> {
         let source = round
             .join("Persistence")
@@ -439,10 +498,66 @@ impl PartyExecutor {
             }
         })?;
         fs::set_permissions(&destination_directory, fs::Permissions::from_mode(0o700))?;
+        let private_cleanup = RoundCleanup(destination_directory.clone());
         let destination = destination_directory.join(format!("Transactions-P{}.data", self.party));
         reject_symlink(&destination)?;
         fs::rename(&source, &destination)?;
         fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
+        let header = parse_header(&bytes).map_err(|_| PartyExecutionError::Output)?;
+        let expected_bytes = header
+            .element_bytes
+            .checked_mul(PERSISTENCE_WIRES)
+            .and_then(|body| header.data_offset.checked_add(body))
+            .ok_or(PartyExecutionError::Output)?;
+        if bytes.len() != expected_bytes {
+            return Err(PartyExecutionError::Output);
+        }
+        for slot in 0..MAX_MATCH_SLOTS {
+            let proof_directory = destination_directory.join(format!("proof-slot-{slot}"));
+            reject_symlink(&proof_directory)?;
+            fs::create_dir(&proof_directory)?;
+            fs::set_permissions(&proof_directory, fs::Permissions::from_mode(0o700))?;
+            let first_share = PRIVATE_BOOK_WIRES
+                .checked_add(slot * SETTLEMENT_PROOF_WIRES_PER_FILL)
+                .ok_or(PartyExecutionError::Output)?;
+            let start = header
+                .data_offset
+                .checked_add(
+                    first_share
+                        .checked_mul(header.element_bytes)
+                        .ok_or(PartyExecutionError::Output)?,
+                )
+                .ok_or(PartyExecutionError::Output)?;
+            let end = start
+                .checked_add(
+                    SETTLEMENT_PROOF_WIRES_PER_FILL
+                        .checked_mul(header.element_bytes)
+                        .ok_or(PartyExecutionError::Output)?,
+                )
+                .filter(|end| *end <= bytes.len())
+                .ok_or(PartyExecutionError::Output)?;
+            let mut proof = Vec::with_capacity(header.data_offset + end - start);
+            proof.extend_from_slice(&bytes[..header.data_offset]);
+            proof.extend_from_slice(&bytes[start..end]);
+            let proof_path = proof_directory.join(format!("Transactions-P{}.data", self.party));
+            write_exclusive(&proof_path, &proof)?;
+            let mut metadata = ProofSlotMetadata {
+                version: PROOF_SLOT_METADATA_VERSION,
+                party: self.party,
+                round_id,
+                slot: u16::try_from(slot).map_err(|_| PartyExecutionError::Output)?,
+                public_output_sha256,
+                private_state_sha256: digest,
+                persistence_sha256: Sha256::digest(&proof).into(),
+                proof_wires: SETTLEMENT_PROOF_WIRES_PER_FILL,
+                signer: self.signing_key.verifying_key().to_bytes(),
+                signature: Vec::new(),
+            };
+            metadata.sign(&self.signing_key);
+            let encoded = serde_json::to_vec(&metadata).map_err(|_| PartyExecutionError::Output)?;
+            write_exclusive(&proof_directory.join("metadata.json"), &encoded)?;
+        }
+        std::mem::forget(private_cleanup);
         Ok(digest)
     }
 }

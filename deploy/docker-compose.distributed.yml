@@ -9,7 +9,7 @@ x-node: &node
   tmpfs:
     - /tmp:size=64m,mode=0700
   networks: [oclob-private]
-  expose: ["5000", "7443"]
+  expose: ["5000", "7443", "8443"]
   healthcheck:
     test: [CMD, test, -s, /state/ready.json]
     interval: 2s
@@ -189,8 +189,8 @@ services:
       OCLOB_MAKER_CAPABILITY: /handoff/maker-capability.json
       OCLOB_TAKER_CAPABILITY: /handoff/taker-capability.json
       OCLOB_SETTLEMENT_IDENTITY: /settlement/client.json
-      OCLOB_RESEARCH_CONTRACT: /research/oclob_private_book_contract.json
-      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_private_book_e2e_001.json
+      OCLOB_RESEARCH_CONTRACT: /research/oclob_collaborative_settlement_contract.json
+      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_collaborative_settlement_e2e_001.json
       QOMM_AVALANCHE_ARTIFACT: /out/oclob_distributed_avalanche_acceptance.json
 
 networks:

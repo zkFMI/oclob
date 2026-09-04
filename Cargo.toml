@@ -21,6 +21,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 curve25519-dalek = { version = "4.1.3", features = ["rand_core", "digest"] }
+base64 = "0.22.1"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 rand = "0.8.5"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
@@ -28,6 +29,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
+merlin = "3.0.0"
 openssl = "0.10.75"
 thiserror = "2.0.17"
 
@@ -49,6 +51,7 @@ dekyx-core = { git = "https://github.com/shukob/dekyx.git", rev = "67eb59a154874
 qomm-mpc = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
 qomm-defmi = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }
 qomm-proofs = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }
+qomm-transport = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }
 qomm-zk = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }
 qomm-zkpi = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }
 zkpi-defmi-sdk = { git = "https://github.com/shukob/defmi.git", rev = "3c83418b0843ed83e90222a6af33c7f106981fec" }

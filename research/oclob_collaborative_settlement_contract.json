@@ -1,0 +1,61 @@
+{
+  "contract_id": "oclob-collaborative-settlement-v1",
+  "objective": "Generate a FROST-authorized zkPI, price-limit proof, DvP product proof, non-negative reserve proofs, and recipient-scoped claim openings directly from seven node-local OCLOB MP-SPDZ Persistence slices, without reconstructing a complete Maker or Taker order in the proof coordinator, and verify the resulting public package before the existing Avalanche DeFMI finality path continues.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101",
+    "expected_fill": "40 lots at 100",
+    "expected_maker_reserve_remainder": "20 securities units represented by a Pedersen commitment and threshold proof"
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "max_corrupt_mpc_nodes": 2,
+    "proof_signing_quorum": 3,
+    "ordering_quorum": 5,
+    "avalanche_validators": 5,
+    "operator_hosts_in_this_gate": 1,
+    "evm_used": false
+  },
+  "proof_protocol": {
+    "edge_binding": "The participant edge signs Pedersen VSS commitments for price, reserve, and the unlinkable DeFMI settlement handle using the same generator suite as the DeFMI verifier.",
+    "mpc_output": "Each MP-SPDZ party writes one 616-field zkPI and DvP witness slice for every fixed fill slot; its OCLOB node retains only its own share under an owner-only path.",
+    "transport": "A dedicated mutual-TLS proof RPC lets the coordinator relay only public commitments, transcript seals, challenges, responses, and encrypted recipient-scoped openings.",
+    "authorization": "Three of seven durable FROST shares authorize the exact zkPI only after each selected node verifies the locally loaded quote digest, range statements, handles, and deadline.",
+    "verification": "The coordinator and DeFMI library verify the threshold amount and price ranges, signed Taker limit, amount-times-price relation, reserve remainders, Maker pool remainder, asset commitment, and recipient-bound opening envelopes.",
+    "privacy_boundary": "No proof RPC accepts or returns a raw Shamir share; the coordinator does not reconstruct the matched price, quantity, reserve opening, handle secret, or any commitment blinding while generating the proof."
+  },
+  "acceptance": {
+    "required": [
+      "the official MP-SPDZ compiler accepts the exact Rust-generated matching and proof circuit",
+      "all seven proof nodes load their own exact fill-slot Persistence slice",
+      "all public statements interpolate from seven evaluations and all proof rounds use an explicit three-node quorum",
+      "the Maker handle, Taker limit, Maker reserve, and Taker reserve match the signed participant-edge manifest commitments",
+      "the threshold-FROST zkPI verifies under the jointly generated public key",
+      "the public DvP product and three non-negative remainder proofs verify",
+      "all four opening envelopes are encrypted to the instruction-derived recipient and validate without revealing an opening to the coordinator",
+      "the verifier-complete threshold DvP package builds without any scalar price, quantity, reserve, balance, or blinding input",
+      "the existing five-validator Avalanche DeFMI path still reaches finality, rejects replay, and recovers its root after restart"
+    ],
+    "reject_if": [
+      "the contract digest differs from the preregistered manifest",
+      "any proof node reads another party's Persistence file or the extracted wire count is not exactly 616",
+      "a raw Shamir share or a scalar opening crosses the proof RPC",
+      "a manifest commitment differs from the MPC-derived proof statement",
+      "FROST, range, limit, product, remainder, asset, or opening-envelope verification fails",
+      "the public artifact exposes a private order field, secret share, local Persistence path, handle secret, reserve value, or blinding",
+      "Avalanche validator roots diverge, replay is accepted, or restart recovery fails",
+      "the artifact claims independent-operator, WAN, account-free-note, HSM, or removal of the legacy clear-balance compatibility projection"
+    ]
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "This gate proves collaborative proof construction and verification; the existing clear-balance compatibility projection still opens one-order capabilities for its legacy reservation and portfolio update model.",
+    "Canonical DeFMI state still uses commitment accounts and a reservation root rather than account-free product notes.",
+    "Transition, approval, and laboratory identities are not HSM-backed operator custody.",
+    "One functional scenario is not throughput, adversarial-load, or economic-effect evidence."
+  ]
+}

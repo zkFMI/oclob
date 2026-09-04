@@ -20,6 +20,7 @@ use openssl::x509::extension::{
 };
 use openssl::x509::{X509Builder, X509NameBuilder, X509};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -28,6 +29,7 @@ use std::path::{Path, PathBuf};
 const PROGRAM: &str = "oclob_match_v1";
 const MARKET: &str = "JGB10Y-JPY";
 const RPC_PORT: u16 = 7443;
+const PROOF_PORT: u16 = 8443;
 const MPC_PORT: u16 = 5000;
 
 fn main() {
@@ -168,8 +170,17 @@ fn provision(root: &Path) -> Result<(), String> {
                 .map_err(|error| error.to_string())?,
         )?;
         write_private(&node_dir.join("receipt-key.raw"), receipt_key.as_bytes())?;
+        let mut proof_state_passphrase = [0_u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut proof_state_passphrase);
+        write_private(
+            &node_dir.join("proof-state-passphrase.raw"),
+            &proof_state_passphrase,
+        )?;
+        let defmi_receipt_secret: [u8; 32] =
+            Sha256::digest(b"oclob-integrated-receipt-key-v1").into();
+        let defmi_receipt_key = SigningKey::from_bytes(&defmi_receipt_secret);
         let config = json!({
-            "version": 1,
+            "version": 2,
             "party": party,
             "listen": format!("0.0.0.0:{RPC_PORT}"),
             "tls_certificate": "/node/tls.pem",
@@ -188,13 +199,18 @@ fn provision(root: &Path) -> Result<(), String> {
             "execution_timeout_seconds": 300,
             "rpc_timeout_seconds": 360,
             "max_connections": 64,
-            "minimum_response_millis": 10
+            "minimum_response_millis": 10,
+            "proof_listen": format!("0.0.0.0:{PROOF_PORT}"),
+            "proof_state_file": "/state/mpc/private-state/proof-state.qps",
+            "proof_state_passphrase": "/node/proof-state-passphrase.raw",
+            "trusted_defmi_receipt_public": hex::encode(defmi_receipt_key.verifying_key().to_bytes())
         });
         write_json(&node_dir.join("config.json"), &config, 0o600)?;
         public_nodes.push(ClusterNodePublic {
             party: party as u16,
             host: name.clone(),
             rpc_port: RPC_PORT,
+            proof_port: PROOF_PORT,
             server_name: name,
             tls_certificate_sha256: certificate_fingerprint(&tls_cert.to_der().map_err(err)?),
             share_encryption_key: share_key.public_key().map_err(|error| error.to_string())?,
@@ -202,7 +218,7 @@ fn provision(root: &Path) -> Result<(), String> {
         });
     }
     let public = ClusterPublicConfig {
-        version: 2,
+        version: 3,
         market_id: MARKET.into(),
         program: PROGRAM.into(),
         settlement_release_threshold: SETTLEMENT_KEY_THRESHOLD,

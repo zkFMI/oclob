@@ -77,12 +77,23 @@ fn run() -> Result<(), String> {
             &mut rand::rngs::OsRng,
         )
         .map_err(|error| error.to_string())?;
-    let order = demo_order(&cluster.market_id, scenario, wallet.subject_nullifier())?;
+    let settlement_handle = Identity::from_seed(match scenario {
+        Scenario::Maker => [11; 32],
+        Scenario::Taker => [22; 32],
+    })
+    .handle(VENUE_DOMAIN);
+    let order = demo_order(
+        &cluster.market_id,
+        scenario,
+        settlement_handle.point.compress().to_bytes(),
+        wallet.subject_nullifier(),
+    )?;
     let eligibility_commitment = hidden_eligibility_commitment(&order);
     let settlement_capability_commitment =
         settlement_capability_commitment(&order, &signing_key.verifying_key().to_bytes());
-    let bundle = EdgeOrderBundle::create(
+    let bundle = EdgeOrderBundle::create_with_settlement_handle(
         &order,
+        &settlement_handle,
         eligibility_commitment,
         settlement_capability_commitment,
         &signing_key,
@@ -132,6 +143,7 @@ fn run() -> Result<(), String> {
 fn demo_order(
     market: &str,
     scenario: Scenario,
+    participant: Digest32,
     dekyx_nullifier: Digest32,
 ) -> Result<SecretOrder, String> {
     let now = unix_seconds()?;
@@ -139,14 +151,6 @@ fn demo_order(
     let mut salt = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     rand::rngs::OsRng.fill_bytes(&mut salt);
-    let participant = Identity::from_seed(match scenario {
-        Scenario::Maker => [11; 32],
-        Scenario::Taker => [22; 32],
-    })
-    .handle(VENUE_DOMAIN)
-    .point
-    .compress()
-    .to_bytes();
     let (side, price, quantity, tif) = match scenario {
         Scenario::Maker => (Side::Sell, 100, 60, TimeInForce::GoodTilCancelled),
         Scenario::Taker => (Side::Buy, 101, 40, TimeInForce::ImmediateOrCancel),
