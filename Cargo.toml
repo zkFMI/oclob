@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+  "rust/oclob-core",
+  "rust/oclob-dekyx",
+  "rust/oclob-ordering",
+  "rust/oclob-mpc",
+  "rust/oclob-proofs",
+  "rust/oclob-settlement",
+  "rust/oclob-service",
+  "rust/oclob-demo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+curve25519-dalek = { version = "4.1.3", features = ["rand_core", "digest"] }
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+rand = "0.8.5"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+hex = "0.4.3"
+thiserror = "2.0.17"
+
+oclob-core = { path = "rust/oclob-core" }
+oclob-dekyx = { path = "rust/oclob-dekyx" }
+oclob-ordering = { path = "rust/oclob-ordering" }
+oclob-mpc = { path = "rust/oclob-mpc" }
+oclob-proofs = { path = "rust/oclob-proofs" }
+oclob-settlement = { path = "rust/oclob-settlement" }
+oclob-service = { path = "rust/oclob-service" }
+
+# The application layer is pinned to reviewed zkPI / DeFMI and DeKYX source.
+# Update these revisions only together with the protocol compatibility tests.
+dekyx-core = { git = "https://github.com/shukob/dekyx.git", rev = "67eb59a1548740d15585a42d9cff8bc06ae95c5e" }
+qomm-mpc = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+qomm-defmi = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+qomm-proofs = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+qomm-zk = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+qomm-zkpi = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+zkpi-defmi-sdk = { git = "https://github.com/shukob/qomm.git", rev = "27299a1b49818d8c33ecfe9f4eeafab664f6ca64" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

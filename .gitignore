@@ -1,0 +1,6 @@
+/target/
+/artifacts/*.json
+!/artifacts/.gitkeep
+!/artifacts/oclob_rough_e2e.json
+/oclob_demo/react-flow/node_modules/
+.DS_Store

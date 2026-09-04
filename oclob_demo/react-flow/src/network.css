@@ -1,0 +1,167 @@
+.qrf-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  color: #e8eef8;
+  background: #070d18;
+  border-radius: 18px;
+}
+
+.qrf-topbar,
+.qrf-footerbar {
+  position: relative;
+  z-index: 6;
+  flex: none;
+  background: rgba(7, 14, 25, .96);
+}
+
+.qrf-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(89, 112, 148, .35);
+}
+
+.qrf-footerbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 72px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(89, 112, 148, .35);
+}
+
+.qrf-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#network-graph .react-flow {
+  --xy-edge-stroke: #506079;
+  --xy-edge-stroke-width: 1.4;
+  color: #e8eef8;
+  background: radial-gradient(circle at 48% 38%, rgba(36, 60, 92, .28), transparent 45%), #070d18;
+}
+
+#network-graph .react-flow__node-oclobNode,
+#network-graph .react-flow__node-flowLabel {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.qrf-node {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: inherit;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid #31415c;
+  border-radius: 13px;
+  background: linear-gradient(155deg, rgba(25, 36, 55, .98), rgba(12, 20, 34, .98));
+  color: #e9f0fb;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .26), inset 0 1px rgba(255, 255, 255, .04);
+  transition: border-color .2s ease, box-shadow .2s ease, opacity .2s ease;
+}
+
+.react-flow__node.selected .qrf-node {
+  border-color: #9bb7ff;
+  box-shadow: 0 0 0 2px rgba(117, 151, 255, .2), 0 12px 30px rgba(0, 0, 0, .32);
+}
+
+.qrf-node.is-me { border-color: #d7e2ff; box-shadow: 0 0 0 2px rgba(215, 226, 255, .15), 0 10px 24px rgba(0, 0, 0, .26); }
+.qrf-node.is-active { border-color: #45d7c8; box-shadow: 0 0 0 2px rgba(69, 215, 200, .15), 0 0 30px rgba(69, 215, 200, .13); }
+.qrf-node.is-winner { border-color: #ffd166; box-shadow: 0 0 0 2px rgba(255, 209, 102, .2), 0 0 30px rgba(255, 209, 102, .15); }
+.qrf-node.is-off, .qrf-node.is-silent { opacity: .52; }
+.qrf-node.is-rejected, .qrf-node.is-stopped { border-color: #ff6b7a; }
+.qrf-node.is-named { border-color: #ffb354; }
+
+.qrf-node { border-top-color: #a7b2c8; }
+.qrf-taker { border-top: 3px solid #45d7c8; }
+.qrf-maker { border-top: 3px solid #8aa8ff; }
+.qrf-matcher { border-top: 3px solid #ffd166; }
+.qrf-zkpi { border-top: 3px solid #bd9cff; }
+.qrf-ledger { border-top: 3px solid #69a7ff; }
+
+.qrf-node-header { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+.qrf-node-kind { min-width: 0; flex: 1; font-size: 14px; font-weight: 780; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qrf-node-status { margin-top: 5px; color: #b8c5d8; font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.qrf-badge { flex: none; padding: 3px 7px; border-radius: 999px; color: #07101b; background: #ffd166; font-size: 11px; font-weight: 800; }
+.qrf-node.has-badge .qrf-node-header { align-items: flex-start; flex-direction: column; gap: 4px; }
+.qrf-node.has-badge .qrf-node-kind { flex: none; width: 100%; overflow: visible; text-overflow: clip; }
+.qrf-node.has-badge .qrf-badge { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.qrf-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin: 8px 0 0; }
+.qrf-metric { min-width: 0; padding: 5px 6px; border: 1px solid rgba(130, 151, 184, .16); border-radius: 7px; background: rgba(255, 255, 255, .025); }
+.qrf-metric dt { color: #8fa0b9; font-size: 10px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Values wrap instead of being cut: a hash prefix or "MP-SPDZ" must stay
+   readable in the narrow two-column grid of the vertical (390px) layout. */
+.qrf-metric dd { margin: 2px 0 0; color: #edf4ff; font: 650 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.qrf-metric.qrf-reserved dd { color: #ffd166; }
+.qrf-metric.qrf-muted dd { color: #8491a7; font-family: inherit; }
+
+.qrf-handle { width: 5px !important; height: 5px !important; min-width: 5px !important; min-height: 5px !important; border: 0 !important; background: #526783 !important; opacity: .55; }
+
+#network-graph .react-flow__edge-path { transition: opacity .2s ease, stroke .2s ease; }
+#network-graph .qrf-edge { fill: none; stroke: #52617a; stroke-width: 1.5; }
+#network-graph .qrf-edge-faint { opacity: .13; }
+#network-graph .qrf-edge-owned { opacity: .8; }
+#network-graph .qrf-edge-flow { stroke-width: 2.4; opacity: 1; }
+#network-graph .qrf-edge-done { stroke: #5678ab; opacity: .48; }
+#network-graph .qrf-edge-cut { stroke: #ff6b7a; stroke-dasharray: 5 6; opacity: .42; }
+#network-graph .qrf-edge-teal { stroke: #45d7c8; }
+#network-graph .qrf-edge-amber { stroke: #f5b942; }
+#network-graph .qrf-edge-blue { stroke: #69a7ff; }
+#network-graph .qrf-edge-flow.qrf-edge-teal,
+#network-graph .qrf-edge-flow.qrf-edge-amber,
+#network-graph .qrf-edge-flow.qrf-edge-blue { stroke-dasharray: 7 6; animation: qrf-dash .8s linear infinite; }
+@keyframes qrf-dash { to { stroke-dashoffset: -26; } }
+.qrf-particle { filter: drop-shadow(0 0 5px currentColor); }
+.qrf-particle-teal { fill: #45d7c8; color: #45d7c8; }
+.qrf-particle-amber { fill: #f5b942; color: #f5b942; }
+.qrf-particle-blue { fill: #69a7ff; color: #69a7ff; }
+
+.qrf-edge-label { padding: 4px 8px; border: 1px solid rgba(87, 111, 146, .35); border-radius: 999px; color: #b1bdd0; background: rgba(8, 15, 27, .92); font-size: 11px; text-align: center; white-space: nowrap; }
+.qrf-edge-label.strong { color: #e9f3ff; border-color: rgba(91, 191, 205, .55); }
+
+.qrf-phase-panel { display: flex; align-items: center; gap: 7px; color: #d6e1f1; font-size: 13px; font-weight: 700; }
+.qrf-live-dot { width: 7px; height: 7px; border-radius: 50%; background: #45d7c8; box-shadow: 0 0 0 4px rgba(69, 215, 200, .12); }
+.qrf-legend-panel { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 520px; }
+.qrf-legend { padding: 4px 7px; border-radius: 999px; background: rgba(255, 255, 255, .05); font-size: 11px; }
+.qrf-legend::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: #8793a8; }
+.qrf-legend-taker::before { background: #45d7c8; }
+.qrf-legend-maker::before { background: #8aa8ff; }
+.qrf-legend-matcher::before { background: #ffd166; }
+.qrf-legend-zkpi::before { background: #bd9cff; }
+.qrf-legend-ledger::before { background: #69a7ff; }
+.qrf-notes { display: flex; flex-direction: column; gap: 3px; max-width: 86%; color: #9eabc0; font-size: 11px; line-height: 1.4; }
+.qrf-empty { flex: none; max-width: 28%; color: #bdc9da; font-size: 12px; line-height: 1.35; }
+
+#network-graph .react-flow__controls { overflow: hidden; border: 1px solid #34445e; border-radius: 10px; box-shadow: none; }
+#network-graph .react-flow__controls-button { border: 0; border-bottom: 1px solid #34445e; color: #cdd8e8; background: #111b2a; }
+#network-graph .react-flow__controls-button:hover { background: #1b2a40; }
+#network-graph .react-flow__controls-button svg { fill: currentColor; }
+#network-graph .react-flow__attribution { color: #66758b; background: rgba(7, 14, 25, .7); }
+
+@media (max-width: 700px) {
+  .qrf-legend-panel { display: none; }
+  .qrf-topbar { min-height: 40px; }
+  .qrf-footerbar { display: block; }
+  .qrf-empty, .qrf-notes { max-width: none; }
+  .qrf-empty { margin-bottom: 4px; }
+  .qrf-node { padding: 9px 10px; }
+  .qrf-node-kind { font-size: 13px; }
+  .qrf-node-status { font-size: 11px; }
+  .qrf-badge { font-size: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #network-graph .qrf-edge-flow { animation: none; }
+  .qrf-node { transition: none; }
+}

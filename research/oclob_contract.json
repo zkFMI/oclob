@@ -1,0 +1,64 @@
+{
+  "contract_id": "oclob-p1-rough-e2e-v2",
+  "objective": "Run one complete OCLOB research lifecycle from a pre-authorized order through ordered malicious-secure MPC matching to threshold-authorized zkPI settlement and canonical DeFMI readback, while recording the trusted clear-order coordinator that remains in this slice.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked by the Rust orchestrator.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "price_unit": "integer ticks",
+    "quantity_unit": "integer lots",
+    "time_in_force": ["GTC", "IOC"],
+    "rough_slice": "one resting sell and one arriving buy"
+  },
+  "committee": {
+    "nodes": 7,
+    "max_corrupt_nodes": 2,
+    "reconstruction_quorum": 3,
+    "ordering_quorum": 5,
+    "settlement_authorization_quorum": 3
+  },
+  "privacy": {
+    "public_before_order_certificate": ["side", "limit_price", "quantity", "participant identity"],
+    "public_before_match_completion": ["side", "limit_price", "quantity", "participant identity"],
+    "public_after_match": ["trade price", "trade quantity", "aggregate book delta", "commitments and receipts"],
+    "current_trusted_component": ["the single-process coordinator receives the clear order before creating seven cryptographically randomized Shamir shares"],
+    "rough_run_forbidden": ["plaintext order logging before ordering quorum", "cleartext matching fallback", "post-match participant signature"],
+    "production_target": ["client-edge sharing so that the coordinator never receives the clear order", "one share per independently operated MPC node"]
+  },
+  "mandatory_path": [
+    "signed pre-authorization",
+    "salted binding commitment",
+    "5-of-7 chained order certificate",
+    "7-party degree-2 malicious Shamir MP-SPDZ execution",
+    "canonical price-time book transition",
+    "threshold range-proven zkPI",
+    "atomic DeFMI DvP",
+    "canonical readback",
+    "replay refusal"
+  ],
+  "acceptance": {
+    "required": [
+      "exactly five distinct valid order votes form the certificate",
+      "the MP-SPDZ process really executes and all seven parties agree on public output",
+      "the fill uses price-time priority and never exceeds either order remainder",
+      "no user or maker signature is requested after matching",
+      "zkPI contains threshold amount and price range evidence",
+      "DeFMI changes cash and securities atomically exactly once",
+      "canonical roots and sequence agree with the committed transition",
+      "a replay of the same instruction is rejected"
+    ],
+    "reject_if": [
+      "any secret is logged before the order certificate",
+      "fewer than five order votes are accepted",
+      "a cleartext matcher is substituted for the MP-SPDZ run",
+      "threshold range evidence is missing",
+      "post-match discretionary consent is required",
+      "settlement is partial or replayable"
+    ]
+  },
+  "non_claims": [
+    "The first rough run is a seven-process single-host committee, not a seven-region WAN.",
+    "The first rough run uses the in-process DeFMI state machine, not a live Avalanche validator network.",
+    "The first rough run proves the application seam and does not establish production throughput."
+  ]
+}

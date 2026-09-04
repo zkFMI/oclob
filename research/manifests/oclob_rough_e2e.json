@@ -1,0 +1,44 @@
+{
+  "manifest_id": "oclob-p1-rough-e2e-run-002",
+  "contract_id": "oclob-p1-rough-e2e-v2",
+  "contract_path": "research/oclob_contract.json",
+  "contract_sha256": "0288a10d33e744354793486bddb4467062af5d02659022ad565bedda77cc81b2",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The first integrated slice used the deterministic Shamir helper reserved for test fixtures, so its privacy claim could not survive disclosure of that seed.",
+  "causal_hypothesis": "Replacing the test dealer with operating-system randomized Shamir coefficients will remove predictable shares without changing the observed ordering, matching, zkPI, or DeFMI result.",
+  "single_intended_change": "Use the production-random Shamir API in the live OCLOB MPC runner and bind the release receipt to the explicit trusted-coordinator boundary.",
+  "baseline": "The complete Rust vertical slice executes, but its live dealer used the reproducible test-sharing API and the research contract overstated coordinator-obliviousness.",
+  "evaluation_population": {
+    "markets": 1,
+    "resting_orders": 1,
+    "arriving_orders": 1,
+    "mpc_parties": 7,
+    "settlement_attempts": 2,
+    "note": "The second settlement attempt is the mandatory replay refusal."
+  },
+  "primary_metric": "complete_acceptance_path",
+  "point_prediction": {
+    "complete_acceptance_path": 1,
+    "wall_ms_excluding_toolchain_build": 12000
+  },
+  "most_likely_prediction_error": "MP-SPDZ compiler caching and host load will move the observed wall time substantially around the 12000 ms estimate even though matching output remains unchanged.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "ordering certificate has fewer than five distinct valid signers",
+    "any plaintext order field is emitted before its certificate",
+    "the seven MP-SPDZ parties do not all return the same result",
+    "matched price or quantity differs from price-time priority",
+    "a post-match participant signature is requested",
+    "zkPI does not contain threshold range evidence",
+    "DvP does not update both rails atomically",
+    "canonical readback disagrees with the committed transition",
+    "the identical zkPI can settle twice"
+  ],
+  "promotion_rules": [
+    "all functional rejection rules remain false",
+    "a machine-readable receipt records every boundary",
+    "the receipt labels single-host MPC and in-process DeFMI as rough-run limitations",
+    "the observed wall time is reported without claiming throughput"
+  ],
+  "command": "cargo run --release -p oclob-demo -- --contract ../research/oclob_contract.json --manifest ../research/manifests/oclob_rough_e2e.json --receipt ../artifacts/oclob_rough_e2e.json --mp-spdz-root <MP_SPDZ_ROOT>"
+}

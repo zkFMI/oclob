@@ -1,0 +1,16 @@
+[package]
+name = "oclob-dekyx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeKYX anonymous legal-entity eligibility adapter for OCLOB"
+
+[dependencies]
+oclob-core.workspace = true
+dekyx-core.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

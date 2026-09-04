@@ -1,0 +1,68 @@
+{
+  "receipt_version": 2,
+  "contract_id": "oclob-p1-rough-e2e-v2",
+  "contract_sha256": "0288a10d33e744354793486bddb4467062af5d02659022ad565bedda77cc81b2",
+  "manifest_id": "oclob-p1-rough-e2e-run-002",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "verdict": "accepted",
+  "complete_acceptance_path": 1,
+  "predicted_wall_ms": 12000,
+  "observed_wall_ms": 4521.272817,
+  "resting_order_certificate_signers": 5,
+  "arriving_order_certificate_signers": 5,
+  "mpc_protocol": "MP-SPDZ malicious-shamir",
+  "mpc_parties": 7,
+  "mpc_all_parties_agreed": true,
+  "mpc_compile_ms": 765.709475,
+  "mpc_execution_ms": 569.026561,
+  "matched_price": 100,
+  "matched_quantity": 40,
+  "aggregate_resting_quantity_after": 60,
+  "transition_attestations": 5,
+  "threshold_amount_range": true,
+  "threshold_price_range": true,
+  "settlement_authorization_quorum": 3,
+  "post_match_participant_signatures": 0,
+  "atomic_securities_change": true,
+  "atomic_cash_change": true,
+  "replay_rejected": true,
+  "solvent": true,
+  "canonical_state_root": "3da25c35a04ea31abfc92e4042a8a060c344dc8eaac71c465c45586796845051",
+  "canonical_receipt_digest": "7aaf5f23d4c5a57bb5ef7c0cbe78fd07ace7565cd7b28775836759990f7f79d0",
+  "timeline": [
+    {
+      "stage": "maker_authority",
+      "public_information": "signed commitment only; no order field"
+    },
+    {
+      "stage": "resting_order_certificate",
+      "public_information": "sequence=1 signers=5"
+    },
+    {
+      "stage": "public_book_after_resting_commit",
+      "public_information": "no-cross MPC result admitted the GTC remainder; only its aggregate level became public"
+    },
+    {
+      "stage": "taker_authority",
+      "public_information": "signed commitment only; no order field"
+    },
+    {
+      "stage": "arriving_order_certificate",
+      "public_information": "sequence=2 signers=5"
+    },
+    {
+      "stage": "mpc_match_completed",
+      "public_information": "post-match price=100 quantity=40"
+    },
+    {
+      "stage": "zkpi_defmi_finality",
+      "public_information": "threshold proofs, atomic DvP and canonical roots accepted"
+    }
+  ],
+  "limitations": [
+    "The single-process coordinator receives each clear order before generating cryptographically randomized Shamir shares; client-edge sharing is not part of this rough run.",
+    "Seven MP-SPDZ processes run on one Linux host; this receipt is not WAN evidence.",
+    "DeFMI is the real Rust verifier/state machine in-process; Avalanche validator consensus is not part of this rough run.",
+    "One resting order and one arrival prove the seam, not production throughput or a multi-level book."
+  ]
+}

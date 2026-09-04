@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>OCLOB — 秘密注文市場デモ</title>
+  <link rel="stylesheet" href="/react-flow.css">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">操作画面へ移動</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <div>
+        <strong>OCLOB</strong>
+        <span>秘密照合と受付順固定を検証する研究用市場</span>
+      </div>
+    </div>
+    <div class="market-status">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span id="market-label">JGB10Y-JPY</span>
+      <strong id="phase-label">接続中</strong>
+    </div>
+  </header>
+
+  <nav class="role-tabs" aria-label="表示する立場">
+    <button class="role-tab active" data-viewer="operator" aria-pressed="true">市場運営者</button>
+    <button class="role-tab" data-viewer="maker" aria-pressed="false">売り手企業</button>
+    <button class="role-tab" data-viewer="taker" aria-pressed="false">買い手企業</button>
+  </nav>
+
+  <main id="main" class="workspace">
+    <aside class="left-column">
+      <section class="panel explainer" aria-labelledby="privacy-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">いま見えている範囲</p>
+            <h1 id="privacy-title">運営画面に未処理注文を表示しません</h1>
+          </div>
+          <span id="projection-badge" class="shield">運営投影</span>
+        </div>
+        <p id="privacy-copy">運営画面向け投影のサンプルです。このJSONには未処理注文を含めず、確定後の価格帯別合計、証明、決済結果だけを返します。現在は同じサーバープロセスが注文を受け取り、MPC用の秘密分散を作ります。</p>
+        <dl class="privacy-grid">
+          <div><dt>運営向けJSONの未処理注文</dt><dd>含めない</dd></div>
+          <div><dt>法人向けJSONの注文</dt><dd>選択法人分だけ</dd></div>
+          <div><dt>確定後の価格帯別合計</dt><dd>公開</dd></div>
+          <div><dt>約定後の参加者署名</dt><dd>不要</dd></div>
+        </dl>
+      </section>
+
+      <section id="portfolio-panel" class="panel hidden" aria-labelledby="portfolio-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">自社だけに見える</p><h2 id="portfolio-title">資金・在庫</h2></div>
+          <span class="shield own">自社情報</span>
+        </div>
+        <div id="portfolio-cards" class="portfolio-cards"></div>
+      </section>
+
+      <section id="order-panel" class="panel hidden" aria-labelledby="order-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">事前承認して送信</p><h2 id="order-title">指値注文</h2></div>
+        </div>
+        <form id="order-form">
+          <fieldset class="segmented">
+            <legend>売買</legend>
+            <label><input type="radio" name="side" value="sell" checked><span>売る</span></label>
+            <label><input type="radio" name="side" value="buy"><span>買う</span></label>
+          </fieldset>
+          <div class="field-row">
+            <label>指値 <input name="price" inputmode="numeric" type="number" min="1" step="1" value="100" required><small>円 / 1口</small></label>
+            <label>数量 <input name="quantity" inputmode="numeric" type="number" min="1" step="1" value="40" required><small>口</small></label>
+          </div>
+          <label class="select-field">残りの扱い
+            <select name="time_in_force">
+              <option value="good_til_cancelled">板に残す（GTC）</option>
+              <option value="immediate_or_cancel">すぐ照合し、残りは取消（IOC）</option>
+            </select>
+          </label>
+          <button id="submit-order" class="primary" type="submit">選択した法人として注文を送る</button>
+          <p class="form-note">研究デモではサーバー内のデモ鍵で署名し、匿名化したDeKYX参加資格と決済可能額を結び付けます。役割タブは認証ではありません。</p>
+        </form>
+      </section>
+
+      <section class="panel node-controls" aria-labelledby="node-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">状態表示を切り替える模擬操作</p><h2 id="node-title">障害シナリオ</h2></div>
+        </div>
+        <div class="node-control-group"><h3>MPCノード</h3><div id="mpc-controls" class="node-buttons"></div></div>
+        <div class="node-control-group"><h3>DeFMI確認ノード</h3><div id="defmi-controls" class="node-buttons"></div></div>
+        <p class="form-note">ボタンは実コンテナを停止せず、安全条件を下回った場合の待機動作だけを再現します。</p>
+        <button id="retry-queue" class="secondary hidden" type="button">待機中の注文を再送</button>
+      </section>
+    </aside>
+
+    <section class="center-column">
+      <div class="section-title">
+        <div><p class="eyebrow">最後に確認できた処理段階</p><h2>処理構成と確認状態</h2></div>
+        <p>線の色で、最後に正本まで確認できた処理経路を示します。</p>
+      </div>
+      <div id="network-graph" aria-label="OCLOBのノードと取引処理図"></div>
+      <section class="panel receipt-strip" aria-labelledby="receipt-title">
+        <div><p class="eyebrow">最後に確認した正本</p><h2 id="receipt-title">受付・証明・決済</h2></div>
+        <div id="receipt-steps" class="receipt-steps"></div>
+      </section>
+    </section>
+
+    <aside class="right-column">
+      <section class="panel book-panel" aria-labelledby="book-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">確定後に全員へ公開</p><h2 id="book-title">公開板</h2></div>
+          <span id="book-sequence" class="sequence">受付 0</span>
+        </div>
+        <div class="mid-price"><span>銘柄</span><strong>JGB10Y</strong><small>決済通貨 JPY</small></div>
+        <div class="book-head"><span>売買</span><span>価格</span><span>合計数量</span></div>
+        <div id="book-levels" class="book-levels"></div>
+        <p class="empty-book" id="empty-book">確定した指値はまだありません。</p>
+      </section>
+
+      <section class="panel timeline-panel" aria-labelledby="timeline-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">公開できる記録だけ</p><h2 id="timeline-title">処理履歴</h2></div>
+        </div>
+        <ol id="timeline" class="timeline" aria-live="polite"></ol>
+      </section>
+
+      <section class="panel roots-panel" aria-labelledby="roots-title">
+        <div class="panel-heading compact">
+          <div><p class="eyebrow">研究用DeFMI正本（同一プロセス）</p><h2 id="roots-title">正本状態</h2></div>
+          <span id="defmi-height" class="sequence">高さ 0</span>
+        </div>
+        <dl id="root-values" class="root-values"></dl>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/react-flow.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[package]
+name = "oclob-settlement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Threshold zkPI issuance and atomic DeFMI DvP for OCLOB fills"
+
+[dependencies]
+oclob-core.workspace = true
+oclob-proofs.workspace = true
+qomm-defmi.workspace = true
+qomm-proofs.workspace = true
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
+zkpi-defmi-sdk.workspace = true
+curve25519-dalek.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true

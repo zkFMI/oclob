@@ -1,0 +1,24 @@
+[package]
+name = "oclob-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fail-closed OCLOB application coordinator"
+
+[dependencies]
+oclob-core.workspace = true
+oclob-dekyx.workspace = true
+oclob-ordering.workspace = true
+oclob-mpc.workspace = true
+oclob-proofs.workspace = true
+oclob-settlement.workspace = true
+zkpi-defmi-sdk.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
