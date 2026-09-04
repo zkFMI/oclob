@@ -2,7 +2,7 @@
 
 ## 判定
 
-OCLOBは、研究用MVPとして一続きの経路を実装しています。法人側で注文を7分割し、各MPCノードへ直接届ける中央非開示経路と、5検証者の非EVM DeFMI Avalanche L1で予約・DvPを確定する経路を個別に受入済みです。ただし、本番移行可能と判定できる段階ではありません。特に、両経路の統合、独立したMPC/validator運営者、永続状態の世代整合、認証・鍵管理がP0です。
+OCLOBは、研究用MVPとして、法人側の注文分割から7 MPCノードの秘密照合、Maker予約、Taker予約とDvP、5検証者の非EVM DeFMI Avalanche L1確定までを一続きに実装し、1ホスト上で受入済みです。ただし、本番移行可能と判定できる段階ではありません。特に、単一の決済ゲートウェイを閾値方式へ置き換えること、独立したMPC/validator運営者、永続状態の世代整合、認証・鍵管理がP0です。
 
 「実装済み」はsourceがあるだけではなく、repositoryのremote release gateで動かす対象になっていることを示します。「未受入」は設計や一部codeがあっても、本番の信頼境界または実環境で確認できていないことを示します。
 
@@ -15,14 +15,14 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。法
 | 価格・時間優先 | 実装済み | clear referenceとMPC outputの一致test | WAN並行投入、fairness定義の形式化 |
 | 部分・複数約定 | 実装済み | 最大8枠batch回路、原子的multi-fill | 8枠上限の拡張または分割規則 |
 | 取消・期限切れ | 実装済み | authority、遷移proof、予約解放test | 公開API、外部clock/epoch運用 |
-| 受付順5-of-7 | 実装済み | quorum、連鎖、二重投票拒否test | HSM key、epoch交代、独立node/WAN |
-| 法人側の注文分割と直接配送 | 実装済み・1ホスト受入済み | Pedersen検証付き3-of-7分割、ノード別暗号文、固定長mTLS通信、7コンテナE2E | DeKYX証明・予約との暗号的な結合、別運営者WAN |
+| 受付順5-of-7 | 実装済み・1ホスト受入済み | 7ノード投票、証明本体、連鎖、署名前の永続化、各MPCノードでの再検証、二重投票拒否 | HSM key、epoch交代、独立node/WAN、公平到着順の定義 |
+| 法人側の注文分割と直接配送 | 実装済み・1ホスト受入済み | Pedersen検証付き3-of-7分割、ノード別暗号文、固定長mTLS通信、各ノードの署名付き保存受領証、7コンテナE2E | 別運営者WAN、鍵の個別生成・保管 |
 | MP-SPDZ秘密照合 | 実装済み | 公式compilerとmalicious-shamir、1コンテナ1 partyの7 node E2E、全結果一致 | 別host 7 party、通信量・障害評価 |
 | 平文fallback禁止 | 実装済み | binary不在・party失敗時fail closed | 運用SLOとbackpressure |
 | DeKYX参加資格 | 実装済み | pinned `dekyx-core` adapter test | issuer governance、失効配布、HSM |
 | 法人単位の枠合算 | 実装済み | DeKYX entity単位reservation test | CCP/DeFMI外部設定、権限・更新監査 |
 | 閾値zkPI | 実装済み | 金額・価格3-of-7共同range proof | 独立prover、distributed nonce管理 |
-| DeFMI原子的DvP | 実装済み・1ホストL1受入済み | Maker予約を板登録前に確定、Taker予約＋DvPの単一遷移、5 validator root一致、replay拒否 | 分散MPCとの統合、独立validator、reorg試験、note方式 |
+| DeFMI原子的DvP | 実装済み・統合1ホストL1受入済み | 分散MPC結果からMaker予約を先に確定し、Taker予約＋DvPを単一遷移で確定。5 validator root一致、replay拒否、再起動復旧 | 閾値決済ゲートウェイ、独立validator、reorg試験、note方式 |
 | 暗号化耐久queue | 実装済み | AEAD、idempotency、順序、cover slot test | 鍵永続化、世代整合restart、HA |
 | 公開板 | 実装済み | price level aggregateのみ | 差分漏洩測定、公開頻度・粒度の市場実験 |
 | React Flowデモ | 実装済み・研究用受入済み | OmenX Docker runtimeをIABの1440×1000/390×844で操作。売りGTC 100口、買いIOC 40口、残60口、参加者別残高、5/7受付、7-process MPC、閾値zkPI、DeFMI高さ3を確認。横overflow 0、console error/warn 0 | 認証済み本番APIとの接続、継続的a11y試験 |
@@ -64,12 +64,14 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。法
 
 `oclob-edge` と `oclob-node` を使う分散経路では、法人側が注文を検証可能な7分割へ変換し、ノードごとに別々に暗号化して直接送ります。調整役はcommitment（注文の要約値）、受付証明、署名付き公開結果だけを扱います。OmenX上の7コンテナ受入では、調整役へ平文注文を渡さずに40口を価格100で約定し、同一ラウンドの再送で二度目の計算を起動しないことを確認しました。
 
+各MPCノードは、保存した注文要約値、永続状態の世代、保存状態の要約値を自分の鍵で署名します。参加法人から引き継いだ受領証は、コンテナ停止後でも7ノードの公開鍵に対して検証できます。公開要約の署名には注文ごとの使い捨て鍵を用い、法人の長期application keyは調整役へ渡しません。各ノードは受付票を返す前に同じ通番への投票を永続化し、MPC起動前には5票以上の証明本体、対象注文、前証明との連続性を自分で再検証します。
+
 一方、React Flowの単体デモが使う `OclobService::submit` は、従来どおり `SecretOrder` を受けてから7入力を作ります。したがって、中央非開示の保証は分散経路だけに適用します。
 
 残る変更:
 
-- DeKYX資格、DeFMI予約、注文署名、分割入力が同じ注文を指すことを一つの証明へ結ぶ。
 - React Flowデモと公開APIを分散経路へ切り替え、中央経路を研究用互換モードへ限定する。
+- 決済権限を一つのゲートウェイで復号せず、MPCノードによる閾値復号または共同zkPI生成へ置き換える。
 
 ### P0-2 7 partyを独立運営する
 
@@ -83,14 +85,13 @@ OCLOBは、研究用MVPとして一続きの経路を実装しています。法
 - WAN latency、packet loss、partial outage、selective abort試験。
 - party omissionとequivocationを公開情報だけで追跡するreceipt。
 
-### P0-3 分散MPCから実DeFMI/Avalancheまで一つに接続する — L1単体は受入済み
+### P0-3 分散MPCから実DeFMI/Avalancheまで一つに接続する — 1ホスト統合受入済み
 
-5検証者の実AvalancheGo上へRust DeFMI VMを載せ、Makerの事前予約、Taker予約＋DvP、root/height/readback、二重送信拒否、1検証者再起動後のroot復旧まで確認しました。EVMは使っていません。一方、この経路の照合は互換coordinatorであり、参加者側分割から7 MPCノードを通る分散経路とはまだ一つの原子的実行になっていません。
+5検証者の実AvalancheGo上へRust DeFMI VMを載せ、法人側分割、7ノードMP-SPDZ照合、DeKYX検証、Maker事前予約、Taker予約＋DvP、root/height/readback、二重送信拒否、1検証者再起動後のroot復旧までを同じ実行で確認しました。EVMは使っていません。MPCで使う売買方向・指値・数量・注文種別・期限・板残留可否の6項目は、Pedersen VSSの定数項と決済権限内の値の一致を検査します。
 
 必要な変更:
 
-- 分散MPCの署名済み結果を、そのままL1用のzkPI/DvPへ渡す。
-- MPC、DeKYX、予約、ordering、L1 receiptを同じ注文commitmentへ結合する。
+- 研究用の単一決済ゲートウェイを、秘密を一か所へ復元しない閾値方式へ移す。
 - 独立host/運営者のvalidator、WAN、timeout、reorg相当を試験する。
 - zkPI verifier、asset schema、participant moduleをgenesis/configから固定する。
 - 正本を匿名commitment口座から、口座を持たないnote方式へ移す。

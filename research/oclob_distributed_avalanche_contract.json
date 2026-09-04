@@ -1,0 +1,78 @@
+{
+  "contract_id": "oclob-distributed-avalanche-v1",
+  "objective": "Execute one complete OCLOB lifecycle in which participants create verifiable secret shares before coordinator contact, seven isolated MPC nodes agree on matching output, and participant-authorized settlement capabilities produce a Maker reservation followed by atomic Taker reservation and DvP on a five-validator non-EVM DeFMI Avalanche L1.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "price_unit": "integer ticks",
+    "quantity_unit": "integer lots",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101"
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "max_corrupt_mpc_nodes": 2,
+    "avalanche_validators": 5,
+    "operator_hosts_in_this_gate": 1,
+    "evm_used": false
+  },
+  "privacy": {
+    "participant_edge": "The complete SecretOrder exists only inside its participant process before Pedersen-verifiable sharing.",
+    "coordinator": "The coordinator receives commitments, certificates and signed public MPC outputs, but no complete order or set of seven shares.",
+    "settlement_gateway": "The gateway alone opens the participant-signed fixed-size settlement capability and verifies that its values are the constant terms committed into the MPC shares.",
+    "opened_after_match": [
+      "trade price",
+      "trade quantity",
+      "remaining quantity",
+      "canonical transaction identifiers and state roots"
+    ],
+    "forbidden": [
+      "clear order at coordinator",
+      "all seven shares in one MPC node",
+      "plaintext matching fallback",
+      "post-match participant signature",
+      "private order fields in logs or public artifact"
+    ]
+  },
+  "canonical_flow": [
+    "Maker capability and DeKYX presentation are verified by the settlement gateway",
+    "seven malicious-shamir parties agree that the Maker rests without a fill",
+    "Maker maximum inventory reservation is finalized on DeFMI before admission",
+    "seven malicious-shamir parties agree on the crossing Taker result",
+    "Taker maximum cash reservation and all DvP legs finalize in one canonical transition",
+    "all five validators return the same state root",
+    "the identical transition is rejected as a replay",
+    "a restarted validator recovers the accepted state root"
+  ],
+  "acceptance": {
+    "required": [
+      "both participants receive signed admission receipts from all seven MPC nodes",
+      "all seven nodes agree on the same program digest, artifact digest and public result for both rounds",
+      "the Maker reservation finalizes before its order can be used by the Taker round",
+      "the Taker fills 40 lots at price 100 with no post-match signature",
+      "amount and price evidence in zkPI are threshold generated",
+      "Taker reservation and DvP finalize atomically",
+      "five validator roots agree before and after one validator restart",
+      "receipt-chain verification and replay refusal pass"
+    ],
+    "reject_if": [
+      "the contract SHA-256 does not match the preregistered manifest",
+      "any node is omitted or reports a different result",
+      "settlement values are not bound to the VSS commitments",
+      "Maker admission occurs before canonical reservation",
+      "Taker reserve exists without the corresponding DvP",
+      "a replay changes canonical state",
+      "validator roots diverge",
+      "the artifact claims independent operators, WAN evidence, HSM custody, threshold settlement decryption or account-free notes"
+    ]
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "The settlement capability is opened by one laboratory gateway; threshold decryption remains a production cutover.",
+    "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
+    "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
+    "One functional scenario is not throughput, security-attack or economic-effect evidence."
+  ]
+}

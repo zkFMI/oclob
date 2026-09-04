@@ -3,12 +3,26 @@
 #![forbid(unsafe_code)]
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use oclob_core::{authorize_order, SecretOrder, Side, TimeInForce};
-use oclob_dekyx::deterministic_demo_environment;
+use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
+use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
+use oclob_edge::{SealedSettlementCapability, SettlementDecryptionKey};
+use oclob_node::edge_client::{
+    collect_order_certificate, execute_agreed_round, AgreedRoundExecution, EdgeAdmissionReceipt,
+};
+use oclob_node::executor::RoundPlan;
+use oclob_node::network::{
+    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
+};
+use oclob_ordering::{OrderCertificate, OrderingCommittee};
+use oclob_proofs::{
+    public_fills_digest, TransitionProof, TransitionStatement, VerifiedTransitionProof,
+};
 use oclob_service::OclobService;
 use oclob_settlement::avalanche::AvalancheCanonicalGateway;
+use oclob_settlement::{CanonicalAdmissionBatch, SettlementEngine};
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
 use qomm_defmi::facility::{DefmiFacility, QuorumAuthorizer};
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -37,6 +51,18 @@ struct Options {
     plugin_dir: Option<PathBuf>,
 }
 
+struct IntegratedPaths {
+    cluster: PathBuf,
+    coordinator_identity: PathBuf,
+    maker_receipt: PathBuf,
+    taker_receipt: PathBuf,
+    maker_capability: PathBuf,
+    taker_capability: PathBuf,
+    settlement_key: PathBuf,
+    research_contract: PathBuf,
+    research_manifest: PathBuf,
+}
+
 fn main() {
     if let Err(error) = run_main() {
         eprintln!("OCLOB Avalanche acceptance rejected: {error}");
@@ -53,6 +79,599 @@ fn run_main() -> RunResult<()> {
 }
 
 fn run(options: &Options) -> RunResult<Value> {
+    match IntegratedPaths::from_environment()? {
+        Some(paths) => run_integrated(options, &paths),
+        None => run_compatibility(options),
+    }
+}
+
+impl IntegratedPaths {
+    fn from_environment() -> RunResult<Option<Self>> {
+        const NAMES: [&str; 9] = [
+            "OCLOB_CLUSTER_CONFIG",
+            "OCLOB_COORDINATOR_IDENTITY",
+            "OCLOB_MAKER_RECEIPT",
+            "OCLOB_TAKER_RECEIPT",
+            "OCLOB_MAKER_CAPABILITY",
+            "OCLOB_TAKER_CAPABILITY",
+            "OCLOB_SETTLEMENT_KEY",
+            "OCLOB_RESEARCH_CONTRACT",
+            "OCLOB_RESEARCH_MANIFEST",
+        ];
+        let values = NAMES.map(std::env::var_os);
+        if values.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        if values.iter().any(Option::is_none) {
+            return Err(failure(
+                "integrated acceptance requires all nine OCLOB_* path variables",
+            ));
+        }
+        let mut values = values.into_iter().map(|value| {
+            PathBuf::from(value.expect("all integrated acceptance variables were checked"))
+        });
+        Ok(Some(Self {
+            cluster: values.next().expect("cluster path"),
+            coordinator_identity: values.next().expect("identity path"),
+            maker_receipt: values.next().expect("maker receipt path"),
+            taker_receipt: values.next().expect("taker receipt path"),
+            maker_capability: values.next().expect("maker capability path"),
+            taker_capability: values.next().expect("taker capability path"),
+            settlement_key: values.next().expect("settlement key path"),
+            research_contract: values.next().expect("research contract path"),
+            research_manifest: values.next().expect("research manifest path"),
+        }))
+    }
+}
+
+fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value> {
+    let started = Instant::now();
+    let research =
+        validate_integrated_research_binding(&paths.research_contract, &paths.research_manifest)?;
+    let clients = rpc_clients(&options.node_uris, &options.chain_id)?;
+    if clients.len() != EXPECTED_VALIDATORS {
+        return Err(failure(format!(
+            "acceptance requires exactly {EXPECTED_VALIDATORS} validator RPC endpoints"
+        )));
+    }
+    let network = clients[0]
+        .call("defmivm.network", json!({}))
+        .map_err(failure)?;
+    let initial_roots = agreed_roots(&clients)?;
+    let cluster: ClusterPublicConfig = read_json_limited(&paths.cluster)?;
+    cluster
+        .validate()
+        .map_err(|error| failure(error.to_string()))?;
+    if cluster.market_id != MARKET {
+        return Err(failure(
+            "distributed cluster is configured for another market",
+        ));
+    }
+    let identity: ClientIdentityConfig = read_json_limited(&paths.coordinator_identity)?;
+    identity
+        .validate()
+        .map_err(|error| failure(error.to_string()))?;
+    let coordinator = SigningKey::from_bytes(
+        &load_secret_32(&identity.application_signing_key)
+            .map_err(|error| failure(error.to_string()))?,
+    );
+    let tls = client_tls_context(
+        &identity.tls_certificate,
+        &identity.tls_private_key,
+        &identity.tls_ca,
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let maker_receipt: EdgeAdmissionReceipt = read_json_limited(&paths.maker_receipt)?;
+    let taker_receipt: EdgeAdmissionReceipt = read_json_limited(&paths.taker_receipt)?;
+    let now = unix_seconds()?;
+    maker_receipt
+        .verify(&cluster, now)
+        .map_err(|error| failure(error.to_string()))?;
+    taker_receipt
+        .verify(&cluster, now)
+        .map_err(|error| failure(error.to_string()))?;
+    if maker_receipt.manifest.market_id != MARKET
+        || taker_receipt.manifest.market_id != MARKET
+        || maker_receipt.commitment() == taker_receipt.commitment()
+    {
+        return Err(failure(
+            "edge receipts are not two distinct orders in this market",
+        ));
+    }
+
+    let settlement_key = SettlementDecryptionKey::from_raw(
+        load_secret_32(&paths.settlement_key).map_err(|error| failure(error.to_string()))?,
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    if settlement_key
+        .public_key()
+        .map_err(|error| failure(error.to_string()))?
+        != cluster.settlement_encryption_key
+    {
+        return Err(failure(
+            "settlement private key is not the configured recipient",
+        ));
+    }
+    let maker_envelope: SealedSettlementCapability = read_json_limited(&paths.maker_capability)?;
+    let taker_envelope: SealedSettlementCapability = read_json_limited(&paths.taker_capability)?;
+    let maker = maker_envelope
+        .open(&settlement_key, &maker_receipt.manifest, now)
+        .map_err(|error| failure(error.to_string()))?;
+    let taker = taker_envelope
+        .open(&settlement_key, &taker_receipt.manifest, now)
+        .map_err(|error| failure(error.to_string()))?;
+    if hidden_eligibility_commitment(maker.order()) != maker.eligibility_commitment()
+        || hidden_eligibility_commitment(taker.order()) != taker.eligibility_commitment()
+    {
+        return Err(failure(
+            "settlement capability is not bound to its eligibility scope",
+        ));
+    }
+    let maker_presentation: AnonymousPresentation =
+        serde_json::from_slice(maker.eligibility_evidence())?;
+    let taker_presentation: AnonymousPresentation =
+        serde_json::from_slice(taker.eligibility_evidence())?;
+    let (mut eligibility, _) =
+        deterministic_demo_environment(MARKET).map_err(|error| failure(error.to_string()))?;
+    let maker_eligibility = eligibility
+        .verify_order(
+            maker.order_commitment().0,
+            maker.order().dekyx_nullifier(),
+            maker.order().expires_at(),
+            &maker_presentation,
+            now,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+    let taker_eligibility = eligibility
+        .verify_order(
+            taker.order_commitment().0,
+            taker.order().dekyx_nullifier(),
+            taker.order().expires_at(),
+            &taker_presentation,
+            now,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+
+    let transition_committee =
+        OrderingCommittee::deterministic_for_demo().map_err(|error| failure(error.to_string()))?;
+    let mut settlement = SettlementEngine::new_with_transition_committee(
+        &mut rand::rngs::OsRng,
+        &transition_committee.verifying_keys(),
+        transition_committee.policy(),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    settlement
+        .bind_eligible_participant(
+            maker.order().participant_handle(),
+            maker_eligibility.subject_nullifier,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+    settlement
+        .bind_eligible_participant(
+            taker.order().participant_handle(),
+            taker_eligibility.subject_nullifier,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+    let (authorizer, approval_keys) = committee(&options.chain_id)?;
+    let receipt_key = SigningKey::from_bytes(&digest(b"oclob-integrated-receipt-key-v1"));
+    let facility =
+        DefmiFacility::open(&options.projection, authorizer, receipt_key).map_err(failure)?;
+    let gateway = AvalancheCanonicalGateway::new(&facility, &clients, &approval_keys)?;
+
+    let now = unix_seconds()?;
+    let maker_certificate = collect_order_certificate(
+        &cluster,
+        &tls,
+        None,
+        maker.order_commitment(),
+        maker.order().expires_at(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let maker_plan = RoundPlan::sign(
+        maker_certificate.clone(),
+        vec![],
+        now,
+        now.saturating_add(300).min(maker.order().expires_at()),
+        &coordinator,
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let maker_execution =
+        execute_agreed_round(&cluster, &tls, &maker_plan, Duration::from_secs(300))
+            .map_err(|error| failure(error.to_string()))?;
+    validate_integrated_maker(&maker_execution)?;
+    let private_genesis = tagged_digest(b"OCLOB:DISTRIBUTED:PRIVATE-GENESIS:v1", MARKET.as_bytes());
+    let public_genesis = tagged_digest(b"OCLOB:DISTRIBUTED:PUBLIC-GENESIS:v1", MARKET.as_bytes());
+    let (maker_transition, private_after_maker, public_after_maker) = verified_round_transition(
+        &transition_committee,
+        &maker_certificate,
+        &maker_plan,
+        &maker_execution,
+        maker_eligibility.proof_digest,
+        &[],
+        private_genesis,
+        public_genesis,
+    )?;
+    let mut maker_candidate = settlement.clone();
+    let maker_reservation = maker_candidate
+        .reserve_order(&maker)
+        .map_err(|error| failure(error.to_string()))?;
+    let maker_prepared = settlement
+        .prepare_canonical_reservation(
+            maker_candidate,
+            maker_reservation,
+            &maker,
+            &maker_certificate,
+            &maker_transition,
+            now,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+    let bootstrap_root = gateway.bootstrap(&maker_prepared)?;
+    let maker_acceptance = gateway.settle(&maker_prepared, now)?;
+    let maker_tx = maker_acceptance.transaction_id().to_owned();
+    let maker_height = maker_acceptance.height();
+    let maker_applied = maker_prepared
+        .accept(&mut settlement, maker_acceptance)
+        .map_err(|error| failure(error.to_string()))?;
+    let maker_reservation = match maker_applied {
+        oclob_settlement::AppliedCanonicalTransition::Reservation(receipt) => receipt,
+        oclob_settlement::AppliedCanonicalTransition::Settlement(_) => {
+            return Err(failure("maker admission unexpectedly produced DvP"));
+        }
+    };
+
+    let now = unix_seconds()?;
+    let taker_certificate = collect_order_certificate(
+        &cluster,
+        &tls,
+        Some(&maker_certificate),
+        taker.order_commitment(),
+        taker.order().expires_at(),
+        Duration::from_secs(30),
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let taker_plan = RoundPlan::sign(
+        taker_certificate.clone(),
+        vec![maker.order_commitment()],
+        now,
+        now.saturating_add(300).min(taker.order().expires_at()),
+        &coordinator,
+    )
+    .map_err(|error| failure(error.to_string()))?;
+    let taker_execution =
+        execute_agreed_round(&cluster, &tls, &taker_plan, Duration::from_secs(300))
+            .map_err(|error| failure(error.to_string()))?;
+    validate_integrated_taker(&taker_execution)?;
+    let fills = vec![PublicFill {
+        maker_order: maker.order_commitment(),
+        taker_order: taker.order_commitment(),
+        price: taker_execution.result.slots[0].trade_price,
+        quantity: taker_execution.result.slots[0].trade_quantity,
+    }];
+    let (taker_transition, _, _) = verified_round_transition(
+        &transition_committee,
+        &taker_certificate,
+        &taker_plan,
+        &taker_execution,
+        taker_eligibility.proof_digest,
+        &fills,
+        private_after_maker,
+        public_after_maker,
+    )?;
+    let mut taker_candidate = settlement.clone();
+    let taker_reservation = taker_candidate
+        .reserve_order(&taker)
+        .map_err(|error| failure(error.to_string()))?;
+    let taker_prepared = settlement
+        .prepare_canonical_admission_batch(CanonicalAdmissionBatch {
+            reserved_candidate: taker_candidate,
+            reservation_receipt: &taker_reservation,
+            fills: &fills,
+            transition: &taker_transition,
+            certificate: &taker_certificate,
+            arriving: &taker,
+            arriving_remaining: taker_execution.result.arriving_remaining,
+            now,
+        })
+        .map_err(|error| failure(error.to_string()))?;
+    let taker_acceptance = gateway.settle(&taker_prepared, now)?;
+    let accepted_tx = taker_acceptance.transaction_id().to_owned();
+    let accepted_height = taker_acceptance.height();
+    let accepted_root = taker_acceptance.after_state_root();
+    let replay_rejected = gateway.settle(&taker_prepared, now).is_err();
+    if !replay_rejected {
+        return Err(failure(
+            "integrated canonical settlement replay was accepted",
+        ));
+    }
+    let taker_applied = taker_prepared
+        .accept(&mut settlement, taker_acceptance)
+        .map_err(|error| failure(error.to_string()))?;
+    let settlement_receipt = match taker_applied {
+        oclob_settlement::AppliedCanonicalTransition::Settlement(receipt) => receipt,
+        oclob_settlement::AppliedCanonicalTransition::Reservation(_) => {
+            return Err(failure("crossing taker produced no DvP"));
+        }
+    };
+
+    let roots_before_restart = wait_for_roots(&clients, accepted_root, Duration::from_secs(30))?;
+    let mut restart_ms = None;
+    let mut roots_after_restart = roots_before_restart.clone();
+    if let Some(runner) = options.runner.as_deref() {
+        restart_ms = Some(restart_validator(
+            runner,
+            &options.runner_endpoint,
+            &options.restart_node,
+            options.plugin_dir.as_deref(),
+        )?);
+        let restarted = rpc_clients(&options.node_uris, &options.chain_id)?;
+        roots_after_restart = wait_for_roots(&restarted, accepted_root, Duration::from_secs(30))?;
+    }
+    let maker_portfolio = settlement
+        .participant_portfolio(maker.order().participant_handle())
+        .map_err(|error| failure(error.to_string()))?;
+    let taker_portfolio = settlement
+        .participant_portfolio(taker.order().participant_handle())
+        .map_err(|error| failure(error.to_string()))?;
+    if maker_portfolio.securities != 9_960
+        || maker_portfolio.cash != 100_004_000
+        || maker_portfolio.reserved_securities != 20
+        || taker_portfolio.securities != 10_040
+        || taker_portfolio.cash != 99_996_000
+        || taker_portfolio.reserved_cash != 0
+        || !facility.verify_receipt_chain().map_err(failure)?
+        || roots_before_restart != roots_after_restart
+    {
+        return Err(failure(
+            "integrated balances, reserves, receipt chain, or restart recovery failed",
+        ));
+    }
+
+    Ok(json!({
+        "schema": "oclob.distributed-avalanche-acceptance/v1",
+        "verdict": "accepted",
+        "research": research,
+        "environment": "seven MPC containers plus five AvalancheGo validators on one host",
+        "evm_used": false,
+        "network": network,
+        "chain_id": options.chain_id,
+        "initial_roots": initial_roots,
+        "topology": {
+            "mpc_nodes": cluster.nodes.len(),
+            "avalanche_validators": clients.len(),
+            "operator_hosts": 1,
+            "independent_operators_claimed": false,
+        },
+        "privacy_boundary": {
+            "participant_edge_shared_before_coordinator": true,
+            "coordinator_received_plain_order": false,
+            "maker_signed_admission_receipts": maker_receipt.node_receipts.len(),
+            "taker_signed_admission_receipts": taker_receipt.node_receipts.len(),
+            "settlement_capability_recipient_only": true,
+            "mpc_values_bound_to_settlement_capability": true,
+            "dekyx_presentations_verified_by_settlement_gateway": true,
+        },
+        "distributed_ordering": {
+            "quorum": 5,
+            "maker_sequence": maker_certificate.sequence,
+            "taker_sequence": taker_certificate.sequence,
+            "maker_votes": maker_certificate.votes.len(),
+            "taker_votes": taker_certificate.votes.len(),
+            "certificate_chain_verified_and_persisted_by_each_mpc_node": true,
+        },
+        "distributed_matching": {
+            "protocol": "MP-SPDZ malicious-shamir",
+            "parties": 7,
+            "max_corrupt_parties": 2,
+            "maker_round_receipts": maker_execution.receipts.len(),
+            "taker_round_receipts": taker_execution.receipts.len(),
+            "all_outputs_agreed": true,
+            "program_sha256": hex::encode(taker_execution.receipts[0].program_sha256),
+            "artifact_sha256": hex::encode(taker_execution.receipts[0].artifact_sha256),
+            "price": fills[0].price,
+            "quantity": fills[0].quantity,
+            "maker_remainder": maker_execution.result.arriving_remaining - fills[0].quantity,
+            "taker_remainder": taker_execution.result.arriving_remaining,
+        },
+        "canonical_settlement": {
+            "bootstrap_root": hex::encode(bootstrap_root),
+            "maker_reservation_transaction_id": maker_tx,
+            "maker_reservation_height": maker_height,
+            "maker_reservation_zkpi": maker_reservation.zkpi_digest.map(hex::encode),
+            "taker_dvp_transaction_id": accepted_tx,
+            "taker_dvp_height": accepted_height,
+            "state_root": hex::encode(accepted_root),
+            "threshold_amount_range": settlement_receipt.amount_range_is_threshold,
+            "threshold_price_range": settlement_receipt.price_range_is_threshold,
+            "taker_reservation_finalized_with_dvp": settlement_receipt.arriving_reservation_zkpi_digest.is_some(),
+            "replay_rejected": replay_rejected,
+            "receipt_chain_verified": true,
+            "validator_roots_before_restart": roots_before_restart,
+            "validator_roots_after_restart": roots_after_restart,
+        },
+        "restart": {
+            "node": options.restart_node,
+            "elapsed_ms": restart_ms,
+            "root_recovered": true,
+        },
+        "external_binaries": {
+            "avalanchego": tool_record(options.avalanchego.as_deref(), true)?,
+            "avalanche_network_runner": tool_record(options.runner.as_deref(), false)?,
+        },
+        "elapsed_ms": started.elapsed().as_secs_f64() * 1_000.0,
+        "non_claims": [
+            "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+            "The settlement capability is opened by one laboratory gateway; threshold decryption remains a production cutover.",
+            "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
+            "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
+            "One functional scenario is not throughput, security-attack or economic-effect evidence."
+        ]
+    }))
+}
+
+fn validate_integrated_research_binding(
+    contract_path: &Path,
+    manifest_path: &Path,
+) -> RunResult<Value> {
+    let contract_bytes = read_limited_bytes(contract_path)?;
+    let contract: Value = serde_json::from_slice(&contract_bytes)
+        .map_err(|_| failure("integrated research contract is malformed"))?;
+    let manifest: Value = read_json_limited(manifest_path)?;
+    let contract_id = contract
+        .get("contract_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("integrated research contract has no id"))?;
+    let manifest_contract = manifest.get("contract_id").and_then(Value::as_str);
+    let manifest_id = manifest
+        .get("manifest_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("integrated research manifest has no id"))?;
+    let expected_sha = manifest
+        .get("contract_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("integrated research manifest has no contract digest"))?;
+    let actual_sha: [u8; 32] = Sha256::digest(&contract_bytes).into();
+    if contract_id != "oclob-distributed-avalanche-v1"
+        || manifest_contract != Some(contract_id)
+        || expected_sha != hex::encode(actual_sha)
+        || manifest.get("stage").and_then(Value::as_str) != Some("CONFIRMATION")
+        || manifest.get("primary_metric").and_then(Value::as_str)
+            != Some("complete_distributed_avalanche_settlement_path")
+    {
+        return Err(failure(
+            "integrated research contract and manifest are not the approved pair",
+        ));
+    }
+    Ok(json!({
+        "contract_id": contract_id,
+        "contract_sha256": expected_sha,
+        "manifest_id": manifest_id,
+        "stage": "CONFIRMATION",
+        "primary_metric": "complete_distributed_avalanche_settlement_path",
+        "observed_value": 1
+    }))
+}
+
+fn validate_integrated_maker(execution: &AgreedRoundExecution) -> RunResult<()> {
+    if execution.result.slots.len() != MAX_MATCH_SLOTS
+        || execution.result.arriving_remaining != 60
+        || execution
+            .result
+            .slots
+            .iter()
+            .any(|slot| slot.matched || slot.trade_price != 0 || slot.trade_quantity != 0)
+    {
+        return Err(failure(
+            "distributed maker round returned an unexpected result",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_integrated_taker(execution: &AgreedRoundExecution) -> RunResult<()> {
+    if execution.result.slots.len() != MAX_MATCH_SLOTS
+        || !execution.result.slots[0].matched
+        || execution.result.slots[0].trade_price != 100
+        || execution.result.slots[0].trade_quantity != 40
+        || execution.result.arriving_remaining != 0
+        || execution.result.slots[1..]
+            .iter()
+            .any(|slot| slot.matched || slot.trade_price != 0 || slot.trade_quantity != 0)
+    {
+        return Err(failure(
+            "distributed taker round returned an unexpected result",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verified_round_transition(
+    committee: &OrderingCommittee,
+    certificate: &OrderCertificate,
+    plan: &RoundPlan,
+    execution: &AgreedRoundExecution,
+    eligibility_proof_digest: [u8; 32],
+    fills: &[PublicFill],
+    private_before_root: [u8; 32],
+    public_before_root: [u8; 32],
+) -> RunResult<(VerifiedTransitionProof, [u8; 32], [u8; 32])> {
+    if execution.receipts.is_empty()
+        || execution.receipts[0].round_id != plan.round_id
+        || certificate.commitment != plan.arriving
+        || certificate.digest() != plan.ordering_certificate.digest()
+    {
+        return Err(failure(
+            "distributed execution is not bound to its ordering certificate",
+        ));
+    }
+    let private_after_root = chained_round_root(
+        b"OCLOB:DISTRIBUTED:PRIVATE-ROUND:v1",
+        private_before_root,
+        plan,
+        &execution.receipts[0].public_output_sha256,
+    );
+    let public_after_root = chained_round_root(
+        b"OCLOB:DISTRIBUTED:PUBLIC-ROUND:v1",
+        public_before_root,
+        plan,
+        &public_fills_digest(fills),
+    );
+    let proof = TransitionProof::attest(
+        TransitionStatement {
+            market_id: certificate.market_id.clone(),
+            sequence: certificate.sequence,
+            order_certificate_digest: certificate.digest(),
+            eligibility_proof_digest,
+            private_before_root,
+            private_after_root,
+            public_before_root,
+            public_after_root,
+            mpc_program_digest: execution.receipts[0].program_sha256,
+            mpc_output_digest: execution.receipts[0].public_output_sha256,
+            fill_digest: public_fills_digest(fills),
+        },
+        &committee.transition_signers(),
+        committee.policy(),
+    )?
+    .into_verified(&committee.verifying_keys(), committee.policy())?;
+    Ok((proof, private_after_root, public_after_root))
+}
+
+fn chained_round_root(
+    domain: &[u8],
+    before: [u8; 32],
+    plan: &RoundPlan,
+    output: &[u8; 32],
+) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(domain)
+        .chain_update(before)
+        .chain_update(plan.round_id)
+        .chain_update(output)
+        .finalize()
+        .into()
+}
+
+fn tagged_digest(domain: &[u8], body: &[u8]) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(domain)
+        .chain_update((body.len() as u64).to_be_bytes())
+        .chain_update(body)
+        .finalize()
+        .into()
+}
+
+fn hidden_eligibility_commitment(order: &SecretOrder) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(b"OCLOB:LAB-ELIGIBILITY-COMMITMENT:v1")
+        .chain_update(order.dekyx_nullifier())
+        .chain_update(order.market_id().as_bytes())
+        .finalize()
+        .into()
+}
+
+fn run_compatibility(options: &Options) -> RunResult<Value> {
     let started = Instant::now();
     let clients = rpc_clients(&options.node_uris, &options.chain_id)?;
     if clients.len() != EXPECTED_VALIDATORS {
@@ -617,6 +1236,36 @@ fn write_json_atomic(path: &Path, value: &Value) -> RunResult<()> {
     fs::write(&temporary, bytes)?;
     fs::rename(temporary, path)?;
     Ok(())
+}
+
+fn read_json_limited<T: DeserializeOwned>(path: &Path) -> RunResult<T> {
+    Ok(serde_json::from_slice(&read_limited_bytes(path)?)?)
+}
+
+fn read_limited_bytes(path: &Path) -> RunResult<Vec<u8>> {
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_BYTES
+    {
+        return Err(failure(format!(
+            "refusing unsafe or oversized JSON input {}",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(failure(format!(
+            "refusing oversized input {}",
+            path.display()
+        )));
+    }
+    Ok(bytes)
 }
 
 fn parse_args() -> RunResult<Options> {

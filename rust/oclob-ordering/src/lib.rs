@@ -93,7 +93,13 @@ impl OrderingNode {
         expires_at: u64,
         now: u64,
     ) -> Result<OrderVote, OrderingError> {
-        if sequence == 0 || market_id.is_empty() || now > expires_at {
+        if sequence == 0
+            || market_id.is_empty()
+            || market_id.len() > 64
+            || commitment.0 == [0; 32]
+            || (sequence == 1) != (previous_certificate == [0; 32])
+            || now > expires_at
+        {
             return Err(OrderingError::InvalidVote);
         }
         let statement = vote_digest(
@@ -153,7 +159,16 @@ impl OrderCertificate {
         now: u64,
     ) -> Result<(), OrderingError> {
         policy.validate()?;
-        if now > self.expires_at || self.votes.len() < policy.ordering_quorum {
+        if self.sequence == 0
+            || self.market_id.is_empty()
+            || self.market_id.len() > 64
+            || self.commitment.0 == [0; 32]
+            || (self.sequence == 1) != (self.previous_certificate == [0; 32])
+            || now > self.expires_at
+        {
+            return Err(OrderingError::InvalidVote);
+        }
+        if self.votes.len() < policy.ordering_quorum {
             return Err(OrderingError::InsufficientQuorum);
         }
         let wanted = vote_digest(

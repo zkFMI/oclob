@@ -2,13 +2,12 @@
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oclob_core::{MpcBatchResult, MAX_MATCH_SLOTS};
-use oclob_node::edge_client::EdgeAdmissionReceipt;
+use oclob_node::edge_client::{collect_order_certificate, EdgeAdmissionReceipt};
 use oclob_node::executor::{NodeExecutionReceipt, RoundPlan};
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClientTlsConfig, ClusterPublicConfig,
     NodeRpcClient,
 };
-use oclob_ordering::OrderingCommittee;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -37,8 +36,13 @@ fn run() -> Result<(), String> {
     identity.validate().map_err(|error| error.to_string())?;
     let maker: EdgeAdmissionReceipt = read_json(&paths.maker)?;
     let taker: EdgeAdmissionReceipt = read_json(&paths.taker)?;
-    maker.verify().map_err(|error| error.to_string())?;
-    taker.verify().map_err(|error| error.to_string())?;
+    let now = unix_seconds()?;
+    maker
+        .verify(&cluster, now)
+        .map_err(|error| error.to_string())?;
+    taker
+        .verify(&cluster, now)
+        .map_err(|error| error.to_string())?;
     if maker.manifest.market_id != cluster.market_id
         || taker.manifest.market_id != cluster.market_id
         || maker.commitment() == taker.commitment()
@@ -54,24 +58,19 @@ fn run() -> Result<(), String> {
         &identity.tls_ca,
     )
     .map_err(|error| error.to_string())?;
-    let mut ordering =
-        OrderingCommittee::deterministic_for_demo().map_err(|error| error.to_string())?;
     let started = Instant::now();
-    let now = unix_seconds()?;
-    let maker_certificate = ordering
-        .certify(
-            &cluster.market_id,
-            maker.commitment(),
-            maker.manifest.retention_deadline,
-            now,
-        )
-        .map_err(|error| error.to_string())?;
-    let maker_plan = RoundPlan::sign(
-        &cluster.market_id,
-        maker_certificate.sequence,
-        maker_certificate.digest(),
-        vec![],
+    let maker_certificate = collect_order_certificate(
+        &cluster,
+        &tls,
+        None,
         maker.commitment(),
+        maker.manifest.retention_deadline,
+        Duration::from_secs(30),
+    )
+    .map_err(|error| error.to_string())?;
+    let maker_plan = RoundPlan::sign(
+        maker_certificate.clone(),
+        vec![],
         now,
         now.saturating_add(300),
         &coordinator,
@@ -82,20 +81,18 @@ fn run() -> Result<(), String> {
     validate_maker_result(&maker_result)?;
 
     let now = unix_seconds()?;
-    let taker_certificate = ordering
-        .certify(
-            &cluster.market_id,
-            taker.commitment(),
-            taker.manifest.retention_deadline,
-            now,
-        )
-        .map_err(|error| error.to_string())?;
-    let taker_plan = RoundPlan::sign(
-        &cluster.market_id,
-        taker_certificate.sequence,
-        taker_certificate.digest(),
-        vec![maker.commitment()],
+    let taker_certificate = collect_order_certificate(
+        &cluster,
+        &tls,
+        Some(&maker_certificate),
         taker.commitment(),
+        taker.manifest.retention_deadline,
+        Duration::from_secs(30),
+    )
+    .map_err(|error| error.to_string())?;
+    let taker_plan = RoundPlan::sign(
+        taker_certificate.clone(),
+        vec![maker.commitment()],
         now,
         now.saturating_add(300),
         &coordinator,
@@ -129,14 +126,18 @@ fn run() -> Result<(), String> {
         "edge_admission": {
             "maker": hex::encode(maker.receipt_digest),
             "taker": hex::encode(taker.receipt_digest),
+            "maker_signed_node_receipts": maker.node_receipts.len(),
+            "taker_signed_node_receipts": taker.node_receipts.len(),
             "all_seven_nodes_acknowledged": true,
             "coordinator_received_plain_order": false
         },
         "ordering": {
+            "quorum": 5,
             "maker_sequence": maker_certificate.sequence,
             "taker_sequence": taker_certificate.sequence,
             "maker_votes": maker_certificate.votes.len(),
-            "taker_votes": taker_certificate.votes.len()
+            "taker_votes": taker_certificate.votes.len(),
+            "node_verified_certificate_chain": true
         },
         "matching": {
             "protocol": "MP-SPDZ malicious-shamir",

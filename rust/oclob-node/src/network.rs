@@ -6,9 +6,10 @@
 
 use crate::executor::{NodeExecutionReceipt, PartyExecutor, RoundPlan};
 use crate::{IngestOutcome, NodeShareStore, NodeStoreStatus};
-use ed25519_dalek::VerifyingKey;
-use oclob_core::Digest32;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::{EdgeOrderManifest, SealedPartyShare};
+use oclob_ordering::{vote_digest, CommitteePolicy, OrderVote};
 use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use rand::RngCore;
@@ -31,6 +32,7 @@ pub const REQUEST_RECORD_BYTES: usize = 32 * 1024;
 pub const RESPONSE_RECORD_BYTES: usize = 16 * 1024;
 const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ1";
 const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS1";
+const ADMISSION_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-ADMISSION-RECEIPT:v1";
 const RECORD_VERSION: u16 = 1;
 const RECORD_HEADER_BYTES: usize = 8 + 2 + 4 + 32;
 const MAX_TLS_KEY_BYTES: u64 = 128 * 1024;
@@ -71,6 +73,13 @@ enum NodeRequest {
         manifest: Box<EdgeOrderManifest>,
         sealed: SealedPartyShare,
     },
+    Vote {
+        market_id: String,
+        sequence: u64,
+        commitment: OrderCommitment,
+        previous_certificate: Digest32,
+        expires_at: u64,
+    },
     Execute {
         plan: RoundPlan,
     },
@@ -80,10 +89,94 @@ enum NodeRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum NodeResponse {
-    Ingested { party: u16, generation: u64 },
+    Ingested { receipt: Box<NodeAdmissionReceipt> },
+    Voted { vote: OrderVote },
     Executed { receipt: Box<NodeExecutionReceipt> },
     Status { status: NodeStoreStatus },
     Rejected { code: String },
+}
+
+/// Durable proof that one authenticated node accepted one participant-signed
+/// manifest into a specific persistent-store generation.  TLS authenticates
+/// the live channel; this signature keeps the acknowledgement verifiable after
+/// the connection and participant process have gone away.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodeAdmissionReceipt {
+    pub version: u16,
+    pub party: u16,
+    pub order_commitment: OrderCommitment,
+    pub manifest_signer: Digest32,
+    pub generation: u64,
+    pub state_digest: Digest32,
+    pub signer: Digest32,
+    pub signature: Vec<u8>,
+}
+
+impl NodeAdmissionReceipt {
+    fn sign(
+        party: u16,
+        manifest: &EdgeOrderManifest,
+        generation: u64,
+        state_digest: Digest32,
+        key: &SigningKey,
+    ) -> Result<Self, NetworkError> {
+        if usize::from(party) >= oclob_edge::MPC_PARTIES
+            || generation == 0
+            || state_digest == [0; 32]
+        {
+            return Err(NetworkError::State);
+        }
+        let mut receipt = Self {
+            version: RECORD_VERSION,
+            party,
+            order_commitment: manifest.commitment,
+            manifest_signer: manifest.signer,
+            generation,
+            state_digest,
+            signer: key.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        };
+        receipt.signature = key.sign(&receipt.signature_body()).to_bytes().to_vec();
+        Ok(receipt)
+    }
+
+    pub fn verify(
+        &self,
+        manifest: &EdgeOrderManifest,
+        expected_party: u16,
+        expected_signer: &VerifyingKey,
+    ) -> Result<(), NetworkError> {
+        if self.version != RECORD_VERSION
+            || self.party != expected_party
+            || usize::from(self.party) >= oclob_edge::MPC_PARTIES
+            || self.order_commitment != manifest.commitment
+            || self.manifest_signer != manifest.signer
+            || self.generation == 0
+            || self.state_digest == [0; 32]
+            || self.signer != expected_signer.to_bytes()
+        {
+            return Err(NetworkError::Protocol);
+        }
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| NetworkError::Protocol)?;
+        expected_signer
+            .verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| NetworkError::Protocol)
+    }
+
+    fn signature_body(&self) -> Vec<u8> {
+        [
+            ADMISSION_RECEIPT_DOMAIN,
+            &self.version.to_be_bytes(),
+            &self.party.to_be_bytes(),
+            &self.order_commitment.0,
+            &self.manifest_signer,
+            &self.generation.to_be_bytes(),
+            &self.state_digest,
+            &self.signer,
+        ]
+        .concat()
+    }
 }
 
 #[derive(Clone)]
@@ -138,6 +231,9 @@ pub fn certificate_fingerprint(der: &[u8]) -> Digest32 {
 
 struct NodeRuntime {
     store: Mutex<NodeShareStore>,
+    receipt_signing_key: SigningKey,
+    ordering_policy: CommitteePolicy,
+    ordering_keys: BTreeMap<u16, VerifyingKey>,
     executor: Option<Mutex<PartyExecutor>>,
     execute_lock: Mutex<()>,
 }
@@ -155,16 +251,27 @@ impl NodeRpcServer {
         tls: ServerTlsConfig,
         principals: Vec<Principal>,
         store: NodeShareStore,
+        receipt_signing_key: SigningKey,
+        ordering_policy: CommitteePolicy,
+        ordering_keys: BTreeMap<u16, VerifyingKey>,
         executor: Option<PartyExecutor>,
         max_connections: usize,
         timeout: Duration,
         minimum_response_time: Duration,
     ) -> Result<Self, NetworkError> {
+        ordering_policy
+            .validate()
+            .map_err(|_| NetworkError::Configuration)?;
+        let party = store.status().map_err(|_| NetworkError::State)?.party;
+        let node_id = party.checked_add(1).ok_or(NetworkError::Configuration)?;
         if max_connections == 0
             || max_connections > 1_024
             || timeout.is_zero()
             || timeout > Duration::from_secs(600)
             || minimum_response_time > Duration::from_secs(5)
+            || ordering_keys.len() != ordering_policy.nodes
+            || (1..=ordering_policy.nodes).any(|id| !ordering_keys.contains_key(&(id as u16)))
+            || ordering_keys.get(&node_id) != Some(&receipt_signing_key.verifying_key())
         {
             return Err(NetworkError::Configuration);
         }
@@ -189,6 +296,9 @@ impl NodeRpcServer {
         let active = Arc::new(AtomicUsize::new(0));
         let runtime = Arc::new(NodeRuntime {
             store: Mutex::new(store),
+            receipt_signing_key,
+            ordering_policy,
+            ordering_keys,
             executor: executor.map(Mutex::new),
             execute_lock: Mutex::new(()),
         });
@@ -258,6 +368,7 @@ pub struct NodeEndpoint {
     pub port: u16,
     pub server_name: String,
     pub certificate_sha256: Digest32,
+    pub receipt_verifying_key: Digest32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -279,6 +390,7 @@ impl ClusterNodePublic {
             port: self.rpc_port,
             server_name: self.server_name.clone(),
             certificate_sha256: self.tls_certificate_sha256,
+            receipt_verifying_key: self.receipt_verifying_key,
         }
     }
 }
@@ -288,6 +400,7 @@ pub struct ClusterPublicConfig {
     pub version: u16,
     pub market_id: String,
     pub program: String,
+    pub settlement_encryption_key: oclob_edge::SettlementEncryptionKey,
     pub nodes: Vec<ClusterNodePublic>,
 }
 
@@ -297,6 +410,7 @@ impl ClusterPublicConfig {
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
+            || self.settlement_encryption_key.0 == [0; 32]
             || self.nodes.len() != oclob_edge::MPC_PARTIES
         {
             return Err(NetworkError::Configuration);
@@ -313,7 +427,34 @@ impl ClusterPublicConfig {
                 return Err(NetworkError::Configuration);
             }
         }
+        let unique_keys = self
+            .nodes
+            .iter()
+            .map(|node| node.receipt_verifying_key)
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique_keys.len() != self.nodes.len() {
+            return Err(NetworkError::Configuration);
+        }
         Ok(())
+    }
+
+    /// Ordering node identifiers are 1..=7, whereas MP-SPDZ party identifiers
+    /// are 0..=6. The already pinned node receipt key signs ordering votes over
+    /// a separate domain-separated statement.
+    pub fn ordering_verifying_keys(&self) -> Result<BTreeMap<u16, VerifyingKey>, NetworkError> {
+        self.validate()?;
+        self.nodes
+            .iter()
+            .map(|node| {
+                let node_id = node
+                    .party
+                    .checked_add(1)
+                    .ok_or(NetworkError::Configuration)?;
+                let key = VerifyingKey::from_bytes(&node.receipt_verifying_key)
+                    .map_err(|_| NetworkError::Configuration)?;
+                Ok((node_id, key))
+            })
+            .collect()
     }
 }
 
@@ -357,6 +498,7 @@ impl NodeRpcClient {
             || endpoint.port == 0
             || endpoint.server_name.is_empty()
             || endpoint.certificate_sha256 == [0; 32]
+            || VerifyingKey::from_bytes(&endpoint.receipt_verifying_key).is_err()
             || timeout.is_zero()
             || timeout > Duration::from_secs(600)
         {
@@ -373,13 +515,20 @@ impl NodeRpcClient {
         &self,
         manifest: EdgeOrderManifest,
         sealed: SealedPartyShare,
-    ) -> Result<u64, NetworkError> {
+    ) -> Result<NodeAdmissionReceipt, NetworkError> {
+        let expected_manifest = manifest.clone();
         match self.call(NodeRequest::Ingest {
             manifest: Box::new(manifest),
             sealed,
         })? {
-            NodeResponse::Ingested { party, generation } if party == self.endpoint.party => {
-                Ok(generation)
+            NodeResponse::Ingested { receipt } if receipt.party == self.endpoint.party => {
+                receipt.verify(
+                    &expected_manifest,
+                    self.endpoint.party,
+                    &VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
+                        .map_err(|_| NetworkError::Protocol)?,
+                )?;
+                Ok(*receipt)
             }
             NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
             _ => Err(NetworkError::Protocol),
@@ -390,6 +539,45 @@ impl NodeRpcClient {
         match self.call(NodeRequest::Execute { plan })? {
             NodeResponse::Executed { receipt } if receipt.party == self.endpoint.party => {
                 Ok(*receipt)
+            }
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
+    pub fn vote(
+        &self,
+        market_id: &str,
+        sequence: u64,
+        commitment: OrderCommitment,
+        previous_certificate: Digest32,
+        expires_at: u64,
+    ) -> Result<OrderVote, NetworkError> {
+        let expected = vote_digest(
+            market_id,
+            sequence,
+            commitment,
+            previous_certificate,
+            expires_at,
+        );
+        match self.call(NodeRequest::Vote {
+            market_id: market_id.to_owned(),
+            sequence,
+            commitment,
+            previous_certificate,
+            expires_at,
+        })? {
+            NodeResponse::Voted { vote }
+                if vote.node_id == self.endpoint.party.saturating_add(1)
+                    && vote.statement_digest == expected =>
+            {
+                let signature = Signature::try_from(vote.signature.as_slice())
+                    .map_err(|_| NetworkError::Protocol)?;
+                VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
+                    .map_err(|_| NetworkError::Protocol)?
+                    .verify_strict(&expected, &signature)
+                    .map_err(|_| NetworkError::Protocol)?;
+                Ok(vote)
             }
             NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
             _ => Err(NetworkError::Protocol),
@@ -487,29 +675,77 @@ fn dispatch_checked(
     match request {
         NodeRequest::Ingest { manifest, sealed } => {
             require_role(principal, PeerRole::Participant)?;
-            if manifest.signer != principal.application_key {
-                return Err(NetworkError::Unauthorized);
-            }
-            let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
-            let outcome = store
-                .ingest(*manifest, sealed, now)
-                .map_err(|_| NetworkError::Admission)?;
-            let status = store.status().map_err(|_| NetworkError::State)?;
-            let generation = match outcome {
-                IngestOutcome::Stored { generation }
-                | IngestOutcome::AlreadyPresent { generation } => generation,
+            let manifest = *manifest;
+            let (generation, status) = {
+                let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
+                let outcome = store
+                    .ingest(manifest.clone(), sealed, now)
+                    .map_err(|_| NetworkError::Admission)?;
+                let status = store.status().map_err(|_| NetworkError::State)?;
+                let generation = match outcome {
+                    IngestOutcome::Stored { generation }
+                    | IngestOutcome::AlreadyPresent { generation } => generation,
+                };
+                (generation, status)
             };
             if generation != status.generation {
                 return Err(NetworkError::State);
             }
-            Ok(NodeResponse::Ingested {
-                party: status.party,
+            let receipt = NodeAdmissionReceipt::sign(
+                status.party,
+                &manifest,
                 generation,
+                status.state_digest,
+                &runtime.receipt_signing_key,
+            )?;
+            Ok(NodeResponse::Ingested {
+                receipt: Box::new(receipt),
+            })
+        }
+        NodeRequest::Vote {
+            market_id,
+            sequence,
+            commitment,
+            previous_certificate,
+            expires_at,
+        } => {
+            require_role(principal, PeerRole::Coordinator)?;
+            let (statement_digest, node_id) = {
+                let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
+                let statement_digest = store
+                    .record_order_vote(
+                        &market_id,
+                        sequence,
+                        commitment,
+                        previous_certificate,
+                        expires_at,
+                        now,
+                    )
+                    .map_err(|_| NetworkError::Ordering)?;
+                let node_id = store
+                    .status()
+                    .map_err(|_| NetworkError::State)?
+                    .party
+                    .checked_add(1)
+                    .ok_or(NetworkError::State)?;
+                (statement_digest, node_id)
+            };
+            Ok(NodeResponse::Voted {
+                vote: OrderVote {
+                    node_id,
+                    statement_digest,
+                    signature: runtime
+                        .receipt_signing_key
+                        .sign(&statement_digest)
+                        .to_bytes()
+                        .to_vec(),
+                },
             })
         }
         NodeRequest::Execute { plan } => {
             require_role(principal, PeerRole::Coordinator)?;
-            plan.verify(now).map_err(|_| NetworkError::Plan)?;
+            plan.verify_ordering(runtime.ordering_policy, &runtime.ordering_keys, now)
+                .map_err(|_| NetworkError::Plan)?;
             if plan.coordinator != principal.application_key {
                 return Err(NetworkError::Unauthorized);
             }
@@ -517,6 +753,17 @@ fn dispatch_checked(
                 .execute_lock
                 .lock()
                 .map_err(|_| NetworkError::State)?;
+            runtime
+                .store
+                .lock()
+                .map_err(|_| NetworkError::State)?
+                .accept_order_certificate(
+                    &plan.ordering_certificate,
+                    runtime.ordering_policy,
+                    &runtime.ordering_keys,
+                    now,
+                )
+                .map_err(|_| NetworkError::Ordering)?;
             if let Some(receipt) = runtime
                 .store
                 .lock()
@@ -531,7 +778,7 @@ fn dispatch_checked(
                 .store
                 .lock()
                 .map_err(|_| NetworkError::State)?
-                .prepare_round(&plan.resting, plan.arriving, now)
+                .prepare_round(&plan.market_id, &plan.resting, plan.arriving, now)
                 .map_err(|_| NetworkError::RoundInput)?;
             let executor = runtime
                 .executor
@@ -705,6 +952,8 @@ pub enum NetworkError {
     Admission,
     #[error("round plan is invalid")]
     Plan,
+    #[error("ordering vote or certificate was rejected")]
+    Ordering,
     #[error("round input is not available")]
     RoundInput,
     #[error("party execution is disabled")]
@@ -729,6 +978,7 @@ impl NetworkError {
             Self::Unauthorized | Self::TlsPeer | Self::TlsHandshake => "unauthorized",
             Self::Admission => "admission_rejected",
             Self::Plan => "plan_rejected",
+            Self::Ordering => "ordering_rejected",
             Self::RoundInput => "round_input_unavailable",
             Self::RuntimeDisabled => "runtime_disabled",
             Self::Execution => "execution_failed",
@@ -800,7 +1050,19 @@ mod tests {
         let public_keys: [NodeEncryptionKey; MPC_PARTIES] =
             std::array::from_fn(|party| node_keys[party].public_key().unwrap());
         let participant_signer = SigningKey::from_bytes(&[7; 32]);
+        let one_time_order_signer = SigningKey::from_bytes(&[10; 32]);
         let coordinator_signer = SigningKey::from_bytes(&[8; 32]);
+        let receipt_signer = SigningKey::from_bytes(&[9; 32]);
+        let ordering_keys = (1_u16..=7)
+            .map(|node_id| {
+                let key = if node_id == 1 {
+                    receipt_signer.verifying_key()
+                } else {
+                    SigningKey::from_bytes(&[node_id as u8 + 20; 32]).verifying_key()
+                };
+                (node_id, key)
+            })
+            .collect();
         let principals = vec![
             Principal {
                 certificate_sha256: files.participant_fingerprint,
@@ -820,6 +1082,9 @@ mod tests {
             server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap(),
             principals,
             store,
+            receipt_signer.clone(),
+            CommitteePolicy::seven_node(),
+            ordering_keys,
             None,
             8,
             Duration::from_secs(5),
@@ -832,6 +1097,7 @@ mod tests {
             port: server.address().port(),
             server_name: "localhost".into(),
             certificate_sha256: files.server_fingerprint,
+            receipt_verifying_key: receipt_signer.verifying_key().to_bytes(),
         };
         let participant = NodeRpcClient::new(
             endpoint.clone(),
@@ -861,21 +1127,36 @@ mod tests {
             &order,
             [4; 32],
             [5; 32],
-            &participant_signer,
+            &one_time_order_signer,
             &public_keys,
             &mut rand::rngs::OsRng,
         )
         .unwrap();
         let manifest = bundle.manifest().clone();
-        let delivery = bundle.into_deliveries()[0].1.clone();
-        assert_eq!(
-            participant
-                .ingest(manifest.clone(), delivery.clone())
-                .unwrap(),
-            1
+        assert_ne!(
+            manifest.signer,
+            participant_signer.verifying_key().to_bytes()
         );
-        assert_eq!(participant.ingest(manifest, delivery).unwrap(), 1);
+        let delivery = bundle.into_deliveries()[0].1.clone();
+        let first = participant
+            .ingest(manifest.clone(), delivery.clone())
+            .unwrap();
+        first
+            .verify(&manifest, 0, &receipt_signer.verifying_key())
+            .unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(participant.ingest(manifest, delivery).unwrap(), first);
         assert_eq!(coordinator.status().unwrap().record_count, 1);
+        let vote = coordinator
+            .vote(
+                "JGB10Y-JPY",
+                1,
+                first.order_commitment,
+                [0; 32],
+                2_000_000_000,
+            )
+            .unwrap();
+        assert_eq!(vote.node_id, 1);
         assert!(participant.status().is_err());
     }
 

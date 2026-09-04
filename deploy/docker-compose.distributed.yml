@@ -120,6 +120,8 @@ services:
       - /identity/client.json
       - --handoff
       - /handoff/maker.json
+      - --settlement-handoff
+      - /handoff/maker-capability.json
       - --scenario
       - maker
 
@@ -137,6 +139,8 @@ services:
       - /identity/client.json
       - --handoff
       - /handoff/taker.json
+      - --settlement-handoff
+      - /handoff/taker-capability.json
       - --scenario
       - taker
 
@@ -163,6 +167,31 @@ services:
       - /research/manifests/oclob_distributed_e2e.json
       - --artifact
       - /handoff/oclob_distributed_e2e.json
+
+  settlement:
+    image: ${OCLOB_AVALANCHE_IMAGE:-oclob-avalanche:local}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [oclob-private]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/cluster/settlement:/settlement:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/handoff:/handoff:ro
+      - ${OCLOB_RUNTIME_DIR:?set OCLOB_RUNTIME_DIR}/out:/out:rw
+      - ${OCLOB_SOURCE_DIR:?set OCLOB_SOURCE_DIR}/research:/research:ro
+    environment:
+      OCLOB_CLUSTER_CONFIG: /public/cluster.json
+      OCLOB_COORDINATOR_IDENTITY: /identity/client.json
+      OCLOB_MAKER_RECEIPT: /handoff/maker.json
+      OCLOB_TAKER_RECEIPT: /handoff/taker.json
+      OCLOB_MAKER_CAPABILITY: /handoff/maker-capability.json
+      OCLOB_TAKER_CAPABILITY: /handoff/taker-capability.json
+      OCLOB_SETTLEMENT_KEY: /settlement/capability-key.raw
+      OCLOB_RESEARCH_CONTRACT: /research/oclob_distributed_avalanche_contract.json
+      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_distributed_avalanche_e2e.json
+      QOMM_AVALANCHE_ARTIFACT: /out/oclob_distributed_avalanche_acceptance.json
 
 networks:
   oclob-private:

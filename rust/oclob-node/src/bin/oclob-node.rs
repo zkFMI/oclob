@@ -3,8 +3,11 @@
 use ed25519_dalek::SigningKey;
 use oclob_edge::NodeDecryptionKey;
 use oclob_node::executor::PartyExecutor;
-use oclob_node::network::{load_secret_32, server_tls_context, NodeRpcServer, Principal};
+use oclob_node::network::{
+    load_secret_32, server_tls_context, ClusterPublicConfig, NodeRpcServer, Principal,
+};
 use oclob_node::NodeShareStore;
+use oclob_ordering::CommitteePolicy;
 use serde::Deserialize;
 use serde_json::json;
 use std::fs::{self, File};
@@ -27,6 +30,7 @@ struct Config {
     principals: Vec<Principal>,
     share_private_key: PathBuf,
     receipt_signing_key: PathBuf,
+    cluster_public_config: PathBuf,
     share_store: PathBuf,
     ready_file: PathBuf,
     mp_spdz_root: PathBuf,
@@ -59,6 +63,21 @@ fn run() -> Result<(), String> {
     let receipt_key = SigningKey::from_bytes(
         &load_secret_32(&config.receipt_signing_key).map_err(|error| error.to_string())?,
     );
+    let cluster: ClusterPublicConfig = read_json(&config.cluster_public_config)?;
+    cluster.validate().map_err(|error| error.to_string())?;
+    let public_node = cluster
+        .nodes
+        .get(usize::from(config.party))
+        .ok_or_else(|| "node is absent from the public cluster configuration".to_owned())?;
+    if public_node.party != config.party
+        || public_node.receipt_verifying_key != receipt_key.verifying_key().to_bytes()
+        || cluster.program != config.program
+    {
+        return Err("node private identity does not match the public cluster configuration".into());
+    }
+    let ordering_keys = cluster
+        .ordering_verifying_keys()
+        .map_err(|error| error.to_string())?;
     let store = NodeShareStore::open(&config.share_store, config.party, share_key)
         .map_err(|error| error.to_string())?;
     let executor = PartyExecutor::open(
@@ -68,7 +87,7 @@ fn run() -> Result<(), String> {
         &config.program,
         &config.mpc_hosts,
         Duration::from_secs(config.execution_timeout_seconds),
-        receipt_key,
+        receipt_key.clone(),
     )
     .map_err(|error| error.to_string())?;
     let tls = server_tls_context(
@@ -82,6 +101,9 @@ fn run() -> Result<(), String> {
         tls,
         config.principals,
         store,
+        receipt_key,
+        CommitteePolicy::seven_node(),
+        ordering_keys,
         Some(executor),
         config.max_connections,
         Duration::from_secs(config.rpc_timeout_seconds),

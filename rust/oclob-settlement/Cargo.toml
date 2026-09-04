@@ -7,6 +7,7 @@ description = "Threshold zkPI issuance and atomic DeFMI DvP for OCLOB fills"
 
 [dependencies]
 oclob-core.workspace = true
+oclob-edge.workspace = true
 oclob-ordering.workspace = true
 oclob-proofs.workspace = true
 qomm-defmi.workspace = true

@@ -13,9 +13,10 @@ pub mod network;
 
 use oclob_core::{Digest32, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_edge::{EdgeOrderManifest, NodeDecryptionKey, SealedPartyShare, MPC_PARTIES};
+use oclob_ordering::{vote_digest, CommitteePolicy, OrderCertificate};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -23,7 +24,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 2;
+const STORE_VERSION: u16 = 3;
+const LEGACY_STORE_VERSION: u16 = 2;
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,7 +36,26 @@ struct StoredRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct StoredOrderVote {
+    statement_digest: Digest32,
+    expires_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StoreState {
+    version: u16,
+    party: u16,
+    generation: u64,
+    records: BTreeMap<String, StoredRecord>,
+    completed_rounds: BTreeMap<String, executor::NodeExecutionReceipt>,
+    ordering_sequence: u64,
+    ordering_head: Digest32,
+    ordering_votes: BTreeMap<u64, StoredOrderVote>,
+    ordered_commitments: BTreeSet<String>,
+}
+
+#[derive(Deserialize)]
+struct LegacyStoreStateV2 {
     version: u16,
     party: u16,
     generation: u64,
@@ -48,6 +69,8 @@ pub struct NodeStoreStatus {
     pub generation: u64,
     pub record_count: usize,
     pub completed_round_count: usize,
+    pub ordering_sequence: u64,
+    pub ordering_head: Digest32,
     pub state_digest: Digest32,
 }
 
@@ -116,19 +139,14 @@ impl NodeShareStore {
         }
         let path = path.into();
         reject_symlink(&path)?;
-        let state = if path.exists() {
+        let existed = path.exists();
+        let (state, migrated) = if existed {
             read_state(&path, party)?
         } else {
-            StoreState {
-                version: STORE_VERSION,
-                party,
-                generation: 0,
-                records: BTreeMap::new(),
-                completed_rounds: BTreeMap::new(),
-            }
+            (empty_state(party), false)
         };
         let mut store = Self { path, key, state };
-        if !store.path.exists() {
+        if !existed || migrated {
             store.persist()?;
         }
         Ok(store)
@@ -140,6 +158,8 @@ impl NodeShareStore {
             generation: self.state.generation,
             record_count: self.state.records.len(),
             completed_round_count: self.state.completed_rounds.len(),
+            ordering_sequence: self.state.ordering_sequence,
+            ordering_head: self.state.ordering_head,
             state_digest: state_digest(&self.state)?,
         })
     }
@@ -184,26 +204,180 @@ impl NodeShareStore {
         })
     }
 
+    /// Persist one node's anti-equivocation decision before returning its
+    /// ordering signature. A coordinator can retry the same statement, but it
+    /// cannot obtain a second vote for the same live sequence from this node.
+    pub fn record_order_vote(
+        &mut self,
+        market_id: &str,
+        sequence: u64,
+        commitment: OrderCommitment,
+        previous_certificate: Digest32,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<Digest32, NodeError> {
+        let expected_sequence = self
+            .state
+            .ordering_sequence
+            .checked_add(1)
+            .ok_or(NodeError::Generation)?;
+        let record = self
+            .state
+            .records
+            .get(&commitment.hex())
+            .ok_or(NodeError::UnknownOrder)?;
+        if market_id.is_empty()
+            || market_id.len() > 64
+            || sequence != expected_sequence
+            || previous_certificate != self.state.ordering_head
+            || now > expires_at
+            || record.manifest.market_id != market_id
+            || expires_at > record.manifest.retention_deadline
+            || self.state.ordered_commitments.contains(&commitment.hex())
+        {
+            return Err(NodeError::Ordering(
+                "vote does not extend the node's admitted-order chain".into(),
+            ));
+        }
+        let statement_digest = vote_digest(
+            market_id,
+            sequence,
+            commitment,
+            previous_certificate,
+            expires_at,
+        );
+        if let Some(existing) = self.state.ordering_votes.get(&sequence) {
+            if existing.statement_digest == statement_digest {
+                return Ok(statement_digest);
+            }
+            if now <= existing.expires_at {
+                return Err(NodeError::Ordering(
+                    "node refuses an equivocal vote for a live sequence".into(),
+                ));
+            }
+        }
+        let previous = self.state.clone();
+        self.state.ordering_votes.insert(
+            sequence,
+            StoredOrderVote {
+                statement_digest,
+                expires_at,
+            },
+        );
+        if let Err(error) = self.bump_generation() {
+            self.state = previous;
+            return Err(error);
+        }
+        if let Err(error) = self.persist() {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(statement_digest)
+    }
+
+    /// Accept and durably advance one complete 5-of-7 ordering certificate.
+    /// The certificate is checked against pinned node keys, the local admitted
+    /// order, any prior local vote, and the node's previous certificate head.
+    pub fn accept_order_certificate(
+        &mut self,
+        certificate: &OrderCertificate,
+        policy: CommitteePolicy,
+        keys: &BTreeMap<u16, ed25519_dalek::VerifyingKey>,
+        now: u64,
+    ) -> Result<u64, NodeError> {
+        certificate
+            .verify(policy, keys, now)
+            .map_err(|error| NodeError::Ordering(error.to_string()))?;
+        let digest = certificate.digest();
+        let commitment_key = certificate.commitment.hex();
+        if certificate.sequence == self.state.ordering_sequence {
+            return if self.state.ordering_head == digest
+                && self.state.ordered_commitments.contains(&commitment_key)
+            {
+                Ok(self.state.generation)
+            } else {
+                Err(NodeError::Ordering(
+                    "certificate conflicts with the accepted chain head".into(),
+                ))
+            };
+        }
+        let expected_sequence = self
+            .state
+            .ordering_sequence
+            .checked_add(1)
+            .ok_or(NodeError::Generation)?;
+        let record = self
+            .state
+            .records
+            .get(&commitment_key)
+            .ok_or(NodeError::UnknownOrder)?;
+        let statement = vote_digest(
+            &certificate.market_id,
+            certificate.sequence,
+            certificate.commitment,
+            certificate.previous_certificate,
+            certificate.expires_at,
+        );
+        if certificate.sequence != expected_sequence
+            || certificate.previous_certificate != self.state.ordering_head
+            || record.manifest.market_id != certificate.market_id
+            || certificate.expires_at > record.manifest.retention_deadline
+            || self.state.ordered_commitments.contains(&commitment_key)
+            || self
+                .state
+                .ordering_votes
+                .get(&certificate.sequence)
+                .is_some_and(|vote| vote.statement_digest != statement && now <= vote.expires_at)
+        {
+            return Err(NodeError::Ordering(
+                "certificate does not extend the node's accepted chain".into(),
+            ));
+        }
+        let previous = self.state.clone();
+        self.state.ordering_sequence = certificate.sequence;
+        self.state.ordering_head = digest;
+        self.state.ordered_commitments.insert(commitment_key);
+        self.state.ordering_votes.remove(&certificate.sequence);
+        if let Err(error) = self.bump_generation() {
+            self.state = previous;
+            return Err(error);
+        }
+        if let Err(error) = self.persist() {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(self.state.generation)
+    }
+
     /// Assemble the fixed OCLOB matching frame from commitments only. Resting
     /// sequence is public; side, price, quantity and participant identity are
     /// never supplied by the coordinator.
     pub fn prepare_round(
         &self,
+        market_id: &str,
         resting: &[OrderCommitment],
         arriving: OrderCommitment,
         now: u64,
     ) -> Result<PreparedPartyInput, NodeError> {
-        if resting.len() > MAX_MATCH_SLOTS || resting.contains(&arriving) {
+        let mut unique = resting.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if market_id.is_empty()
+            || market_id.len() > 64
+            || resting.len() > MAX_MATCH_SLOTS
+            || resting.contains(&arriving)
+            || unique.len() != resting.len()
+        {
             return Err(NodeError::Round(
-                "round has too many or duplicate order commitments".into(),
+                "round market or order commitments are invalid".into(),
             ));
         }
-        let arriving_share = self.open_record(arriving, now)?;
+        let arriving_share = self.open_record(arriving, market_id, now)?;
         let arriving_values = arriving_share.value_share_decimals();
         let mut fields = Vec::with_capacity(MAX_MATCH_SLOTS * 4 + 4);
         for slot in 0..MAX_MATCH_SLOTS {
             if let Some(commitment) = resting.get(slot) {
-                let share = self.open_record(*commitment, now)?;
+                let share = self.open_record(*commitment, market_id, now)?;
                 let values = share.value_share_decimals();
                 fields.push("1".to_owned());
                 fields.extend([values[0].clone(), values[1].clone(), values[2].clone()]);
@@ -331,6 +505,7 @@ impl NodeShareStore {
     fn open_record(
         &self,
         commitment: OrderCommitment,
+        market_id: &str,
         now: u64,
     ) -> Result<oclob_edge::PartyOrderShare, NodeError> {
         let record = self
@@ -338,6 +513,11 @@ impl NodeShareStore {
             .records
             .get(&commitment.hex())
             .ok_or(NodeError::UnknownOrder)?;
+        if record.manifest.market_id != market_id {
+            return Err(NodeError::Round(
+                "round market differs from the committed order market".into(),
+            ));
+        }
         record
             .sealed
             .open(&self.key, &record.manifest, self.state.party, now)
@@ -388,9 +568,32 @@ impl NodeShareStore {
         }
         result
     }
+
+    fn bump_generation(&mut self) -> Result<(), NodeError> {
+        self.state.generation = self
+            .state
+            .generation
+            .checked_add(1)
+            .ok_or(NodeError::Generation)?;
+        Ok(())
+    }
 }
 
-fn read_state(path: &Path, expected_party: u16) -> Result<StoreState, NodeError> {
+fn empty_state(party: u16) -> StoreState {
+    StoreState {
+        version: STORE_VERSION,
+        party,
+        generation: 0,
+        records: BTreeMap::new(),
+        completed_rounds: BTreeMap::new(),
+        ordering_sequence: 0,
+        ordering_head: [0; 32],
+        ordering_votes: BTreeMap::new(),
+        ordered_commitments: BTreeSet::new(),
+    }
+}
+
+fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), NodeError> {
     reject_symlink(path)?;
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() as usize > MAX_STORE_BYTES + 48 {
@@ -416,11 +619,60 @@ fn read_state(path: &Path, expected_party: u16) -> Result<StoreState, NodeError>
     if encoded[end..] != expected {
         return Err(NodeError::State("node share store checksum failed".into()));
     }
-    let state: StoreState = serde_json::from_slice(&encoded[16..end])
+    let value: serde_json::Value = serde_json::from_slice(&encoded[16..end])
         .map_err(|_| NodeError::State("node share store payload is invalid".into()))?;
-    if state.version != STORE_VERSION || state.party != expected_party {
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| NodeError::State("node share store version is invalid".into()))?;
+    let (state, migrated) = match version {
+        STORE_VERSION => (
+            serde_json::from_value(value)
+                .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
+            false,
+        ),
+        LEGACY_STORE_VERSION => {
+            let legacy: LegacyStoreStateV2 = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy node store payload is invalid".into()))?;
+            if legacy.version != LEGACY_STORE_VERSION {
+                return Err(NodeError::State(
+                    "legacy node store version is invalid".into(),
+                ));
+            }
+            (
+                StoreState {
+                    version: STORE_VERSION,
+                    party: legacy.party,
+                    generation: legacy.generation,
+                    records: legacy.records,
+                    completed_rounds: legacy.completed_rounds,
+                    ordering_sequence: 0,
+                    ordering_head: [0; 32],
+                    ordering_votes: BTreeMap::new(),
+                    ordered_commitments: BTreeSet::new(),
+                },
+                true,
+            )
+        }
+        _ => {
+            return Err(NodeError::State(
+                "node share store belongs to an unsupported version".into(),
+            ))
+        }
+    };
+    if state.party != expected_party
+        || (state.ordering_sequence == 0) != (state.ordering_head == [0; 32])
+        || u64::try_from(state.ordered_commitments.len()).ok() != Some(state.ordering_sequence)
+        || state.ordering_votes.len() > 1
+        || state.ordering_votes.iter().any(|(sequence, vote)| {
+            *sequence != state.ordering_sequence.saturating_add(1)
+                || vote.statement_digest == [0; 32]
+                || vote.expires_at == 0
+        })
+    {
         return Err(NodeError::State(
-            "node share store belongs to another version or party".into(),
+            "node share store has an invalid party or ordering chain".into(),
         ));
     }
     for (key, record) in &state.records {
@@ -433,7 +685,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<StoreState, NodeError>
             ));
         }
     }
-    Ok(state)
+    Ok((state, migrated))
 }
 
 fn reject_symlink(path: &Path) -> Result<(), NodeError> {
@@ -493,6 +745,8 @@ pub enum NodeError {
     UnknownOrder,
     #[error("round plan is invalid: {0}")]
     Round(String),
+    #[error("ordering state is invalid: {0}")]
+    Ordering(String),
     #[error("node state is invalid: {0}")]
     State(String),
     #[error("unsafe node-store path: {0}")]
@@ -507,6 +761,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use oclob_core::{SecretOrder, Side, TimeInForce};
     use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
+    use oclob_ordering::OrderingCommittee;
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -616,6 +871,7 @@ mod tests {
             .unwrap();
         let prepared = store
             .prepare_round(
+                "JGB10Y-JPY",
                 &[first_manifest.commitment],
                 second_manifest.commitment,
                 1_900_000_000,
@@ -629,6 +885,14 @@ mod tests {
         assert!(!text.contains("JGB10Y-JPY"));
         assert!(!text.contains(&first_manifest.commitment.hex()));
         assert!(prepared.write_exclusive(&input_path).is_err());
+        assert!(store
+            .prepare_round(
+                "USD-JPY",
+                &[first_manifest.commitment],
+                second_manifest.commitment,
+                1_900_000_000,
+            )
+            .is_err());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -658,6 +922,120 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         assert!(
             NodeShareStore::open(&path, 0, NodeDecryptionKey::from_raw(key_raw).unwrap()).is_err()
+        );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn ordering_vote_and_certificate_chain_survive_restart() {
+        let (private, public) = keyset();
+        let signer = SigningKey::generate(&mut rand::rngs::OsRng);
+        let first = EdgeOrderBundle::create(
+            &order(100, 60, 21),
+            [22; 32],
+            [23; 32],
+            &signer,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let second = EdgeOrderBundle::create(
+            &order(101, 40, 24),
+            [25; 32],
+            [26; 32],
+            &signer,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let first_manifest = first.manifest().clone();
+        let second_manifest = second.manifest().clone();
+        let first_delivery = first.into_deliveries()[0].1.clone();
+        let second_delivery = second.into_deliveries()[0].1.clone();
+        let path = temp_path("ordering");
+        let key_raw = private[0].raw_private_key().unwrap();
+        let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
+        store
+            .ingest(first_manifest.clone(), first_delivery, 1_900_000_000)
+            .unwrap();
+        store
+            .ingest(second_manifest.clone(), second_delivery, 1_900_000_000)
+            .unwrap();
+        let mut committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let first_certificate = committee
+            .certify(
+                "JGB10Y-JPY",
+                first_manifest.commitment,
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        store
+            .record_order_vote(
+                "JGB10Y-JPY",
+                1,
+                first_manifest.commitment,
+                [0; 32],
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        assert!(store
+            .record_order_vote(
+                "JGB10Y-JPY",
+                1,
+                second_manifest.commitment,
+                [0; 32],
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .is_err());
+        store
+            .accept_order_certificate(
+                &first_certificate,
+                committee.policy(),
+                &committee.verifying_keys(),
+                1_900_000_000,
+            )
+            .unwrap();
+        let first_head = first_certificate.digest();
+        assert_eq!(store.status().unwrap().ordering_sequence, 1);
+        assert_eq!(store.status().unwrap().ordering_head, first_head);
+        drop(store);
+
+        let mut reopened =
+            NodeShareStore::open(&path, 0, NodeDecryptionKey::from_raw(key_raw).unwrap()).unwrap();
+        assert_eq!(reopened.status().unwrap().ordering_head, first_head);
+        let second_certificate = committee
+            .certify(
+                "JGB10Y-JPY",
+                second_manifest.commitment,
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        reopened
+            .record_order_vote(
+                "JGB10Y-JPY",
+                2,
+                second_manifest.commitment,
+                first_head,
+                1_900_000_100,
+                1_900_000_000,
+            )
+            .unwrap();
+        reopened
+            .accept_order_certificate(
+                &second_certificate,
+                committee.policy(),
+                &committee.verifying_keys(),
+                1_900_000_000,
+            )
+            .unwrap();
+        assert_eq!(reopened.status().unwrap().ordering_sequence, 2);
+        assert_eq!(
+            reopened.status().unwrap().ordering_head,
+            second_certificate.digest()
         );
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

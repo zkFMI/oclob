@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 oclob-core.workspace = true
+oclob-dekyx.workspace = true
 oclob-edge.workspace = true
 oclob-mpc.workspace = true
 oclob-ordering.workspace = true
@@ -17,5 +18,6 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
+qomm-zkpi.workspace = true
 
 [dev-dependencies]

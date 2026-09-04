@@ -1,0 +1,50 @@
+{
+  "manifest_id": "oclob-distributed-avalanche-confirmation-001",
+  "contract_id": "oclob-distributed-avalanche-v1",
+  "contract_path": "research/oclob_distributed_avalanche_contract.json",
+  "contract_sha256": "25c2bdbe021b2eda30b3881d214c61c63ed5f0ece93af5758947ce744c250e2a",
+  "stage": "CONFIRMATION",
+  "current_bottleneck": "The participant-edge distributed MPC gate and the live Avalanche settlement gate had passed separately, but no single hash-bound run proved that the same hidden orders flow from seven-node matching into canonical DeFMI finality.",
+  "causal_hypothesis": "A recipient-only capability bound to all six Pedersen VSS constant terms will let the settlement gateway reserve and settle exactly the values used by the distributed MPC result without exposing the complete order to the coordinator.",
+  "single_intended_change": "Bind the already observed integrated path to an immutable contract and preregistered manifest, rejecting execution before any market action if their identifiers, stage, primary metric or SHA-256 differ.",
+  "baseline": "An unbound diagnostic run completed the same functional path in 49196.288443 ms, but its artifact did not prove which research contract governed the run.",
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "mpc_node_containers": 7,
+    "matching_rounds": 2,
+    "avalanche_validators": 5,
+    "canonical_transitions": 2,
+    "replay_attempts": 1,
+    "validator_restarts": 1
+  },
+  "primary_metric": "complete_distributed_avalanche_settlement_path",
+  "point_prediction": {
+    "complete_distributed_avalanche_settlement_path": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "elapsed_ms_excluding_image_build": 55000
+  },
+  "most_likely_prediction_error": "Avalanche network startup and MP-SPDZ process scheduling on the shared OmenX host may move elapsed time materially around 55000 ms without changing the functional verdict.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "the coordinator receives a complete order",
+    "either matching round returns fewer than seven valid agreeing receipts",
+    "the settlement capability does not open under the configured recipient or fails VSS binding",
+    "Maker reservation is not finalized before the Taker round",
+    "trade price is not 100 or quantity is not 40",
+    "Taker reservation and DvP do not finalize atomically",
+    "the same canonical transition is accepted twice",
+    "any validator returns a different root before or after restart",
+    "the artifact contains private order material or claims a production property excluded by the contract"
+  ],
+  "promotion_rules": [
+    "every functional rejection rule remains false",
+    "the artifact records the exact contract SHA-256 and manifest identifier",
+    "the artifact records seven MPC receipts per round and five agreeing validator roots",
+    "the artifact preserves every contract non-claim",
+    "the observed elapsed time is reported only as one-host functional evidence"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=omenx_ubuntu_zerotier"
+}

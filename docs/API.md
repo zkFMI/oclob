@@ -202,7 +202,7 @@ MPC healthが不足していれば、平文処理へ切り替えず `waiting_for
 1. 法人ごとのmTLSと署名付きrequest envelope。
 2. schema version、request id、idempotency key、有効期限を必須化。
 3. 注文平文を中央APIへ送らず、法人端末でshare化して7 nodeへ直接送る。
-4. commitmentと各shareの結合証明、全nodeのreceiptを導入する。
+4. 分散経路で実装済みの注文ごとの使い捨て署名鍵、commitment・各shareの結合検査、全nodeの署名付き保存受領証、5-of-7受付証明本体のノード側検証をHTTP/API経路でも必須にする。
 5. 認証主体からviewerを決め、query parameterで権限を切り替えない。
 6. 業務error code、retryability、監査ID、canonical receipt参照を固定する。
 7. body/header上限、timeout、rate limit、backpressureを定義する。

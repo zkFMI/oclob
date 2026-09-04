@@ -7,6 +7,7 @@ use oclob_mpc::{
     matching_program, parse_result, public_output_digest, MAX_CORRUPT_NODES, MPC_PARTIES,
     SHAMIR_FIELD_ORDER,
 };
+use oclob_ordering::{CommitteePolicy, OrderCertificate};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -32,7 +33,7 @@ pub struct RoundPlan {
     pub version: u16,
     pub market_id: String,
     pub sequence: u64,
-    pub ordering_certificate: Digest32,
+    pub ordering_certificate: OrderCertificate,
     pub resting: Vec<OrderCommitment>,
     pub arriving: OrderCommitment,
     pub issued_at: u64,
@@ -43,24 +44,20 @@ pub struct RoundPlan {
 }
 
 impl RoundPlan {
-    #[allow(clippy::too_many_arguments)]
     pub fn sign(
-        market_id: impl Into<String>,
-        sequence: u64,
-        ordering_certificate: Digest32,
+        ordering_certificate: OrderCertificate,
         resting: Vec<OrderCommitment>,
-        arriving: OrderCommitment,
         issued_at: u64,
         expires_at: u64,
         coordinator: &SigningKey,
     ) -> Result<Self, PartyExecutionError> {
         let mut plan = Self {
             version: VERSION,
-            market_id: market_id.into(),
-            sequence,
+            market_id: ordering_certificate.market_id.clone(),
+            sequence: ordering_certificate.sequence,
+            arriving: ordering_certificate.commitment,
             ordering_certificate,
             resting,
-            arriving,
             issued_at,
             expires_at,
             coordinator: coordinator.verifying_key().to_bytes(),
@@ -78,7 +75,10 @@ impl RoundPlan {
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.sequence == 0
-            || self.ordering_certificate == [0; 32]
+            || self.ordering_certificate.market_id != self.market_id
+            || self.ordering_certificate.sequence != self.sequence
+            || self.ordering_certificate.commitment != self.arriving
+            || self.expires_at > self.ordering_certificate.expires_at
             || self.coordinator == [0; 32]
             || self.arriving.0 == [0; 32]
             || self.resting.len() > MAX_MATCH_SLOTS
@@ -104,6 +104,21 @@ impl RoundPlan {
             .map_err(|_| PartyExecutionError::Plan)
     }
 
+    /// Verify the coordinator signature and the complete quorum certificate.
+    /// A digest alone is deliberately insufficient: every executor pins the
+    /// seven ordering identities and checks the 5-of-7 proof itself.
+    pub fn verify_ordering(
+        &self,
+        policy: CommitteePolicy,
+        keys: &std::collections::BTreeMap<u16, VerifyingKey>,
+        now: u64,
+    ) -> Result<(), PartyExecutionError> {
+        self.verify(now)?;
+        self.ordering_certificate
+            .verify(policy, keys, now)
+            .map_err(|_| PartyExecutionError::Plan)
+    }
+
     fn derived_round_id(&self) -> Digest32 {
         Sha256::digest(self.unsigned_body()).into()
     }
@@ -121,7 +136,7 @@ impl RoundPlan {
         body.extend_from_slice(&self.version.to_be_bytes());
         put_bytes(&mut body, self.market_id.as_bytes());
         body.extend_from_slice(&self.sequence.to_be_bytes());
-        body.extend_from_slice(&self.ordering_certificate);
+        body.extend_from_slice(&self.ordering_certificate.digest());
         body.extend_from_slice(&(self.resting.len() as u16).to_be_bytes());
         for commitment in &self.resting {
             body.extend_from_slice(&commitment.0);
@@ -574,22 +589,26 @@ pub enum PartyExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oclob_ordering::OrderingCommittee;
 
     #[test]
     fn round_plan_is_commitment_only_and_tamper_evident() {
         let key = SigningKey::from_bytes(&[3; 32]);
+        let mut ordering = OrderingCommittee::deterministic_for_demo().unwrap();
+        let certificate = ordering
+            .certify("JGB10Y-JPY", OrderCommitment([4; 32]), 1_060, 1_000)
+            .unwrap();
         let plan = RoundPlan::sign(
-            "JGB10Y-JPY",
-            9,
-            [8; 32],
+            certificate,
             vec![OrderCommitment([1; 32]), OrderCommitment([2; 32])],
-            OrderCommitment([4; 32]),
             1_000,
             1_060,
             &key,
         )
         .unwrap();
         plan.verify(1_030).unwrap();
+        plan.verify_ordering(ordering.policy(), &ordering.verifying_keys(), 1_030)
+            .unwrap();
         let encoded = serde_json::to_string(&plan).unwrap();
         assert!(!encoded.contains("price"));
         assert!(!encoded.contains("quantity"));
@@ -597,5 +616,19 @@ mod tests {
         let mut tampered = plan;
         tampered.sequence += 1;
         assert!(tampered.verify(1_030).is_err());
+    }
+
+    #[test]
+    fn coordinator_cannot_make_a_four_vote_certificate_executable() {
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let mut ordering = OrderingCommittee::deterministic_for_demo().unwrap();
+        let mut certificate = ordering
+            .certify("JGB10Y-JPY", OrderCommitment([4; 32]), 1_060, 1_000)
+            .unwrap();
+        certificate.votes.truncate(4);
+        let plan = RoundPlan::sign(certificate, vec![], 1_000, 1_060, &key).unwrap();
+        assert!(plan
+            .verify_ordering(ordering.policy(), &ordering.verifying_keys(), 1_030)
+            .is_err());
     }
 }

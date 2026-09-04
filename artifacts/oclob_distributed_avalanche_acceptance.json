@@ -1,0 +1,115 @@
+{
+  "canonical_settlement": {
+    "bootstrap_root": "6e2e8447c8bf7dcdb67a1afdc2fa6a2e9340a1cf27b3a85f90c96069789fb5fc",
+    "maker_reservation_height": 9,
+    "maker_reservation_transaction_id": "3gEQC4usJa76Y3TFbZcrLZ3uH4EBxBsKgAQX8woTNjiucFB42",
+    "maker_reservation_zkpi": "78fb9c49a1c171eecdbc6d6be73bf4ab697e6cf9ad975484d99aacb21f385b12",
+    "receipt_chain_verified": true,
+    "replay_rejected": true,
+    "state_root": "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+    "taker_dvp_height": 10,
+    "taker_dvp_transaction_id": "dbNHKdaw2qVGYHjvh2aVcwbH8muc5ckzU4iih5CkRFT2JqSau",
+    "taker_reservation_finalized_with_dvp": true,
+    "threshold_amount_range": true,
+    "threshold_price_range": true,
+    "validator_roots_after_restart": [
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26"
+    ],
+    "validator_roots_before_restart": [
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26",
+      "f71018ae7ace92822bafdda480cb050c9d6f786d3c6773933d3bf8389f184c26"
+    ]
+  },
+  "chain_id": "HCjpCo86xBGavrD5kRdaDqMT7XU9n4QxaHH3VQfA7fUk8uuDp",
+  "distributed_matching": {
+    "all_outputs_agreed": true,
+    "artifact_sha256": "e7d289cacb3df8d3f5fea8e7a9472de486f8d2e984933e90b765d5655ed422ab",
+    "maker_remainder": 20,
+    "maker_round_receipts": 7,
+    "max_corrupt_parties": 2,
+    "parties": 7,
+    "price": 100,
+    "program_sha256": "cd2266eab47cc5129e32000d37c134a0319c773a420642ae9087dcb7462f11b2",
+    "protocol": "MP-SPDZ malicious-shamir",
+    "quantity": 40,
+    "taker_remainder": 0,
+    "taker_round_receipts": 7
+  },
+  "distributed_ordering": {
+    "certificate_chain_verified_and_persisted_by_each_mpc_node": true,
+    "maker_sequence": 1,
+    "maker_votes": 7,
+    "quorum": 5,
+    "taker_sequence": 2,
+    "taker_votes": 7
+  },
+  "elapsed_ms": 31322.965531,
+  "environment": "seven MPC containers plus five AvalancheGo validators on one host",
+  "evm_used": false,
+  "external_binaries": {
+    "avalanche_network_runner": {
+      "sha256": "c67d0d59b63c8486c5995da6bcaa93ff5821327b12c82bc80dc7dabbc726b93f",
+      "version": "avalanche-network-runner version 1.8.3"
+    },
+    "avalanchego": {
+      "sha256": "023da7976ba7ab9a1ded2280ba26575649066078dd89805f826592e06c035c8b",
+      "version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]"
+    }
+  },
+  "initial_roots": [
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60",
+    "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60"
+  ],
+  "network": {
+    "chainID": "HCjpCo86xBGavrD5kRdaDqMT7XU9n4QxaHH3VQfA7fUk8uuDp",
+    "networkID": 1337,
+    "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "The settlement capability is opened by one laboratory gateway; threshold decryption remains a production cutover.",
+    "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
+    "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
+    "One functional scenario is not throughput, security-attack or economic-effect evidence."
+  ],
+  "privacy_boundary": {
+    "coordinator_received_plain_order": false,
+    "dekyx_presentations_verified_by_settlement_gateway": true,
+    "maker_signed_admission_receipts": 7,
+    "mpc_values_bound_to_settlement_capability": true,
+    "participant_edge_shared_before_coordinator": true,
+    "settlement_capability_recipient_only": true,
+    "taker_signed_admission_receipts": 7
+  },
+  "research": {
+    "contract_id": "oclob-distributed-avalanche-v1",
+    "contract_sha256": "25c2bdbe021b2eda30b3881d214c61c63ed5f0ece93af5758947ce744c250e2a",
+    "manifest_id": "oclob-distributed-avalanche-confirmation-001",
+    "observed_value": 1,
+    "primary_metric": "complete_distributed_avalanche_settlement_path",
+    "stage": "CONFIRMATION"
+  },
+  "restart": {
+    "elapsed_ms": 1064.246799,
+    "node": "node3",
+    "root_recovered": true
+  },
+  "schema": "oclob.distributed-avalanche-acceptance/v1",
+  "topology": {
+    "avalanche_validators": 5,
+    "independent_operators_claimed": false,
+    "mpc_nodes": 7,
+    "operator_hosts": 1
+  },
+  "verdict": "accepted"
+}

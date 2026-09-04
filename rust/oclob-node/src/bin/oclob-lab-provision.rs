@@ -4,7 +4,7 @@
 //! their private keys independently and submit CSRs to an offline authority.
 
 use ed25519_dalek::SigningKey;
-use oclob_edge::{NodeDecryptionKey, MPC_PARTIES};
+use oclob_edge::{NodeDecryptionKey, SettlementDecryptionKey, MPC_PARTIES};
 use oclob_node::network::{
     certificate_fingerprint, ClientIdentityConfig, ClusterNodePublic, ClusterPublicConfig,
     PeerRole, Principal,
@@ -76,6 +76,7 @@ fn provision(root: &Path) -> Result<(), String> {
     let maker_dir = create_private_dir(root.join("maker"))?;
     let taker_dir = create_private_dir(root.join("taker"))?;
     let coordinator_dir = create_private_dir(root.join("coordinator"))?;
+    let settlement_dir = create_private_dir(root.join("settlement"))?;
     let (ca_key, ca_cert) = create_ca()?;
     write_public(&public_dir.join("ca.pem"), &ca_cert.to_pem().map_err(err)?)?;
 
@@ -132,6 +133,13 @@ fn provision(root: &Path) -> Result<(), String> {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
+    let settlement_key = SettlementDecryptionKey::generate().map_err(|error| error.to_string())?;
+    write_private(
+        &settlement_dir.join("capability-key.raw"),
+        &settlement_key
+            .raw_private_key()
+            .map_err(|error| error.to_string())?,
+    )?;
     let mut public_nodes = Vec::with_capacity(MPC_PARTIES);
     for party in 0..MPC_PARTIES {
         let name = format!("oclob-node-{party}");
@@ -161,6 +169,7 @@ fn provision(root: &Path) -> Result<(), String> {
             "principals": principals.clone(),
             "share_private_key": "/node/share-key.raw",
             "receipt_signing_key": "/node/receipt-key.raw",
+            "cluster_public_config": "/public/cluster.json",
             "share_store": "/state/shares.bin",
             "ready_file": "/state/ready.json",
             "mp_spdz_root": "/opt/MP-SPDZ",
@@ -187,6 +196,9 @@ fn provision(root: &Path) -> Result<(), String> {
         version: 1,
         market_id: MARKET.into(),
         program: PROGRAM.into(),
+        settlement_encryption_key: settlement_key
+            .public_key()
+            .map_err(|error| error.to_string())?,
         nodes: public_nodes,
     };
     public.validate().map_err(|error| error.to_string())?;

@@ -5,7 +5,8 @@
 pub mod avalanche;
 
 use curve25519_dalek::scalar::Scalar;
-use oclob_core::{Digest32, PublicFill, SecretOrder, Side, TimeInForce};
+use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeInForce};
+use oclob_edge::VerifiedSettlementCapability;
 use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
 use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
 use qomm_defmi::assets::AssetRegistry;
@@ -38,6 +39,125 @@ pub const PROOF_QUORUM: [PartyId; 3] = [1, 2, 3];
 pub const PROOF_THRESHOLD: usize = 2;
 const VENUE_DOMAIN: &[u8] = b"defmi:oclob:v1";
 const ASSET_INDEX: u32 = 3;
+
+/// Minimal private order view required by reservation and DvP.  The ordinary
+/// service implements it with `SecretOrder`; the participant-edge path uses a
+/// verified settlement capability whose public identity is the VSS manifest
+/// commitment rather than the inner secret-order commitment.
+pub trait SettlementOrderView {
+    fn settlement_market_id(&self) -> &str;
+    fn settlement_side(&self) -> Side;
+    fn settlement_limit_price(&self) -> u64;
+    fn settlement_quantity(&self) -> u64;
+    fn settlement_time_in_force(&self) -> TimeInForce;
+    fn settlement_expires_at(&self) -> u64;
+    fn settlement_participant_handle(&self) -> Digest32;
+    fn settlement_dekyx_nullifier(&self) -> Digest32;
+    fn settlement_reservation_id(&self) -> Digest32;
+    fn settlement_reservation_limit(&self) -> u64;
+    fn settlement_max_fee(&self) -> u64;
+    fn settlement_commitment(&self) -> OrderCommitment;
+}
+
+impl SettlementOrderView for SecretOrder {
+    fn settlement_market_id(&self) -> &str {
+        self.market_id()
+    }
+
+    fn settlement_side(&self) -> Side {
+        self.side()
+    }
+
+    fn settlement_limit_price(&self) -> u64 {
+        self.limit_price()
+    }
+
+    fn settlement_quantity(&self) -> u64 {
+        self.quantity()
+    }
+
+    fn settlement_time_in_force(&self) -> TimeInForce {
+        self.time_in_force()
+    }
+
+    fn settlement_expires_at(&self) -> u64 {
+        self.expires_at()
+    }
+
+    fn settlement_participant_handle(&self) -> Digest32 {
+        self.participant_handle()
+    }
+
+    fn settlement_dekyx_nullifier(&self) -> Digest32 {
+        self.dekyx_nullifier()
+    }
+
+    fn settlement_reservation_id(&self) -> Digest32 {
+        self.reservation_id()
+    }
+
+    fn settlement_reservation_limit(&self) -> u64 {
+        self.reservation_limit()
+    }
+
+    fn settlement_max_fee(&self) -> u64 {
+        self.max_fee()
+    }
+
+    fn settlement_commitment(&self) -> OrderCommitment {
+        self.commitment()
+    }
+}
+
+impl SettlementOrderView for VerifiedSettlementCapability {
+    fn settlement_market_id(&self) -> &str {
+        self.order().market_id()
+    }
+
+    fn settlement_side(&self) -> Side {
+        self.order().side()
+    }
+
+    fn settlement_limit_price(&self) -> u64 {
+        self.order().limit_price()
+    }
+
+    fn settlement_quantity(&self) -> u64 {
+        self.order().quantity()
+    }
+
+    fn settlement_time_in_force(&self) -> TimeInForce {
+        self.order().time_in_force()
+    }
+
+    fn settlement_expires_at(&self) -> u64 {
+        self.order().expires_at()
+    }
+
+    fn settlement_participant_handle(&self) -> Digest32 {
+        self.order().participant_handle()
+    }
+
+    fn settlement_dekyx_nullifier(&self) -> Digest32 {
+        self.order().dekyx_nullifier()
+    }
+
+    fn settlement_reservation_id(&self) -> Digest32 {
+        self.order().reservation_id()
+    }
+
+    fn settlement_reservation_limit(&self) -> u64 {
+        self.order().reservation_limit()
+    }
+
+    fn settlement_max_fee(&self) -> u64 {
+        self.order().max_fee()
+    }
+
+    fn settlement_commitment(&self) -> OrderCommitment {
+        self.order_commitment()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OclobSettlementReceipt {
@@ -291,13 +411,13 @@ pub enum AppliedCanonicalTransition {
 
 /// Inputs already checked by the OCLOB admission pipeline and consumed while
 /// constructing one atomic taker-reservation plus DvP transition.
-pub struct CanonicalAdmissionBatch<'a> {
+pub struct CanonicalAdmissionBatch<'a, O: SettlementOrderView + ?Sized> {
     pub reserved_candidate: SettlementEngine,
     pub reservation_receipt: &'a ReservationReceipt,
     pub fills: &'a [PublicFill],
     pub transition: &'a VerifiedTransitionProof,
     pub certificate: &'a OrderCertificate,
-    pub arriving: &'a SecretOrder,
+    pub arriving: &'a O,
     pub arriving_remaining: u64,
     pub now: u64,
 }
@@ -497,7 +617,13 @@ struct ReservationRecord {
     order_commitment: Digest32,
     participant_handle: Digest32,
     entity_nullifier: Digest32,
+    market_id: String,
     kind: ReservationKind,
+    limit_price: u64,
+    original_quantity: u64,
+    remaining_quantity: u64,
+    max_fee: u64,
+    expires_at: u64,
     reserved: u64,
     remaining: u64,
     status: ReservationStatus,
@@ -578,33 +704,38 @@ impl ReservationBook {
             .ok_or_else(|| SettlementError::Reservation("reservation sum overflowed".into()))
     }
 
-    fn reserve(&mut self, order: &SecretOrder) -> Result<ReservationReceipt, SettlementError> {
-        if self.participant_entities.get(&order.participant_handle())
-            != Some(&order.dekyx_nullifier())
+    fn reserve<O: SettlementOrderView + ?Sized>(
+        &mut self,
+        order: &O,
+    ) -> Result<ReservationReceipt, SettlementError> {
+        if self
+            .participant_entities
+            .get(&order.settlement_participant_handle())
+            != Some(&order.settlement_dekyx_nullifier())
         {
             return Err(SettlementError::Reservation(
                 "order participant is not bound to the presented DeKYX entity".into(),
             ));
         }
-        let id = order.reservation_id();
+        let id = order.settlement_reservation_id();
         if self.records.contains_key(&id)
             || self
                 .records
                 .values()
-                .any(|record| record.order_commitment == order.commitment().0)
+                .any(|record| record.order_commitment == order.settlement_commitment().0)
         {
             return Err(SettlementError::Reservation(
                 "reservation id or order commitment was already used".into(),
             ));
         }
-        let kind = match order.side() {
+        let kind = match order.settlement_side() {
             Side::Buy => ReservationKind::Cash,
             Side::Sell => ReservationKind::Securities,
         };
         let kind_tag = reservation_kind_tag(kind);
         let capacity = self
             .capacities
-            .get(&(order.dekyx_nullifier(), kind_tag))
+            .get(&(order.settlement_dekyx_nullifier(), kind_tag))
             .copied()
             .ok_or_else(|| {
                 SettlementError::Reservation("entity has no canonical capacity".into())
@@ -613,14 +744,14 @@ impl ReservationBook {
             .records
             .values()
             .filter(|record| {
-                record.entity_nullifier == order.dekyx_nullifier()
+                record.entity_nullifier == order.settlement_dekyx_nullifier()
                     && record.kind == kind
                     && record.status == ReservationStatus::Active
             })
             .try_fold(0_u64, |total, record| total.checked_add(record.remaining))
             .ok_or_else(|| SettlementError::Reservation("reservation sum overflowed".into()))?;
         if in_use
-            .checked_add(order.reservation_limit())
+            .checked_add(order.settlement_reservation_limit())
             .is_none_or(|total| total > capacity)
         {
             return Err(SettlementError::Reservation(
@@ -629,20 +760,26 @@ impl ReservationBook {
         }
         let record = ReservationRecord {
             reservation_id: id,
-            order_commitment: order.commitment().0,
-            participant_handle: order.participant_handle(),
-            entity_nullifier: order.dekyx_nullifier(),
+            order_commitment: order.settlement_commitment().0,
+            participant_handle: order.settlement_participant_handle(),
+            entity_nullifier: order.settlement_dekyx_nullifier(),
+            market_id: order.settlement_market_id().to_owned(),
             kind,
-            reserved: order.reservation_limit(),
-            remaining: order.reservation_limit(),
+            limit_price: order.settlement_limit_price(),
+            original_quantity: order.settlement_quantity(),
+            remaining_quantity: order.settlement_quantity(),
+            max_fee: order.settlement_max_fee(),
+            expires_at: order.settlement_expires_at(),
+            reserved: order.settlement_reservation_limit(),
+            remaining: order.settlement_reservation_limit(),
             status: ReservationStatus::Active,
         };
         self.records.insert(id, record);
         Ok(ReservationReceipt {
             reservation_id: id,
-            order_commitment: order.commitment().0,
+            order_commitment: order.settlement_commitment().0,
             kind,
-            reserved: order.reservation_limit(),
+            reserved: order.settlement_reservation_limit(),
             state_root: self.root(),
             canonical_receipt_digest: [0; 32],
             canonical_height: 0,
@@ -654,25 +791,34 @@ impl ReservationBook {
         })
     }
 
-    fn validate_active_order(&self, order: &SecretOrder) -> Result<(), SettlementError> {
+    fn validate_active_order<O: SettlementOrderView + ?Sized>(
+        &self,
+        order: &O,
+    ) -> Result<(), SettlementError> {
         let record_id = self
-            .record_id_for(order.commitment().0)
+            .record_id_for(order.settlement_commitment().0)
             .ok_or_else(|| SettlementError::Reservation("reservation is absent".into()))?;
         let record = self
             .records
             .get(&record_id)
             .ok_or_else(|| SettlementError::Reservation("reservation is absent".into()))?;
-        let expected_kind = match order.side() {
+        let expected_kind = match order.settlement_side() {
             Side::Buy => ReservationKind::Cash,
             Side::Sell => ReservationKind::Securities,
         };
-        if record.reservation_id != order.reservation_id()
-            || record.order_commitment != order.commitment().0
-            || record.participant_handle != order.participant_handle()
-            || record.entity_nullifier != order.dekyx_nullifier()
+        if record.reservation_id != order.settlement_reservation_id()
+            || record.order_commitment != order.settlement_commitment().0
+            || record.participant_handle != order.settlement_participant_handle()
+            || record.entity_nullifier != order.settlement_dekyx_nullifier()
+            || record.market_id != order.settlement_market_id()
             || record.kind != expected_kind
-            || record.reserved != order.reservation_limit()
-            || record.remaining != order.reservation_limit()
+            || record.limit_price != order.settlement_limit_price()
+            || record.original_quantity != order.settlement_quantity()
+            || record.remaining_quantity != order.settlement_quantity()
+            || record.max_fee != order.settlement_max_fee()
+            || record.expires_at != order.settlement_expires_at()
+            || record.reserved != order.settlement_reservation_limit()
+            || record.remaining != order.settlement_reservation_limit()
             || record.status != ReservationStatus::Active
         {
             return Err(SettlementError::Reservation(
@@ -682,7 +828,12 @@ impl ReservationBook {
         Ok(())
     }
 
-    fn consume_fill(&mut self, fill: &PublicFill) -> Result<ConsumedFill, SettlementError> {
+    fn consume_fill(
+        &mut self,
+        fill: &PublicFill,
+        market_id: &str,
+        now: u64,
+    ) -> Result<ConsumedFill, SettlementError> {
         let cash = fill
             .price
             .checked_mul(fill.quantity)
@@ -704,6 +855,32 @@ impl ReservationBook {
             return Err(SettlementError::Reservation(
                 "a fill must join one cash reservation and one inventory reservation".into(),
             ));
+        }
+        if maker.market_id != market_id || taker.market_id != market_id {
+            return Err(SettlementError::Reservation(
+                "a fill cannot cross reservations from another market".into(),
+            ));
+        }
+        if maker.expires_at < now || taker.expires_at < now {
+            return Err(SettlementError::Reservation(
+                "an expired reservation cannot be filled".into(),
+            ));
+        }
+        if fill.quantity > maker.remaining_quantity || fill.quantity > taker.remaining_quantity {
+            return Err(SettlementError::Reservation(
+                "fill quantity exceeds an order remainder".into(),
+            ));
+        }
+        for record in [maker, taker] {
+            let respects_limit = match record.kind {
+                ReservationKind::Cash => fill.price <= record.limit_price,
+                ReservationKind::Securities => fill.price >= record.limit_price,
+            };
+            if !respects_limit {
+                return Err(SettlementError::Reservation(
+                    "fill price violates a committed order limit".into(),
+                ));
+            }
         }
         let maker_required = match maker.kind {
             ReservationKind::Cash => cash,
@@ -729,16 +906,10 @@ impl ReservationBook {
         };
 
         let maker = self.records.get_mut(&maker_id).expect("looked up maker");
-        maker.remaining -= maker_required;
-        if maker.remaining == 0 {
-            maker.status = ReservationStatus::Consumed;
-        }
+        consume_record(maker, maker_required, fill.quantity)?;
         let maker_remaining = maker.remaining;
         let taker = self.records.get_mut(&taker_id).expect("looked up taker");
-        taker.remaining -= taker_required;
-        if taker.remaining == 0 {
-            taker.status = ReservationStatus::Consumed;
-        }
+        consume_record(taker, taker_required, fill.quantity)?;
         Ok(ConsumedFill {
             maker_remaining,
             taker_remaining: taker.remaining,
@@ -747,24 +918,24 @@ impl ReservationBook {
         })
     }
 
-    fn reconcile_arriving(
+    fn reconcile_arriving<O: SettlementOrderView + ?Sized>(
         &mut self,
-        order: &SecretOrder,
+        order: &O,
         remaining_quantity: u64,
     ) -> Result<u64, SettlementError> {
         let id = self
-            .record_id_for(order.commitment().0)
+            .record_id_for(order.settlement_commitment().0)
             .ok_or_else(|| SettlementError::Reservation("taker reservation is absent".into()))?;
         let required = if remaining_quantity == 0
-            || order.time_in_force() == TimeInForce::ImmediateOrCancel
+            || order.settlement_time_in_force() == TimeInForce::ImmediateOrCancel
         {
             0
         } else {
-            match order.side() {
+            match order.settlement_side() {
                 Side::Buy => order
-                    .limit_price()
+                    .settlement_limit_price()
                     .checked_mul(remaining_quantity)
-                    .and_then(|value| value.checked_add(order.max_fee()))
+                    .and_then(|value| value.checked_add(order.settlement_max_fee()))
                     .ok_or_else(|| {
                         SettlementError::Reservation("remaining cash reservation overflowed".into())
                     })?,
@@ -772,6 +943,11 @@ impl ReservationBook {
             }
         };
         let record = self.records.get_mut(&id).expect("looked up reservation");
+        if remaining_quantity != record.remaining_quantity {
+            return Err(SettlementError::Reservation(
+                "reported arriving remainder differs from consumed fills".into(),
+            ));
+        }
         if record.remaining < required {
             return Err(SettlementError::Reservation(
                 "remaining order is not covered by its reservation".into(),
@@ -779,6 +955,7 @@ impl ReservationBook {
         }
         let unused = record.remaining.saturating_sub(required);
         record.remaining = required;
+        record.remaining_quantity = if required > 0 { remaining_quantity } else { 0 };
         record.status = if required > 0 {
             ReservationStatus::Active
         } else if unused > 0 {
@@ -807,13 +984,14 @@ impl ReservationBook {
             ));
         }
         record.remaining = 0;
+        record.remaining_quantity = 0;
         record.status = ReservationStatus::Released;
         Ok(())
     }
 
     fn root(&self) -> Digest32 {
         let mut hash = Sha256::new();
-        hash.update(b"OCLOB:DEFMI-RESERVATIONS:v1");
+        hash.update(b"OCLOB:DEFMI-RESERVATIONS:v2");
         for ((entity, kind), capacity) in &self.capacities {
             hash.update(entity);
             hash.update([*kind]);
@@ -828,13 +1006,62 @@ impl ReservationBook {
             hash.update(record.order_commitment);
             hash.update(record.participant_handle);
             hash.update(record.entity_nullifier);
+            hash.update((record.market_id.len() as u64).to_be_bytes());
+            hash.update(record.market_id.as_bytes());
             hash.update([reservation_kind_tag(record.kind)]);
+            hash.update(record.limit_price.to_be_bytes());
+            hash.update(record.original_quantity.to_be_bytes());
+            hash.update(record.remaining_quantity.to_be_bytes());
+            hash.update(record.max_fee.to_be_bytes());
+            hash.update(record.expires_at.to_be_bytes());
             hash.update(record.reserved.to_be_bytes());
             hash.update(record.remaining.to_be_bytes());
             hash.update([reservation_status_tag(record.status)]);
         }
         hash.finalize().into()
     }
+}
+
+fn consume_record(
+    record: &mut ReservationRecord,
+    spent: u64,
+    filled_quantity: u64,
+) -> Result<(), SettlementError> {
+    let remaining_after_spend = record
+        .remaining
+        .checked_sub(spent)
+        .ok_or_else(|| SettlementError::Reservation("reservation cannot cover the fill".into()))?;
+    let remaining_quantity = record
+        .remaining_quantity
+        .checked_sub(filled_quantity)
+        .ok_or_else(|| SettlementError::Reservation("fill exceeds the order remainder".into()))?;
+    let required = if remaining_quantity == 0 {
+        0
+    } else {
+        match record.kind {
+            ReservationKind::Cash => record
+                .limit_price
+                .checked_mul(remaining_quantity)
+                .and_then(|value| value.checked_add(record.max_fee))
+                .ok_or_else(|| {
+                    SettlementError::Reservation("remaining cash reservation overflowed".into())
+                })?,
+            ReservationKind::Securities => remaining_quantity,
+        }
+    };
+    if remaining_after_spend < required {
+        return Err(SettlementError::Reservation(
+            "reservation no longer covers the committed order remainder".into(),
+        ));
+    }
+    record.remaining_quantity = remaining_quantity;
+    record.remaining = required;
+    record.status = if remaining_quantity == 0 {
+        ReservationStatus::Consumed
+    } else {
+        ReservationStatus::Active
+    };
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -940,9 +1167,9 @@ impl SettlementEngine {
         })
     }
 
-    pub fn reserve_order(
+    pub fn reserve_order<O: SettlementOrderView + ?Sized>(
         &mut self,
-        order: &SecretOrder,
+        order: &O,
     ) -> Result<ReservationReceipt, SettlementError> {
         let before_root = self.reservations.root();
         let mut staged = self.reservations.clone();
@@ -1159,11 +1386,11 @@ impl SettlementEngine {
     /// compare-and-swap. The threshold zkPI authorizes the hidden maximum,
     /// while the only L1-visible state change is the reservation-ledger root.
     /// Neither the live engine nor the public book is mutated here.
-    pub fn prepare_canonical_reservation(
+    pub fn prepare_canonical_reservation<O: SettlementOrderView + ?Sized>(
         &self,
         candidate: SettlementEngine,
         mut receipt: ReservationReceipt,
-        order: &SecretOrder,
+        order: &O,
         certificate: &OrderCertificate,
         transition: &VerifiedTransitionProof,
         now: u64,
@@ -1175,21 +1402,23 @@ impl SettlementEngine {
         let base_snapshot = self.state_snapshot();
         let candidate_snapshot = candidate.state_snapshot();
         if candidate_snapshot.height != base_snapshot.height.saturating_add(1)
-            || receipt.order_commitment != order.commitment().0
-            || receipt.reservation_id != order.reservation_id()
-            || receipt.reserved != order.reservation_limit()
+            || receipt.order_commitment != order.settlement_commitment().0
+            || receipt.reservation_id != order.settlement_reservation_id()
+            || receipt.reserved != order.settlement_reservation_limit()
             || receipt.state_root != candidate_snapshot.reservation_root
             || candidate_snapshot.securities_root != base_snapshot.securities_root
             || candidate_snapshot.cash_root != base_snapshot.cash_root
         {
             return Err(SettlementError::CanonicalDivergence);
         }
-        let account_openings = self.canonical_account_openings(order.market_id())?;
-        let after_accounts = candidate.canonical_account_openings(order.market_id())?;
+        let account_openings = self.canonical_account_openings(order.settlement_market_id())?;
+        let after_accounts = candidate.canonical_account_openings(order.settlement_market_id())?;
         let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
         if account_deltas.len() != 1
-            || account_deltas[0].handle != canonical_reservation_state_handle(order.market_id())
-            || account_deltas[0].asset_id != canonical_reservation_state_asset_id(order.market_id())
+            || account_deltas[0].handle
+                != canonical_reservation_state_handle(order.settlement_market_id())
+            || account_deltas[0].asset_id
+                != canonical_reservation_state_asset_id(order.settlement_market_id())
             || account_deltas[0].before_commitment != base_snapshot.reservation_root
             || account_deltas[0].after_commitment != candidate_snapshot.reservation_root
         {
@@ -1214,7 +1443,7 @@ impl SettlementEngine {
         let application_binding = oclob_manifest_v1()
             .digest()
             .map_err(|error| SettlementError::Finality(error.to_string()))?;
-        let deadline = order.expires_at();
+        let deadline = order.settlement_expires_at();
         let binding_digest = canonical_binding_digest(
             application_binding,
             receipt.order_commitment,
@@ -1233,7 +1462,7 @@ impl SettlementEngine {
                 candidate,
                 base_snapshot,
                 receipt,
-                market_id: order.market_id().to_owned(),
+                market_id: order.settlement_market_id().to_owned(),
                 transition_digest,
                 payment_instruction_digest,
                 proof_digest,
@@ -1247,27 +1476,29 @@ impl SettlementEngine {
         ))
     }
 
-    fn build_reservation_zkpi(
+    fn build_reservation_zkpi<O: SettlementOrderView + ?Sized>(
         &self,
-        order: &SecretOrder,
+        order: &O,
         transition_digest: Digest32,
         now: u64,
     ) -> Result<(Digest32, Digest32, Digest32), SettlementError> {
-        if order.expires_at() < now || order.expires_at() > now.saturating_add(3_600) {
+        if order.settlement_expires_at() < now
+            || order.settlement_expires_at() > now.saturating_add(3_600)
+        {
             return Err(SettlementError::Reservation(
                 "canonical reservation expiry is outside the one-hour zkPI horizon".into(),
             ));
         }
         let participant = self
             .participants
-            .get(&order.participant_handle())
+            .get(&order.settlement_participant_handle())
             .ok_or_else(|| SettlementError::Reservation("participant account is absent".into()))?;
         let mut rng = OsRng;
         let amount_blinding = Scalar::random(&mut rng);
         let price_blinding = Scalar::random(&mut rng);
         let amount = deal_bits(
             &self.key,
-            order.reservation_limit(),
+            order.settlement_reservation_limit(),
             &amount_blinding,
             RANGE_BITS,
             &PROOF_PARTIES,
@@ -1287,7 +1518,7 @@ impl SettlementEngine {
         .map_err(SettlementError::Proof)?;
         let amount_range = prove_range(&self.key, &amount, AMOUNT_RANGE_CONTEXT, &mut rng)?;
         let price_range = prove_range(&self.key, &price, PRICE_RANGE_CONTEXT, &mut rng)?;
-        let asset_index = match order.side() {
+        let asset_index = match order.settlement_side() {
             Side::Buy => 0,
             Side::Sell => ASSET_INDEX,
         };
@@ -1296,13 +1527,13 @@ impl SettlementEngine {
             .commit(&Scalar::from(asset_index as u64), &Scalar::random(&mut rng));
         let escrow_scalar = Scalar::from_bytes_mod_order(digest(
             b"OCLOB:DEFMI:RESERVATION-HANDLE:v1",
-            &order.reservation_id(),
+            &order.settlement_reservation_id(),
         ));
         let escrow_handle = self.key.g * escrow_scalar;
         let nonce = digest(
             b"OCLOB:ZKPI:RESERVATION-NONCE:v1",
             &[
-                order.commitment().0.as_slice(),
+                order.settlement_commitment().0.as_slice(),
                 transition_digest.as_slice(),
             ]
             .concat(),
@@ -1322,7 +1553,7 @@ impl SettlementEngine {
             price_range,
             participant.handle.point,
             escrow_handle,
-            order.expires_at(),
+            order.settlement_expires_at(),
             nonce,
             transition_digest,
         )
@@ -1351,20 +1582,21 @@ impl SettlementEngine {
     /// Verify a complete zkPI/DvP batch against an isolated clone and return a
     /// one-use candidate for Avalanche submission. The live engine remains
     /// unchanged if proof construction, RPC submission or consensus fails.
-    pub fn prepare_canonical_batch(
+    pub fn prepare_canonical_batch<O: SettlementOrderView + ?Sized>(
         &self,
         fills: &[PublicFill],
         transition: &VerifiedTransitionProof,
-        arriving: &SecretOrder,
+        arriving: &O,
         arriving_remaining: u64,
         now: u64,
     ) -> Result<PreparedCanonicalBatch, SettlementError> {
         let base_snapshot = self.state_snapshot();
-        let account_openings = self.canonical_account_openings(arriving.market_id())?;
+        let account_openings = self.canonical_account_openings(arriving.settlement_market_id())?;
         let mut candidate = self.clone();
         let receipt =
             candidate.settle_batch(fills, transition, arriving, arriving_remaining, now)?;
-        let after_accounts = candidate.canonical_account_openings(arriving.market_id())?;
+        let after_accounts =
+            candidate.canonical_account_openings(arriving.settlement_market_id())?;
         let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
         if account_deltas.is_empty() {
             return Err(SettlementError::CanonicalDivergence);
@@ -1398,7 +1630,7 @@ impl SettlementEngine {
             candidate,
             base_snapshot,
             receipt,
-            market_id: arriving.market_id().to_owned(),
+            market_id: arriving.settlement_market_id().to_owned(),
             transition_digest,
             payment_instruction_digest,
             proof_digest,
@@ -1416,9 +1648,9 @@ impl SettlementEngine {
     /// verified here, then consumed together with all DvP fills. Consequently
     /// neither a taker reserve nor a book mutation exists unless the complete
     /// transition reaches Avalanche finality.
-    pub fn prepare_canonical_admission_batch(
+    pub fn prepare_canonical_admission_batch<O: SettlementOrderView + ?Sized>(
         &self,
-        admission: CanonicalAdmissionBatch<'_>,
+        admission: CanonicalAdmissionBatch<'_, O>,
     ) -> Result<PreparedCanonicalTransition, SettlementError> {
         let CanonicalAdmissionBatch {
             reserved_candidate,
@@ -1433,7 +1665,7 @@ impl SettlementEngine {
         transition
             .verify_execution_binding(
                 certificate,
-                arriving.commitment(),
+                arriving.settlement_commitment(),
                 fills,
                 self.transition_committee_trust_root,
             )
@@ -1447,24 +1679,24 @@ impl SettlementEngine {
         if reserved_snapshot.height != base_snapshot.height.saturating_add(1)
             || reserved_snapshot.securities_root != base_snapshot.securities_root
             || reserved_snapshot.cash_root != base_snapshot.cash_root
-            || reservation_receipt.order_commitment != arriving.commitment().0
-            || reservation_receipt.reservation_id != arriving.reservation_id()
-            || reservation_receipt.reserved != arriving.reservation_limit()
+            || reservation_receipt.order_commitment != arriving.settlement_commitment().0
+            || reservation_receipt.reservation_id != arriving.settlement_reservation_id()
+            || reservation_receipt.reserved != arriving.settlement_reservation_limit()
             || reservation_receipt.state_root != reserved_snapshot.reservation_root
             || reserved_candidate.spent_instructions != self.spent_instructions
         {
             return Err(SettlementError::CanonicalDivergence);
         }
 
-        let account_openings = self.canonical_account_openings(arriving.market_id())?;
+        let account_openings = self.canonical_account_openings(arriving.settlement_market_id())?;
         let reserved_accounts =
-            reserved_candidate.canonical_account_openings(arriving.market_id())?;
+            reserved_candidate.canonical_account_openings(arriving.settlement_market_id())?;
         let reservation_delta = canonical_account_deltas(&account_openings, &reserved_accounts)?;
         if reservation_delta.len() != 1
             || reservation_delta[0].handle
-                != canonical_reservation_state_handle(arriving.market_id())
+                != canonical_reservation_state_handle(arriving.settlement_market_id())
             || reservation_delta[0].asset_id
-                != canonical_reservation_state_asset_id(arriving.market_id())
+                != canonical_reservation_state_asset_id(arriving.settlement_market_id())
         {
             return Err(SettlementError::CanonicalDivergence);
         }
@@ -1496,11 +1728,12 @@ impl SettlementEngine {
         )?;
         let after_accounts = prepared
             .candidate
-            .canonical_account_openings(arriving.market_id())?;
+            .canonical_account_openings(arriving.settlement_market_id())?;
         let account_deltas = canonical_account_deltas(&account_openings, &after_accounts)?;
         if !account_deltas.iter().any(|delta| {
-            delta.handle == canonical_reservation_state_handle(arriving.market_id())
-                && delta.asset_id == canonical_reservation_state_asset_id(arriving.market_id())
+            delta.handle == canonical_reservation_state_handle(arriving.settlement_market_id())
+                && delta.asset_id
+                    == canonical_reservation_state_asset_id(arriving.settlement_market_id())
                 && delta.before_commitment == base_snapshot.reservation_root
                 && delta.after_commitment == prepared.receipt.reservation_after_root
         }) {
@@ -1532,7 +1765,7 @@ impl SettlementEngine {
             ]
             .concat(),
         );
-        prepared.deadline = prepared.deadline.min(arriving.expires_at());
+        prepared.deadline = prepared.deadline.min(arriving.settlement_expires_at());
         prepared.binding_digest = canonical_binding_digest(
             prepared.application_binding,
             prepared.receipt.batch_digest,
@@ -1551,11 +1784,11 @@ impl SettlementEngine {
     /// then the generic DeFMI batch verifier replays the whole bundle into a
     /// second clone.  Live ledgers, reservations, balance openings, and height
     /// are replaced only after both views agree.
-    pub fn settle_batch(
+    pub fn settle_batch<O: SettlementOrderView + ?Sized>(
         &mut self,
         fills: &[PublicFill],
         transition: &VerifiedTransitionProof,
-        arriving: &SecretOrder,
+        arriving: &O,
         arriving_remaining: u64,
         now: u64,
     ) -> Result<OclobSettlementReceipt, SettlementError> {
@@ -1568,16 +1801,43 @@ impl SettlementEngine {
         }
         if fills
             .iter()
-            .any(|fill| fill.taker_order != arriving.commitment())
+            .any(|fill| fill.taker_order != arriving.settlement_commitment())
         {
             return Err(SettlementError::Reservation(
                 "atomic batch contains a fill from another arriving order".into(),
             ));
         }
+        if arriving.settlement_expires_at() < now {
+            return Err(SettlementError::Reservation(
+                "an expired arriving order cannot settle".into(),
+            ));
+        }
+        let filled_quantity = fills.iter().try_fold(0_u64, |total, fill| {
+            total
+                .checked_add(fill.quantity)
+                .ok_or_else(|| SettlementError::Reservation("fill quantity overflowed".into()))
+        })?;
+        if filled_quantity
+            .checked_add(arriving_remaining)
+            .is_none_or(|total| total != arriving.settlement_quantity())
+        {
+            return Err(SettlementError::Reservation(
+                "fills and arriving remainder do not conserve order quantity".into(),
+            ));
+        }
+        let mut maker_orders = BTreeSet::new();
+        if fills
+            .iter()
+            .any(|fill| !maker_orders.insert(fill.maker_order))
+        {
+            return Err(SettlementError::Reservation(
+                "one resting order cannot appear twice in an atomic match batch".into(),
+            ));
+        }
         transition
             .verify_settlement_binding(
-                arriving.market_id(),
-                arriving.commitment(),
+                arriving.settlement_market_id(),
+                arriving.settlement_commitment(),
                 fills,
                 self.transition_committee_trust_root,
             )
@@ -1598,7 +1858,8 @@ impl SettlementEngine {
         };
         let transition_digest = transition.digest();
         for (index, fill) in fills.iter().enumerate() {
-            let consumed = staged_reservations.consume_fill(fill)?;
+            let consumed =
+                staged_reservations.consume_fill(fill, arriving.settlement_market_id(), now)?;
             if consumed.seller_handle == consumed.buyer_handle {
                 return Err(SettlementError::Reservation(
                     "self-trading orders cannot produce a DvP between one account".into(),
@@ -2280,6 +2541,160 @@ mod tests {
         let order = buy(buyer, 3, 100);
         engine.reserve_order(&order).unwrap();
         assert!(engine.reserve_order(&order).is_err());
+    }
+
+    #[test]
+    fn fully_filled_buy_maker_releases_price_improvement() {
+        let mut engine = engine();
+        let (buyer, seller) = engine.demo_participant_handles();
+        let maker = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            10,
+            TimeInForce::GoodTilCancelled,
+            2_000,
+            buyer,
+            [14; 32],
+            [54; 32],
+        )
+        .unwrap();
+        let arriving = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            10,
+            TimeInForce::ImmediateOrCancel,
+            2_000,
+            seller,
+            [15; 32],
+            [55; 32],
+        )
+        .unwrap();
+        engine.reserve_order(&maker).unwrap();
+        engine.reserve_order(&arriving).unwrap();
+        let fills = [PublicFill {
+            maker_order: maker.commitment(),
+            taker_order: arriving.commitment(),
+            price: 100,
+            quantity: 10,
+        }];
+        let receipt = engine
+            .settle_batch(&fills, &transition(&fills), &arriving, 0, 1_000)
+            .unwrap();
+        assert_eq!(receipt.members[0].maker_reservation_remaining, 0);
+        assert_eq!(
+            engine.participant_portfolio(buyer).unwrap().reserved_cash,
+            0
+        );
+    }
+
+    #[test]
+    fn partially_filled_buy_maker_keeps_only_worst_case_remainder() {
+        let mut engine = engine();
+        let (buyer, seller) = engine.demo_participant_handles();
+        let maker = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            10,
+            TimeInForce::GoodTilCancelled,
+            2_000,
+            buyer,
+            [16; 32],
+            [56; 32],
+        )
+        .unwrap();
+        let arriving = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            4,
+            TimeInForce::ImmediateOrCancel,
+            2_000,
+            seller,
+            [17; 32],
+            [57; 32],
+        )
+        .unwrap();
+        engine.reserve_order(&maker).unwrap();
+        engine.reserve_order(&arriving).unwrap();
+        let fills = [PublicFill {
+            maker_order: maker.commitment(),
+            taker_order: arriving.commitment(),
+            price: 100,
+            quantity: 4,
+        }];
+        let receipt = engine
+            .settle_batch(&fills, &transition(&fills), &arriving, 0, 1_000)
+            .unwrap();
+        assert_eq!(receipt.members[0].maker_reservation_remaining, 606);
+        assert_eq!(
+            engine.participant_portfolio(buyer).unwrap().reserved_cash,
+            606
+        );
+    }
+
+    #[test]
+    fn settlement_rejects_non_conserving_or_limit_violating_fills() {
+        let mut engine = engine();
+        let (buyer, seller) = engine.demo_participant_handles();
+        let maker = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            4,
+            TimeInForce::GoodTilCancelled,
+            2_000,
+            buyer,
+            [18; 32],
+            [58; 32],
+        )
+        .unwrap();
+        let arriving = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            4,
+            TimeInForce::ImmediateOrCancel,
+            2_000,
+            seller,
+            [19; 32],
+            [59; 32],
+        )
+        .unwrap();
+        engine.reserve_order(&maker).unwrap();
+        engine.reserve_order(&arriving).unwrap();
+        let short = [PublicFill {
+            maker_order: maker.commitment(),
+            taker_order: arriving.commitment(),
+            price: 100,
+            quantity: 3,
+        }];
+        let before = engine.state_snapshot();
+        assert!(matches!(
+            engine.settle_batch(&short, &transition(&short), &arriving, 0, 1_000),
+            Err(SettlementError::Reservation(_))
+        ));
+        assert_eq!(engine.state_snapshot(), before);
+
+        let outside_limit = [PublicFill {
+            maker_order: maker.commitment(),
+            taker_order: arriving.commitment(),
+            price: 102,
+            quantity: 4,
+        }];
+        assert!(matches!(
+            engine.settle_batch(
+                &outside_limit,
+                &transition(&outside_limit),
+                &arriving,
+                0,
+                1_000,
+            ),
+            Err(SettlementError::Reservation(_))
+        ));
+        assert_eq!(engine.state_snapshot(), before);
     }
 
     #[test]

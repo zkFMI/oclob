@@ -8,6 +8,10 @@ description = "Outcome-first OCLOB rough end-to-end acceptance runner"
 [dependencies]
 oclob-core.workspace = true
 oclob-dekyx.workspace = true
+oclob-edge.workspace = true
+oclob-node.workspace = true
+oclob-ordering.workspace = true
+oclob-proofs.workspace = true
 oclob-service.workspace = true
 oclob-settlement.workspace = true
 qomm-defmi.workspace = true
