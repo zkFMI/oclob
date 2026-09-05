@@ -2277,7 +2277,7 @@ mod tests {
         let key = vss_key();
         let permit = ReservationPermit {
             version: 2,
-            role: ReservationRole::Taker,
+            role: ReservationRole::Application,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [48; 32],
             defmi_id: [49; 32],
