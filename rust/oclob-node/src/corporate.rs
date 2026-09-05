@@ -18,7 +18,6 @@ use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::handles::Handle;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::time::Duration;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::order_authorization_commitment;
@@ -225,15 +224,8 @@ pub fn prepare_reservation_from_note(
     {
         return Err("DeFMI returned another configured application scope".into());
     }
-    let issuer = VerifyingKey::from_bytes(&config.issuer_public).map_err(err)?;
-    // Read methods do not use governance approvals. This key-only authorizer
-    // cannot sign or create any canonical transition in the corporate process.
-    let readonly = QuorumAuthorizer::new(
-        BTreeMap::from([("read-only".into(), issuer)]),
-        1,
-        1,
-        "read-only",
-    )?;
+    // This read-only bridge carries no governance signing authority.
+    let readonly = QuorumAuthorizer::read_only();
     let client = private.chain()?;
     let bridge = AvalancheNoteBridge::new(&readonly, &client);
     let key = Pedersen::new(b"qomm:defmi:v1");

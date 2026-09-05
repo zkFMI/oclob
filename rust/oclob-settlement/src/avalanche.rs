@@ -9,6 +9,7 @@ use crate::{
     CanonicalAccountOpening, CanonicalSettlementAcceptance, PreparedCanonicalTransition,
     SettlementError,
 };
+#[cfg(test)]
 use ed25519_dalek::SigningKey;
 use qomm_defmi::avalanche::{AvalancheClient, FacilityAvalancheBridge};
 use qomm_defmi::facility::{
@@ -30,14 +31,14 @@ const ROOT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub struct AvalancheCanonicalGateway<'a, C: AvalancheClient> {
     facility: &'a DefmiFacility,
     clients: &'a [C],
-    approval_keys: &'a BTreeMap<String, SigningKey>,
+    approval_keys: &'a BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
 }
 
 impl<'a, C: AvalancheClient> AvalancheCanonicalGateway<'a, C> {
     pub fn new(
         facility: &'a DefmiFacility,
         clients: &'a [C],
-        approval_keys: &'a BTreeMap<String, SigningKey>,
+        approval_keys: &'a BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     ) -> Result<Self, SettlementError> {
         if clients.len() < 3 || approval_keys.len() < 3 {
             return Err(SettlementError::Finality(
@@ -409,7 +410,12 @@ mod tests {
             .map(|node| {
                 (
                     format!("node-{node}"),
-                    SigningKey::from_bytes(&[node + 1; 32]),
+                    qomm_defmi::governance::GovernanceSigner::generate(
+                        &format!("node-{node}"),
+                        0,
+                        i64::MAX as u64,
+                    )
+                    .unwrap(),
                 )
             })
             .collect::<BTreeMap<_, _>>();

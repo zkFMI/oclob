@@ -6,7 +6,7 @@
 mod native_acceptance;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
 use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
 use oclob_edge::SealedSettlementCapability;
@@ -1555,19 +1555,18 @@ fn run_compatibility(options: &Options) -> RunResult<Value> {
     }))
 }
 
-fn committee(domain: &str) -> RunResult<(QuorumAuthorizer, BTreeMap<String, SigningKey>)> {
-    let keys = (0..7)
-        .map(|index| {
-            (
-                format!("node-{index}"),
-                SigningKey::from_bytes(&digest(format!("key:{index}").as_bytes())),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+fn committee(
+    domain: &str,
+) -> RunResult<(
+    QuorumAuthorizer,
+    BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+)> {
+    let keys =
+        qomm_defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
     let nodes = keys
         .iter()
         .map(|(name, key)| (name.clone(), key.verifying_key()))
-        .collect::<BTreeMap<String, VerifyingKey>>();
+        .collect::<BTreeMap<String, zkfmi_crypto::key::KeyRecord>>();
     let authorizer = QuorumAuthorizer::new(nodes, 3, 1, domain.to_owned()).map_err(failure)?;
     Ok((authorizer, keys))
 }

@@ -37,12 +37,7 @@ pub(super) fn run(phase: &str, contract_hash: &str) -> Result<(), Box<dyn std::e
     let client = private.chain()?;
     let scope: ApplicationReserveScope = serde_json::from_value(private.call("scope", json!({}))?)?;
     let issuer = VerifyingKey::from_bytes(&read::<[u8; 32]>("/public/native-issuer.json")?)?;
-    let readonly = QuorumAuthorizer::new(
-        BTreeMap::from([("read-only".into(), issuer)]),
-        1,
-        1,
-        "read-only",
-    )?;
+    let readonly = QuorumAuthorizer::read_only();
     let bridge = AvalancheNoteBridge::new(&readonly, &client);
     let read_node_states =
         || -> Result<Vec<oclob_node::NodeStoreStatus>, Box<dyn std::error::Error>> {

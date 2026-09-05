@@ -165,12 +165,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finalize_wallet_acceptance(&client, &cluster, &contract_hash)
         };
     }
-    let readonly = QuorumAuthorizer::new(
-        BTreeMap::from([("read-only".into(), issuer)]),
-        1,
-        1,
-        "read-only",
-    )?;
+    let readonly = QuorumAuthorizer::read_only();
     let bridge = AvalancheNoteBridge::new(&readonly, &client);
     let maker_certificate = if next_match {
         // Public signed sequence checkpoint only. Each node still selects its

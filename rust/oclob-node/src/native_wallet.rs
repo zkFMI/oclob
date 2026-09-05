@@ -5,7 +5,6 @@ use crate::corporate::{private_client, CorporateNativeConfig, FacilityWitness};
 use crate::corporate_journal::NativeCorporateJournal;
 use crate::network::ClientIdentityConfig;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::VerifyingKey;
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, CanonicalNoteClaim};
 use qomm_defmi::claim_redemption::redeem_claim;
 use qomm_defmi::facility::QuorumAuthorizer;
@@ -32,15 +31,7 @@ pub fn recover_wallet(
     journal: &NativeCorporateJournal,
 ) -> Result<RecoveredCorporateWallet, String> {
     let client = private_client(config, identity)?.chain()?;
-    let authorizer = QuorumAuthorizer::new(
-        BTreeMap::from([(
-            "read-only".into(),
-            VerifyingKey::from_bytes(&config.issuer_public).map_err(err)?,
-        )]),
-        1,
-        1,
-        "read-only",
-    )?;
+    let authorizer = QuorumAuthorizer::read_only();
     let bridge = AvalancheNoteBridge::new(&authorizer, &client);
     let network = client.call("defmivm.network", serde_json::json!({}))?;
     let domain = network

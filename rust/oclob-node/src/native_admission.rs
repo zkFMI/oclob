@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct AdmissionAuthority {
     pub client: AvalancheRpcClient,
     pub authorizer: QuorumAuthorizer,
-    pub governance_signers: BTreeMap<String, SigningKey>,
+    pub governance_signers: BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     pub receipt_issuer: SigningKey,
     pub scope: ApplicationReserveScope,
     pub eligibility: OclobEligibilityVerifier,
@@ -314,7 +314,12 @@ mod tests {
         let authority = AdmissionAuthority {
             client,
             authorizer: QuorumAuthorizer::new(
-                BTreeMap::from([("unit".into(), signer.verifying_key())]),
+                BTreeMap::from([(
+                    "unit".into(),
+                    qomm_defmi::governance::GovernanceSigner::generate("unit", 0, i64::MAX as u64)
+                        .unwrap()
+                        .verifying_key(),
+                )]),
                 1,
                 1,
                 "unit",
