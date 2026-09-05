@@ -156,12 +156,16 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     }
     let public_bytes = fs::read("/handoff/native-committee.bin")?;
     let public = qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&public_bytes)?;
+    let pq_committee: qomm_zkpi::QuorumPolicy =
+        read_json_limited(Path::new("/handoff/native-committee.pq.json"))?;
+    qomm_zkpi::validate_settlement_committee(&pq_committee, &public)?;
     let scope = ApplicationReserveScope {
         application_binding: oclob_manifest_v1().digest()?,
         venue_id: digest(b"defmi:oclob:v1"),
         defmi_id: digest(b"oclob-integrated-defmi-v1"),
         committee_key_digest: Sha256::digest(public.serialize()?).into(),
-        committee_epoch: 1,
+        pq_committee_digest: pq_committee.digest()?,
+        committee_epoch: pq_committee.epoch,
         amount_bits: 32,
     };
     bridge.register_application_scope(&scope, &approve(scope.statement()?)?)?;

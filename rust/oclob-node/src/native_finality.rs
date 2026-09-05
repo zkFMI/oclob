@@ -186,17 +186,17 @@ pub(crate) fn observe(
         fill.before_root,
         &accepted,
     )?;
-    // Receipt RPC has no block timestamp. Verify all cryptography at the
-    // signed deadline (an in-range anchor), NOT at today's wall clock: a valid
-    // old settlement must remain recoverable. Actual execution time is checked
-    // by the canonical VM, whose exact statement was just observed above.
+    // The exact accepted statement was authenticated above. Recovery checks
+    // archived signature integrity, while the VM enforced key validity at
+    // execution. The deadline remains the authority-interval anchor because
+    // the receipt RPC does not contain a block timestamp.
     let deadline = qomm_zkpi::wire::decode(&fill.instruction)
         .map_err(|e| e.to_string())?
         .deadline;
     if deadline == 0 {
         return Err("native instruction has no validity interval".into());
     }
-    fill.verify(&scope, deadline)?;
+    fill.verify_archived(&scope)?;
     NativeFillVerifier {
         request: authorization,
         execution,

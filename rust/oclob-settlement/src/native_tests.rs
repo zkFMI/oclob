@@ -89,11 +89,15 @@ impl Fixture {
             defmi_id: [33; 32],
             issuer: issuer.verifying_key(),
         };
+        let pq_committee = zkfmi_crypto::test_support::committee(
+            Sha256::digest(public.serialize().unwrap()).into(),
+        );
         let scope = ApplicationReserveScope {
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: trust.venue_id,
             defmi_id: trust.defmi_id,
             committee_key_digest: Sha256::digest(public.serialize().unwrap()).into(),
+            pq_committee_digest: pq_committee.digest().unwrap(),
             committee_epoch: 1,
             amount_bits: 32,
         };
@@ -230,7 +234,10 @@ impl Fixture {
         )
         .unwrap();
         let payment_digest = partial.digest();
-        let instruction = partial.sealed(sign(&keys, &public, &payment_digest));
+        let instruction = partial.sealed_hybrid(
+            sign(&keys, &public, &payment_digest),
+            zkfmi_crypto::test_support::approve(&pq_committee, &payment_digest, 1_000),
+        );
         let sec_refund_blind = Scalar::from(13_u64 + 23) - amount_blind;
         let cash_refund_blind = Scalar::from(17_u64 + 29) - cash_blind;
         let dvp = DvpProofs {
@@ -291,7 +298,9 @@ impl Fixture {
             qomm_defmi::asset_link::prove(&key, securities_asset, &asset, &asset_blind, &mut OsRng)
                 .unwrap();
         let fill = ApplicationNoteFill {
-            version: 1,
+            version: 2,
+            pq_committee,
+            pq_authorization: None,
             scope,
             before_root: [63; 32],
             operation_id: native_fill_operation(job),
@@ -384,6 +393,11 @@ fn completed_proof_can_certify_exact_native_fill_without_participant_signature()
     fill.signature = sign(&f.keys, &f.public, &authorization.message)
         .serialize()
         .unwrap();
+    fill.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+        &fill.pq_committee,
+        &authorization.message,
+        1_000,
+    ));
     fill.verify(&fill.scope, NOW).unwrap();
     let mut new_parent = f.request.clone();
     new_parent.fill.before_root = [91; 32];
@@ -409,6 +423,11 @@ fn arriving_sell_closes_only_its_securities_reserve() {
     fill.signature = sign(&f.keys, &f.public, &authorization.message)
         .serialize()
         .unwrap();
+    fill.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+        &fill.pq_committee,
+        &authorization.message,
+        1_000,
+    ));
     fill.verify(&fill.scope, NOW).unwrap();
     let mut wrong_closure = f.request.clone();
     wrong_closure.fill.cash.close = true;

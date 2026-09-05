@@ -264,7 +264,14 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     )
     .map_err(|error| failure(error.to_string()))?;
     settlement
-        .pin_collaborative_settlement_committee(collaborative_frost_public.clone())
+        .pin_collaborative_settlement_committee(
+            collaborative_frost_public.clone(),
+            qomm_transport::frost_coordinator::read_pq_committee(
+                &mut bootstrap_proof_parties,
+                &collaborative_frost_public,
+            )
+            .map_err(failure)?,
+        )
         .map_err(|error| failure(error.to_string()))?;
     let (authorizer, approval_keys) = committee(&options.chain_id)?;
     let receipt_key = SigningKey::from_bytes(&digest(b"oclob-integrated-receipt-key-v1"));

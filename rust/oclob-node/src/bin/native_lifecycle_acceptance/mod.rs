@@ -199,6 +199,14 @@ pub(super) fn run(phase: &str, contract_hash: &str) -> Result<(), Box<dyn std::e
     let mut request = NativeReleaseRequest {
         command: command.digest()?,
         release: ApplicationNoteRelease {
+            pq_committee: if expired {
+                None
+            } else {
+                Some(serde_json::from_slice(&fs::read(
+                    "/handoff/native-committee.pq.json",
+                )?)?)
+            },
+            pq_authorization: None,
             scope,
             before_root: client.state_root()?,
             operation_id: command.digest()?,

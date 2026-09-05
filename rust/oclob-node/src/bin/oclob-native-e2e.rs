@@ -146,6 +146,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(120),
     )?;
     let scope: ApplicationReserveScope = serde_json::from_value(private.call("scope", json!({}))?)?;
+    let pq_committee: qomm_zkpi::QuorumPolicy = read("/handoff/native-committee.pq.json")?;
+    scope.verify_committee(&public.serialize()?, &pq_committee)?;
     if scope.committee_key_digest != <[u8; 32]>::from(Sha256::digest(public.serialize()?)) {
         return Err("native scope has another MPC committee".into());
     }

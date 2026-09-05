@@ -1209,6 +1209,7 @@ pub struct SettlementEngine {
     signing_shares: BTreeMap<frost::Identifier, frost::keys::KeyPackage>,
     public_key: frost::keys::PublicKeyPackage,
     collaborative_public_key: Option<frost::keys::PublicKeyPackage>,
+    collaborative_pq_policy: Option<qomm_zkpi::QuorumPolicy>,
     participants: BTreeMap<Digest32, ParticipantBalances>,
     demo_handles: (Digest32, Digest32),
     reservations: ReservationBook,
@@ -1224,6 +1225,7 @@ impl Clone for SettlementEngine {
             signing_shares: self.signing_shares.clone(),
             public_key: self.public_key.clone(),
             collaborative_public_key: self.collaborative_public_key.clone(),
+            collaborative_pq_policy: self.collaborative_pq_policy.clone(),
             participants: self.participants.clone(),
             demo_handles: self.demo_handles,
             reservations: self.reservations.clone(),
@@ -1283,6 +1285,7 @@ impl SettlementEngine {
             signing_shares,
             public_key,
             collaborative_public_key: None,
+            collaborative_pq_policy: None,
             participants,
             demo_handles: (first_handle, second_handle),
             reservations: ReservationBook::default(),
@@ -1298,6 +1301,7 @@ impl SettlementEngine {
     pub fn pin_collaborative_settlement_committee(
         &mut self,
         public_key: frost::keys::PublicKeyPackage,
+        pq_policy: qomm_zkpi::QuorumPolicy,
     ) -> Result<(), SettlementError> {
         if self.height != 0
             || !self.reservations.records.is_empty()
@@ -1305,6 +1309,13 @@ impl SettlementEngine {
         {
             return Err(SettlementError::Proof(
                 "the MPC settlement committee must be pinned at DeFMI genesis".into(),
+            ));
+        }
+        qomm_zkpi::validate_settlement_committee(&pq_policy, &public_key)
+            .map_err(|error| SettlementError::Proof(error.into()))?;
+        if pq_policy.threshold != 3 || pq_policy.members.len() != 7 {
+            return Err(SettlementError::Proof(
+                "MPC settlement requires a three-of-seven PQ committee".into(),
             ));
         }
         let encoded = public_key.serialize().map_err(|_| {
@@ -1319,7 +1330,7 @@ impl SettlementEngine {
             let existing = existing.serialize().map_err(|_| {
                 SettlementError::Proof("pinned MPC settlement key is not serializable".into())
             })?;
-            if existing != encoded {
+            if existing != encoded || self.collaborative_pq_policy.as_ref() != Some(&pq_policy) {
                 return Err(SettlementError::Proof(
                     "the MPC settlement committee is already pinned".into(),
                 ));
@@ -1327,6 +1338,7 @@ impl SettlementEngine {
             return Ok(());
         }
         self.collaborative_public_key = Some(public_key);
+        self.collaborative_pq_policy = Some(pq_policy);
         Ok(())
     }
 
@@ -2249,6 +2261,9 @@ impl SettlementEngine {
                 "transition omitted the MPC public-output digest".into(),
             ));
         }
+        let pq_committee = self.collaborative_pq_policy.as_ref().ok_or_else(|| {
+            SettlementError::Proof("MPC PQ settlement committee is not pinned in DeFMI".into())
+        })?;
         let frost_public = self.collaborative_public_key.as_ref().ok_or_else(|| {
             SettlementError::Proof("MPC settlement committee is not pinned in DeFMI".into())
         })?;
@@ -2310,6 +2325,7 @@ impl SettlementEngine {
                         taker_reserve: consumed.taker_reserve_commitment,
                         asset_id: canonical_securities_asset_id(&arriving_record.market_id),
                         frost_public,
+                        pq_committee,
                         now,
                     },
                 )
@@ -3265,18 +3281,21 @@ mod tests {
     fn collaborative_committee_key_is_fixed_before_canonical_state() {
         let mut engine = engine();
         let pinned = engine.public_key.clone();
+        let policy = zkfmi_crypto::test_support::committee(
+            sha2::Sha256::digest(pinned.serialize().unwrap()).into(),
+        );
         engine
-            .pin_collaborative_settlement_committee(pinned.clone())
+            .pin_collaborative_settlement_committee(pinned.clone(), policy.clone())
             .unwrap();
         engine
-            .pin_collaborative_settlement_committee(pinned)
+            .pin_collaborative_settlement_committee(pinned, policy.clone())
             .unwrap();
 
         let (_, buyer) = engine.demo_participant_handles();
         engine.reserve_order(&buy(buyer, 4, 100)).unwrap();
         let (_, replacement) = distributed_key_generation(7, 3, &mut OsRng).unwrap();
         assert!(matches!(
-            engine.pin_collaborative_settlement_committee(replacement),
+            engine.pin_collaborative_settlement_committee(replacement, policy),
             Err(SettlementError::Proof(_))
         ));
     }

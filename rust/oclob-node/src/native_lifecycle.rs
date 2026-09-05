@@ -386,12 +386,20 @@ impl ApplicationControlVerifier for VerifiedControl<'_> {
         let release = &self.request.release;
         if release.reason != ApplicationReleaseReason::Cancelled
             || !release.signature.is_empty()
+            || release.pq_authorization.is_some()
             || release.committee_public != public.serialize().map_err(|e| e.to_string())?
             || <Digest32>::from(Sha256::digest(&release.committee_public))
                 != release.scope.committee_key_digest
         {
             return Err("cancel signing does not name this initialized committee".into());
         }
+        release.scope.verify_committee(
+            &release.committee_public,
+            release
+                .pq_committee
+                .as_ref()
+                .ok_or("cancellation lacks its PQ committee")?,
+        )?;
         let mut action = release.clone();
         action.before_root = [1; 32]; // Only unrelated canonical parent activity may change.
         Ok(ApplicationControlAuthorization {
@@ -550,11 +558,20 @@ pub fn certify_native_release<T: qomm_transport::proof_client::ProofPartyRpc>(
     let public =
         qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&request.release.committee_public)
             .map_err(|e| e.to_string())?;
-    let signature = qomm_transport::frost_coordinator::distributed_frost_sign(
-        parties, &quorum, &message, &public,
+    let signed = qomm_transport::frost_coordinator::distributed_hybrid_sign(
+        parties,
+        &quorum,
+        &message,
+        &public,
+        request
+            .release
+            .pq_committee
+            .as_ref()
+            .ok_or("cancellation lacks its PQ committee")?,
     )?;
     let mut release = request.release.clone();
-    release.signature = signature.serialize().map_err(|e| e.to_string())?;
+    release.signature = signed.classical.serialize().map_err(|e| e.to_string())?;
+    release.pq_authorization = Some(signed.pq);
     Ok(release)
 }
 

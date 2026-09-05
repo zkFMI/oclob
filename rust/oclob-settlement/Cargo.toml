@@ -31,4 +31,5 @@ merlin.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
 oclob-dekyx.workspace = true

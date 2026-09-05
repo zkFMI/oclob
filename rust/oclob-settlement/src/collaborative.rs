@@ -28,7 +28,7 @@ use qomm_transport::dvp_wire::{
     decode as decode_dvp, encode as encode_dvp, Envelope as DvpEnvelope, Message as DvpMessage,
 };
 use qomm_transport::frost_coordinator::{
-    distributed_frost_setup, distributed_frost_sign, frost_signing_job,
+    distributed_frost_setup, distributed_hybrid_sign, frost_signing_job, read_pq_committee,
 };
 use qomm_transport::limit_issuer::{
     assemble as assemble_limit, challenge as make_limit_challenge,
@@ -89,6 +89,7 @@ pub struct CollaborativeFillProof {
     pub asset_id: [u8; 32],
     pub instruction: Instruction,
     pub frost_public: frost::keys::PublicKeyPackage,
+    pub pq_committee: qomm_zkpi::QuorumPolicy,
     pub maker_handle: RistrettoPoint,
     pub price_limit_proof: ThresholdRangeProof,
     pub dvp_proofs: DvpProofs,
@@ -121,6 +122,7 @@ pub struct CollaborativeSettlementContext<'a> {
     pub taker_reserve: RistrettoPoint,
     pub asset_id: [u8; 32],
     pub frost_public: &'a frost::keys::PublicKeyPackage,
+    pub pq_committee: &'a qomm_zkpi::QuorumPolicy,
     pub now: u64,
 }
 
@@ -176,7 +178,7 @@ impl CollaborativeFillProof {
             .frost_public
             .serialize()
             .map_err(|_| "pinned FROST public package is not serializable")?;
-        if supplied_key != pinned_key {
+        if supplied_key != pinned_key || &self.pq_committee != context.pq_committee {
             return Err("zkPI was authorized by an unpinned MPC settlement committee".into());
         }
         let bounds = Bounds {
@@ -186,6 +188,8 @@ impl CollaborativeFillProof {
         };
         Venue::new(key.clone(), &bounds, context.frost_public.clone())
             .require_threshold_ranges()
+            .require_pq_committee(context.pq_committee.clone())
+            .map_err(str::to_string)?
             .verify(&self.instruction, context.now)
             .map_err(str::to_string)?;
         threshold_price_limit(
@@ -381,11 +385,19 @@ pub fn prove_fill<T: ProofPartyRpc>(
         &amount_range_wire,
         &price_range_wire,
     )?;
-    let signature =
-        distributed_frost_sign(parties, &SIGNING_QUORUM, &partial.digest(), &frost_public)?;
-    let instruction = partial.sealed(signature);
+    let pq_committee = read_pq_committee(parties, &frost_public)?;
+    let signed = distributed_hybrid_sign(
+        parties,
+        &SIGNING_QUORUM,
+        &partial.digest(),
+        &frost_public,
+        &pq_committee,
+    )?;
+    let instruction = partial.sealed_hybrid(signed.classical, signed.pq);
     Venue::new(key.clone(), &bounds, frost_public.clone())
         .require_threshold_ranges()
+        .require_pq_committee(pq_committee.clone())
+        .map_err(str::to_string)?
         .verify(&instruction, request.now)
         .map_err(str::to_string)?;
 
@@ -429,6 +441,7 @@ pub fn prove_fill<T: ProofPartyRpc>(
     )?;
 
     Ok(CollaborativeFillProof {
+        pq_committee,
         job_id: request.job_id,
         market_proof_digest: request.market_proof_digest,
         limit_direction: request.limit_direction,

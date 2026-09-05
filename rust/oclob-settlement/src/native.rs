@@ -12,7 +12,7 @@ use qomm_defmi::application_settlement::{
     ApplicationOpening, ApplicationSpendHead,
 };
 use qomm_defmi::avalanche::CanonicalApplicationReservation;
-use qomm_transport::frost_coordinator::distributed_frost_sign;
+use qomm_transport::frost_coordinator::distributed_hybrid_sign;
 use qomm_transport::proof_client::ProofPartyRpc;
 use qomm_transport::proof_codec::encode_dvp_proofs;
 use qomm_transport::proof_party::{
@@ -550,7 +550,9 @@ pub fn prepare_native_fill(
         return Err("native asset rail differs from the proved asset".into());
     }
     Ok(ApplicationNoteFill {
-        version: 1,
+        version: 2,
+        pq_committee: proof.pq_committee.clone(),
+        pq_authorization: None,
         scope,
         before_root: maker_head.state_root,
         operation_id: native_fill_operation(proof.job_id),
@@ -604,9 +606,19 @@ pub fn certify_native_fill<T: ProofPartyRpc>(
     let public =
         qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&request.fill.committee_public)
             .map_err(|error| error.to_string())?;
-    let signature = distributed_frost_sign(parties, &SIGNING_QUORUM, &message, &public)?;
+    let signed = distributed_hybrid_sign(
+        parties,
+        &SIGNING_QUORUM,
+        &message,
+        &public,
+        &request.fill.pq_committee,
+    )?;
     let mut fill = request.fill.clone();
-    fill.signature = signature.serialize().map_err(|error| error.to_string())?;
+    fill.signature = signed
+        .classical
+        .serialize()
+        .map_err(|error| error.to_string())?;
+    fill.pq_authorization = Some(signed.pq);
     Ok(fill)
 }
 

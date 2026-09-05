@@ -327,6 +327,7 @@ mod tests {
                 venue_id: [2; 32],
                 defmi_id: [3; 32],
                 committee_key_digest: [4; 32],
+                pq_committee_digest: [231; 32],
                 committee_epoch: 1,
                 amount_bits: 32,
             },

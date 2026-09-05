@@ -47,6 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .finalize()
         .into();
     let public = setup_frost(&mut parties, session)?;
+    let pq_committee = qomm_transport::frost_coordinator::read_pq_committee(&mut parties, &public)?;
     let mut output = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -54,6 +55,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .open(&args[2])?;
     output.write_all(&public.serialize()?)?;
     output.sync_all()?;
+    let mut pq_output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o644)
+        .open(std::path::Path::new(&args[2]).with_extension("pq.json"))?;
+    pq_output.write_all(&serde_json::to_vec(&pq_committee)?)?;
+    pq_output.sync_all()?;
     println!("native committee established by seven resident proof nodes");
     Ok(())
 }
