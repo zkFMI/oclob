@@ -302,6 +302,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.20",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -792,6 +793,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.20",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -1780,9 +1782,9 @@ name = "qomm-sim"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "deccp-core"
+name = "qomm-avalanche-vm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "qomm-avalanche-vm"
+name = "deccp-core"
 version = "0.1.0"

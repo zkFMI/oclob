@@ -251,10 +251,16 @@ pub fn deterministic_demo_environment(
         return Err(EligibilityError::Configuration);
     }
     let signing_key = SigningKey::from_bytes(&[71; 32]);
+    // Public demonstration keys; never enroll this environment in a live service.
+    let pq_signing_key = zkfmi_crypto::backend::MlDsa65Signer::from_seed(&[72; 32]);
     let definition = IssuerDefinition {
         issuer_id: digest(b"OCLOB:DEMO:ISSUER-ID:v1", market_id.as_bytes()),
         key_epoch: ISSUER_EPOCH,
         public_key: signing_key.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(&pq_signing_key),
+        signature_suite: zkfmi_crypto::suite::Suite::new(
+            zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65,
+        ),
         supported_subjects: BTreeSet::from([SubjectKind::LegalEntity]),
         namespace_digest: digest(b"OCLOB:DEMO:ISSUER-NAMESPACE:v1", market_id.as_bytes()),
         valid_from: 1,
@@ -269,7 +275,7 @@ pub fn deterministic_demo_environment(
     };
     let audience_digest = digest(b"OCLOB:DEKYX:AUDIENCE:v1", market_id.as_bytes());
     let action_digest = digest(b"OCLOB:DEKYX:ACTION:SUBMIT-ORDER:v1", market_id.as_bytes());
-    let issuer = CredentialIssuer::new(definition.clone(), signing_key)
+    let issuer = CredentialIssuer::new(definition.clone(), signing_key, pq_signing_key)
         .map_err(|error| EligibilityError::DeKyx(error.to_string()))?;
     let mut directory = IssuerDirectory::default();
     directory

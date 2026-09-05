@@ -6,6 +6,7 @@ license.workspace = true
 description = "DeKYX anonymous legal-entity eligibility adapter for OCLOB"
 
 [dependencies]
+zkfmi-crypto.workspace = true
 oclob-core.workspace = true
 dekyx-core.workspace = true
 curve25519-dalek.workspace = true
