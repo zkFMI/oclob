@@ -47,6 +47,7 @@ struct Config {
     proof_state_file: PathBuf,
     proof_state_passphrase: PathBuf,
     trusted_defmi_id: String,
+    trusted_reservation_venue_id: String,
     trusted_defmi_receipt_public: String,
 }
 
@@ -88,12 +89,17 @@ fn run() -> Result<(), String> {
     let mut store = NodeShareStore::open(&config.share_store, config.party, share_key)
         .map_err(|error| error.to_string())?;
     let trusted_defmi_id = parse_hex_32(&config.trusted_defmi_id, "trusted DeFMI id")?;
+    let trusted_venue_id = parse_hex_32(
+        &config.trusted_reservation_venue_id,
+        "trusted reservation venue id",
+    )?;
     let trusted_defmi_receipt_public = parse_hex_32(
         &config.trusted_defmi_receipt_public,
         "trusted DeFMI receipt public key",
     )?;
     store
         .pin_reservation_trust(
+            trusted_venue_id,
             trusted_defmi_id,
             ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
                 .map_err(|_| "trusted DeFMI receipt public key is malformed")?,

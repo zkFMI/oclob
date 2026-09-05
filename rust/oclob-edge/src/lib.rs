@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
+use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::ReservationPermit;
 
@@ -53,7 +54,8 @@ const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CL
 const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v1";
 const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
 const PREAUTHORIZED_SETTLEMENT_DOMAIN: &[u8] = b"OCLOB:PREAUTHORIZED-SETTLEMENT:v1";
-const VERSION: u16 = 4;
+const RESERVATION_AUTHORITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:RESERVATION-AUTHORITY:v1";
+const VERSION: u16 = 5;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -69,10 +71,10 @@ pub struct EdgeOrderManifest {
     /// VSS manifest is assembled. A DeFMI reservation permit names this value.
     #[serde(default)]
     pub source_order_commitment: Digest32,
-    /// Digest of a DeFMI-signed permit delivered only inside each encrypted
+    /// Digest of a redacted DeFMI admission delivered only inside each encrypted
     /// node share. Zero identifies the legacy post-match capability path.
     #[serde(default)]
-    pub reservation_permit_digest: Digest32,
+    pub reservation_admission_digest: Digest32,
     pub settlement_capability_commitment: Digest32,
     #[serde(default)]
     pub settlement_key_commitments: [[u8; 32]; SETTLEMENT_KEY_COEFFICIENTS],
@@ -100,10 +102,10 @@ impl EdgeOrderManifest {
         {
             return Err(EdgeError::Manifest);
         }
-        if self.reservation_permit_digest != [0; 32]
+        if self.reservation_admission_digest != [0; 32]
             && (!self.settlement_proof_enabled
                 || self.settlement_capability_commitment
-                    != preauthorized_settlement_commitment(self.reservation_permit_digest))
+                    != preauthorized_settlement_commitment(self.reservation_admission_digest))
         {
             return Err(EdgeError::Manifest);
         }
@@ -166,7 +168,7 @@ impl EdgeOrderManifest {
         body.extend_from_slice(&self.retention_deadline.to_be_bytes());
         body.extend_from_slice(&self.eligibility_commitment);
         body.extend_from_slice(&self.source_order_commitment);
-        body.extend_from_slice(&self.reservation_permit_digest);
+        body.extend_from_slice(&self.reservation_admission_digest);
         body.extend_from_slice(&self.settlement_capability_commitment);
         for commitment in &self.settlement_key_commitments {
             body.extend_from_slice(commitment);
@@ -187,7 +189,7 @@ impl EdgeOrderManifest {
     }
 
     pub fn uses_pretrade_reservation(&self) -> bool {
-        self.reservation_permit_digest != [0; 32]
+        self.reservation_admission_digest != [0; 32]
     }
 }
 
@@ -207,7 +209,7 @@ pub struct PartyOrderShare {
     /// Signed DeFMI authority is encrypted separately to each node. It binds
     /// the VSS constant terms without revealing the side to the coordinator.
     #[serde(default)]
-    reservation_permit: String,
+    reservation_admission: String,
     signer: Digest32,
     signature: Vec<u8>,
 }
@@ -258,39 +260,35 @@ impl PartyOrderShare {
             .map(scalar_le_bytes_to_decimal)
     }
 
-    /// Verify the DeFMI reservation authority against the public VSS constant
-    /// terms. This method is intended for the node that decrypted this share;
-    /// callers must not return the permit to the public coordinator.
-    pub fn verified_reservation_permit(
+    /// Verify the redacted DeFMI admission against the public VSS constant
+    /// terms and the independently configured venue. Only the receiving node
+    /// calls this; the full canonical-note permit is not present in this share.
+    pub fn verified_reservation_admission(
         &self,
         manifest: &EdgeOrderManifest,
+        expected_venue: Digest32,
         expected_defmi: Digest32,
         trusted_signer: &VerifyingKey,
         now: u64,
-    ) -> Result<ReservationPermit, EdgeError> {
-        if !manifest.uses_pretrade_reservation() || self.reservation_permit.is_empty() {
+    ) -> Result<ReservationAdmission, EdgeError> {
+        if !manifest.uses_pretrade_reservation() || self.reservation_admission.is_empty() {
             return Err(EdgeError::ReservationPermit);
         }
         let wire = BASE64
-            .decode(&self.reservation_permit)
+            .decode(&self.reservation_admission)
             .map_err(|_| EdgeError::ReservationPermit)?;
-        let permit = ReservationPermit::decode(&wire).map_err(|_| EdgeError::ReservationPermit)?;
+        let permit =
+            ReservationAdmission::decode(&wire).map_err(|_| EdgeError::ReservationPermit)?;
         let application = oclob_manifest_v1()
             .digest()
             .map_err(|_| EdgeError::ReservationPermit)?;
         permit
             .verify(application, expected_defmi, trusted_signer, now)
             .map_err(|_| EdgeError::ReservationPermit)?;
-        if permit.digest().map_err(|_| EdgeError::ReservationPermit)?
-            != manifest.reservation_permit_digest
-            || permit.order_commitment != manifest.source_order_commitment
-            || permit.participant_handle != manifest.settlement_field_commitments[0][0]
-            || permit.amount_commitment != manifest.settlement_field_commitments[1][0]
-            || permit.side_commitment != manifest.field_commitments[0][0]
-            || permit.valid_until < manifest.retention_deadline
-        {
+        if permit.venue_id != expected_venue {
             return Err(EdgeError::ReservationPermit);
         }
+        verify_admission_binding(&permit, manifest)?;
         Ok(permit)
     }
 
@@ -382,8 +380,8 @@ impl PartyOrderShare {
         for value in &self.settlement_blinding_shares {
             body.extend_from_slice(value);
         }
-        body.extend_from_slice(&(self.reservation_permit.len() as u32).to_be_bytes());
-        body.extend_from_slice(self.reservation_permit.as_bytes());
+        body.extend_from_slice(&(self.reservation_admission.len() as u32).to_be_bytes());
+        body.extend_from_slice(self.reservation_admission.as_bytes());
         body.extend_from_slice(&self.signer);
         body
     }
@@ -828,6 +826,122 @@ impl SealedSettlementCapability {
     }
 }
 
+/// Threshold-encrypted DeFMI authority. Its payload contains only the signed
+/// admission and canonical note permit, never an order or its scalar openings.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct SealedReservationAuthority(SealedSettlementCapability);
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReservationAuthorityClear {
+    admission: ReservationAdmission,
+    permit: ReservationPermit,
+    reserve_reblinding: [u8; 32],
+}
+
+pub struct VerifiedReservationAuthority {
+    pub admission: ReservationAdmission,
+    pub permit: ReservationPermit,
+    pub reserve_reblinding: Scalar,
+}
+
+impl SealedReservationAuthority {
+    pub fn open(
+        &self,
+        key: &SettlementCapabilityKey,
+        manifest: &EdgeOrderManifest,
+        expected_venue: Digest32,
+        expected_defmi: Digest32,
+        trusted_signer: &VerifyingKey,
+        now: u64,
+    ) -> Result<VerifiedReservationAuthority, EdgeError> {
+        manifest.verify(now)?;
+        let envelope = &self.0;
+        if !manifest.uses_pretrade_reservation()
+            || envelope.version != VERSION
+            || envelope.order_commitment != manifest.commitment
+            || envelope.capability_commitment != manifest.settlement_capability_commitment
+            || envelope.ciphertext.len() != SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES + 16
+        {
+            return Err(EdgeError::Envelope);
+        }
+        let scalar = canonical_scalar(key.0).map_err(|_| EdgeError::CapabilityKeyShare)?;
+        if (RISTRETTO_BASEPOINT_POINT * scalar).compress().to_bytes()
+            != manifest.settlement_key_commitments[0]
+        {
+            return Err(EdgeError::CapabilityKeyShare);
+        }
+        let mut clear = decrypt(
+            &key.0,
+            &envelope.nonce,
+            &envelope.ciphertext,
+            &settlement_envelope_aad(envelope),
+        )?;
+        let decoded = (|| {
+            let prefix = RESERVATION_AUTHORITY_CLEAR_DOMAIN.len();
+            if clear.len() != SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES
+                || &clear[..prefix] != RESERVATION_AUTHORITY_CLEAR_DOMAIN
+            {
+                return Err(EdgeError::Envelope);
+            }
+            let length = u32::from_be_bytes(clear[prefix..prefix + 4].try_into().unwrap()) as usize;
+            let end = (prefix + 4)
+                .checked_add(length)
+                .filter(|end| *end <= clear.len())
+                .ok_or(EdgeError::Envelope)?;
+            serde_json::from_slice::<ReservationAuthorityClear>(&clear[prefix + 4..end])
+                .map_err(|_| EdgeError::Envelope)
+        })();
+        clear.fill(0);
+        let decoded = decoded?;
+        if decoded.admission.venue_id != expected_venue {
+            return Err(EdgeError::ReservationPermit);
+        }
+        let application = oclob_manifest_v1()
+            .digest()
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        decoded
+            .admission
+            .verify(application, expected_defmi, trusted_signer, now)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        decoded
+            .permit
+            .verify(application, expected_defmi, trusted_signer, now)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        let reserve_reblinding = canonical_scalar(decoded.reserve_reblinding)?;
+        decoded
+            .admission
+            .verify_authority(&decoded.permit, &reserve_reblinding)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        verify_admission_binding(&decoded.admission, manifest)?;
+        Ok(VerifiedReservationAuthority {
+            admission: decoded.admission,
+            permit: decoded.permit,
+            reserve_reblinding,
+        })
+    }
+}
+
+fn verify_admission_binding(
+    admission: &ReservationAdmission,
+    manifest: &EdgeOrderManifest,
+) -> Result<(), EdgeError> {
+    if admission
+        .digest()
+        .map_err(|_| EdgeError::ReservationPermit)?
+        != manifest.reservation_admission_digest
+        || admission.order_commitment != manifest.source_order_commitment
+        || admission.participant_handle != manifest.settlement_field_commitments[0][0]
+        || admission.amount_commitment != manifest.settlement_field_commitments[1][0]
+        || admission.side_commitment != manifest.field_commitments[0][0]
+        || admission.valid_until < manifest.retention_deadline
+    {
+        return Err(EdgeError::ReservationPermit);
+    }
+    Ok(())
+}
+
 /// Created only inside the participant/corporate module. It is deliberately
 /// not serializable as one object, preventing accidental transmission of all
 /// seven shares to a coordinator.
@@ -840,7 +954,7 @@ pub struct EdgeOrderBundle {
 }
 
 struct PreauthorizedReservation<'a> {
-    permit: &'a ReservationPermit,
+    permit: &'a ReservationAdmission,
     trusted_signer: &'a VerifyingKey,
     side_blinding: Scalar,
     reserve_blinding: Scalar,
@@ -894,16 +1008,16 @@ impl EdgeOrderBundle {
         )
     }
 
-    /// Build an order that is already authorized by a canonical DeFMI note
-    /// reservation. The participant signs only before admission. Matching can
-    /// later consume this permit and the MPC-produced zkPI without opening a
-    /// post-match settlement capability or asking the participant to sign.
+    /// Build an order from a redacted certificate for a canonical DeFMI note
+    /// reservation. The participant signs before admission. The separate
+    /// threshold-encrypted authority contains no order or reserve opening;
+    /// opening it after matching does not require another participant signature.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_with_reservation_permit<R: RngCore + CryptoRng>(
+    pub fn create_with_reservation_admission<R: RngCore + CryptoRng>(
         order: &SecretOrder,
         handle: &Handle,
         eligibility_commitment: Digest32,
-        permit: &ReservationPermit,
+        permit: &ReservationAdmission,
         trusted_signer: &VerifyingKey,
         side_blinding: Scalar,
         reserve_blinding: Scalar,
@@ -959,7 +1073,7 @@ impl EdgeOrderBundle {
         let application = oclob_manifest_v1()
             .digest()
             .map_err(|_| EdgeError::ReservationPermit)?;
-        let reservation_permit = preauthorized
+        let reservation_admission = preauthorized
             .as_ref()
             .map(|value| {
                 value
@@ -987,7 +1101,7 @@ impl EdgeOrderBundle {
             .transpose()?
             .map(|wire| BASE64.encode(wire))
             .unwrap_or_default();
-        let reservation_permit_digest = preauthorized
+        let reservation_admission_digest = preauthorized
             .as_ref()
             .map(|value| {
                 value
@@ -1110,7 +1224,7 @@ impl EdgeOrderBundle {
             retention_deadline: order.expires_at(),
             eligibility_commitment,
             source_order_commitment: order.commitment().0,
-            reservation_permit_digest,
+            reservation_admission_digest,
             settlement_capability_commitment,
             settlement_key_commitments,
             field_commitments,
@@ -1140,7 +1254,7 @@ impl EdgeOrderBundle {
                     .map(|value| value.to_bytes()),
                 settlement_blinding_shares: settlement_blinding_evaluations[party]
                     .map(|value| value.to_bytes()),
-                reservation_permit: reservation_permit.clone(),
+                reservation_admission: reservation_admission.clone(),
                 signer: signer_public,
                 signature: Vec::new(),
             };
@@ -1182,6 +1296,57 @@ impl EdgeOrderBundle {
 
     pub fn manifest(&self) -> &EdgeOrderManifest {
         &self.manifest
+    }
+
+    pub fn seal_reservation_authority<R: RngCore + CryptoRng>(
+        &self,
+        permit: &ReservationPermit,
+        admission: &ReservationAdmission,
+        reserve_reblinding: Scalar,
+        rng: &mut R,
+    ) -> Result<SealedReservationAuthority, EdgeError> {
+        if !self.manifest.uses_pretrade_reservation() {
+            return Err(EdgeError::ReservationPermit);
+        }
+        verify_admission_binding(admission, &self.manifest)?;
+        admission
+            .verify_authority(permit, &reserve_reblinding)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        let mut encoded = serde_json::to_vec(&ReservationAuthorityClear {
+            admission: admission.clone(),
+            permit: permit.clone(),
+            reserve_reblinding: reserve_reblinding.to_bytes(),
+        })
+        .map_err(|_| EdgeError::Envelope)?;
+        let prefix = RESERVATION_AUTHORITY_CLEAR_DOMAIN.len();
+        if encoded.len() + prefix + 4 > SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES {
+            encoded.fill(0);
+            return Err(EdgeError::Envelope);
+        }
+        let mut clear = vec![0; SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES];
+        rng.fill_bytes(&mut clear);
+        clear[..prefix].copy_from_slice(RESERVATION_AUTHORITY_CLEAR_DOMAIN);
+        clear[prefix..prefix + 4].copy_from_slice(&(encoded.len() as u32).to_be_bytes());
+        clear[prefix + 4..prefix + 4 + encoded.len()].copy_from_slice(&encoded);
+        encoded.fill(0);
+        let mut nonce = [0; 12];
+        rng.fill_bytes(&mut nonce);
+        let mut envelope = SealedSettlementCapability {
+            version: VERSION,
+            order_commitment: self.manifest.commitment,
+            capability_commitment: self.manifest.settlement_capability_commitment,
+            nonce,
+            ciphertext: Vec::new(),
+        };
+        let ciphertext = encrypt(
+            &self.settlement_capability_key.0,
+            &nonce,
+            &clear,
+            &settlement_envelope_aad(&envelope),
+        );
+        clear.fill(0);
+        envelope.ciphertext = ciphertext?;
+        Ok(SealedReservationAuthority(envelope))
     }
 
     /// Encrypt the participant's pre-authorized settlement material under the
@@ -2111,7 +2276,7 @@ mod tests {
         let reserve_blinding = Scalar::from(47_u64);
         let key = vss_key();
         let permit = ReservationPermit {
-            version: 1,
+            version: 2,
             role: ReservationRole::Taker,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [48; 32],
@@ -2120,6 +2285,7 @@ mod tests {
             accepted_height: 7,
             order_commitment: order.commitment().0,
             participant_handle: order.participant_handle(),
+            entity_commitment: [75; 32],
             reservation_id: [51; 32],
             facility_id: [52; 32],
             asset_id: [53; 32],
@@ -2127,6 +2293,8 @@ mod tests {
                 .commit(&Scalar::from(order.reservation_limit()), &reserve_blinding)
                 .compress()
                 .to_bytes(),
+            escrow_note_id: [76; 32],
+            delegation_digest: [77; 32],
             side_commitment: key
                 .commit(
                     &Scalar::from(u64::from(order.side().wire())),
@@ -2143,14 +2311,17 @@ mod tests {
         }
         .sign(&permit_signer)
         .unwrap();
-        let bundle = EdgeOrderBundle::create_with_reservation_permit(
+        let reblinding = Scalar::from(101_u64);
+        let admission =
+            ReservationAdmission::from_permit(&permit, &reblinding, &permit_signer).unwrap();
+        let bundle = EdgeOrderBundle::create_with_reservation_admission(
             &order,
             &participant,
             [56; 32],
-            &permit,
+            &admission,
             &permit_signer.verifying_key(),
             side_blinding,
-            reserve_blinding,
+            reserve_blinding + reblinding,
             &order_signer,
             &public,
             1_900_000_000,
@@ -2159,8 +2330,8 @@ mod tests {
         .unwrap();
         assert!(bundle.manifest().uses_pretrade_reservation());
         assert_eq!(
-            bundle.manifest().reservation_permit_digest,
-            permit.digest().unwrap()
+            bundle.manifest().reservation_admission_digest,
+            admission.digest().unwrap()
         );
         let manifest_json = serde_json::to_string(bundle.manifest()).unwrap();
         assert!(!manifest_json.contains("buy"));
@@ -2174,8 +2345,12 @@ mod tests {
                 &mut rand::rngs::OsRng,
             )
             .is_err());
+        let authority = bundle
+            .seal_reservation_authority(&permit, &admission, reblinding, &mut rand::rngs::OsRng)
+            .unwrap();
         let manifest = bundle.manifest().clone();
-        for (party, sealed, _) in bundle.into_deliveries() {
+        let mut key_shares = Vec::new();
+        for (party, sealed, key_share) in bundle.into_deliveries() {
             let share = sealed
                 .open(
                     &private[usize::from(party)],
@@ -2185,15 +2360,81 @@ mod tests {
                 )
                 .unwrap();
             let verified = share
-                .verified_reservation_permit(
+                .verified_reservation_admission(
                     &manifest,
+                    permit.venue_id,
                     [49; 32],
                     &permit_signer.verifying_key(),
                     1_900_000_000,
                 )
                 .unwrap();
-            assert_eq!(verified.reservation_id, [51; 32]);
+            assert_eq!(verified, admission);
+            let decoded: serde_json::Value =
+                serde_json::from_slice(&verified.encode().unwrap()).unwrap();
+            assert!(decoded.get("asset_id").is_none());
+            assert!(decoded.get("reservation_id").is_none());
+            assert!(decoded.get("escrow_note_id").is_none());
+            key_shares.push(
+                key_share
+                    .open(
+                        &private[usize::from(party)],
+                        &manifest,
+                        party,
+                        1_900_000_000,
+                    )
+                    .unwrap(),
+            );
         }
+        assert!(
+            reconstruct_settlement_capability_key(&manifest, &key_shares[..2], 1_900_000_000)
+                .is_err()
+        );
+        let key = reconstruct_settlement_capability_key(&manifest, &key_shares[..3], 1_900_000_000)
+            .unwrap();
+        let opened = authority
+            .open(
+                &key,
+                &manifest,
+                permit.venue_id,
+                [49; 32],
+                &permit_signer.verifying_key(),
+                1_900_000_000,
+            )
+            .unwrap();
+        assert_eq!(opened.permit, permit);
+        assert_eq!(opened.admission, admission);
+        assert!(authority
+            .open(
+                &key,
+                &manifest,
+                permit.venue_id,
+                [99; 32],
+                &permit_signer.verifying_key(),
+                1_900_000_000
+            )
+            .is_err());
+        assert!(authority
+            .open(
+                &key,
+                &manifest,
+                [99; 32],
+                [49; 32],
+                &permit_signer.verifying_key(),
+                1_900_000_000
+            )
+            .is_err());
+        let mut corrupted = authority.clone();
+        corrupted.0.ciphertext[12] ^= 1;
+        assert!(corrupted
+            .open(
+                &key,
+                &manifest,
+                permit.venue_id,
+                [49; 32],
+                &permit_signer.verifying_key(),
+                1_900_000_000
+            )
+            .is_err());
     }
 
     #[test]
@@ -2215,7 +2456,7 @@ mod tests {
         let permit_signer = SigningKey::from_bytes(&[64; 32]);
         let key = vss_key();
         let permit = ReservationPermit {
-            version: 1,
+            version: 2,
             role: ReservationRole::Maker,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [65; 32],
@@ -2224,6 +2465,7 @@ mod tests {
             accepted_height: 8,
             order_commitment: order.commitment().0,
             participant_handle: order.participant_handle(),
+            entity_commitment: [75; 32],
             reservation_id: [68; 32],
             facility_id: [69; 32],
             asset_id: [70; 32],
@@ -2234,6 +2476,8 @@ mod tests {
                 )
                 .compress()
                 .to_bytes(),
+            escrow_note_id: [76; 32],
+            delegation_digest: [77; 32],
             side_commitment: key
                 .commit(
                     &Scalar::from(u64::from(order.side().wire())),
@@ -2250,11 +2494,14 @@ mod tests {
         }
         .sign(&permit_signer)
         .unwrap();
-        assert!(EdgeOrderBundle::create_with_reservation_permit(
+        let admission =
+            ReservationAdmission::from_permit(&permit, &Scalar::from(102_u64), &permit_signer)
+                .unwrap();
+        assert!(EdgeOrderBundle::create_with_reservation_admission(
             &order,
             &participant,
             [75; 32],
-            &permit,
+            &admission,
             &permit_signer.verifying_key(),
             Scalar::from(72_u64),
             Scalar::from(99_u64),

@@ -180,6 +180,7 @@ fn provision(root: &Path) -> Result<(), String> {
             Sha256::digest(b"oclob-integrated-receipt-key-v1").into();
         let defmi_receipt_key = SigningKey::from_bytes(&defmi_receipt_secret);
         let trusted_defmi_id: [u8; 32] = Sha256::digest(b"oclob-integrated-defmi-v1").into();
+        let trusted_venue_id: [u8; 32] = Sha256::digest(b"defmi:oclob:v1").into();
         let config = json!({
             "version": 2,
             "party": party,
@@ -205,6 +206,7 @@ fn provision(root: &Path) -> Result<(), String> {
             "proof_state_file": "/state/mpc/private-state/proof-state.qps",
             "proof_state_passphrase": "/node/proof-state-passphrase.raw",
             "trusted_defmi_id": hex::encode(trusted_defmi_id),
+            "trusted_reservation_venue_id": hex::encode(trusted_venue_id),
             "trusted_defmi_receipt_public": hex::encode(defmi_receipt_key.verifying_key().to_bytes())
         });
         write_json(&node_dir.join("config.json"), &config, 0o600)?;

@@ -239,6 +239,30 @@ pub struct ThresholdCapabilityRelease {
 }
 
 impl ThresholdCapabilityRelease {
+    /// Open only the confidential canonical-note authority after the same
+    /// threshold release checks used for settlement. This path contains no
+    /// plaintext order, price, quantity, or original order blinding.
+    pub fn open_reservation(
+        &self,
+        envelope: &oclob_edge::SealedReservationAuthority,
+        manifest: &EdgeOrderManifest,
+        expected_venue: Digest32,
+        expected_defmi: Digest32,
+        trusted_signer: &VerifyingKey,
+        now: u64,
+    ) -> Result<oclob_edge::VerifiedReservationAuthority, EdgeClientError> {
+        envelope
+            .open(
+                &self.key,
+                manifest,
+                expected_venue,
+                expected_defmi,
+                trusted_signer,
+                now,
+            )
+            .map_err(|_| EdgeClientError::SettlementThreshold)
+    }
+
     pub fn release_count(&self) -> usize {
         self.releases.len()
     }
