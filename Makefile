@@ -291,7 +291,7 @@ remote-native-e2e:
 	    \$$compose run --rm market-worker oclob-market-worker --initialize; \
 	    export OCLOB_MARKET_CRASH_AFTER_CANONICAL=1; \
 	    \$$compose up -d market-worker maker-worker taker-worker public-book; \
-	    if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then \$$compose up -d --wait maker-api taker-api; \$$compose run --rm maker sh -c 'umask 077; oclob-corporate-api --wallet > /corporate/api-wallet-before.json'; \$$compose run --rm taker sh -c 'umask 077; oclob-corporate-api --wallet > /corporate/api-wallet-before.json'; \$$compose run --rm -e OCLOB_CORPORATE_API_CONFIG=/public/taker-api.json maker oclob-corporate-api --expect-denied; \$$compose run --rm -e OCLOB_CORPORATE_API_CONFIG=/public/maker-api.json taker oclob-corporate-api --expect-denied; fi; \
+	    if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then \$$compose up -d --wait maker-api taker-api; \$$compose run --rm maker sh -ec 'test ! -e /identity/queue; test ! -e /corporate/dispatch.enc; umask 077; oclob-corporate-api --wallet > /corporate/api-wallet-before.json'; \$$compose run --rm taker sh -ec 'test ! -e /identity/queue; test ! -e /corporate/dispatch.enc; umask 077; oclob-corporate-api --wallet > /corporate/api-wallet-before.json'; \$$compose run --rm -e OCLOB_CORPORATE_API_CONFIG=/public/taker-api.json maker oclob-corporate-api --expect-denied; \$$compose run --rm -e OCLOB_CORPORATE_API_CONFIG=/public/maker-api.json taker oclob-corporate-api --expect-denied; fi; \
 	    if [ '$(NATIVE_HTTP)' = 1 ]; then \$$compose up -d --wait book-api; \$$compose run --rm book-reader curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\\n' http://book-api:9880/v1/book > \"\$$runtime/handoff/http-statuses.txt\"; fi; \
 	    if [ '$(NATIVE_BROWSER)' = 1 ]; then printf 'BROWSER_EMPTY_READY %s\\n' '$$remote_dir'; for browser_wait in \$$(seq 1 90); do [ ! -f '$$remote_dir/browser-empty-continue' ] || break; sleep 1; done; fi; \
 	    first_market=\$$(\$$compose ps -q market-worker); [ -n \"\$$first_market\" ]; \
@@ -463,7 +463,7 @@ remote-native-e2e:
 	if [ '$(NATIVE_MARKET)' = 1 ]; then artifact=artifacts/oclob_native_market.json; fi; \
 	if [ '$(NATIVE_DEPTH)' = 1 ]; then artifact=artifacts/oclob_native_depth.json; fi; \
 	if [ '$(NATIVE_HTTP)' = 1 ]; then artifact=artifacts/oclob_native_http.json; fi; \
-	if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then artifact=artifacts/oclob_native_corporate_api.json; fi; \
+	if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then artifact=artifacts/oclob_native_corporate_client.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

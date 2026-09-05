@@ -389,8 +389,9 @@ fn run_native(
             let authorization = journal
                 .authorization(&request_id)?
                 .ok_or("authorization missing")?;
-            // The signing client releases its intake lock before calling the
-            // separate corporate daemon, which owns the queue insertion.
+            // Persist the exact authorization before sending it. With the API
+            // compose profile, this is a client-only outbox, not the server's
+            // journal. The server serializes insertion in its own queue.
             drop(_intake_guard);
             let request = oclob_node::corporate_api::CorporateRequest::Enqueue {
                 request_id: request_id.clone(),

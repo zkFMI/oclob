@@ -31,8 +31,14 @@ services:
       timeout: 10s
       retries: 10
   maker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker-client:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker-client-state:/corporate:rw
     environment:
       OCLOB_CORPORATE_API_CONFIG: /public/maker-api.json
   taker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker-client:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker-client-state:/corporate:rw
     environment:
       OCLOB_CORPORATE_API_CONFIG: /public/taker-api.json

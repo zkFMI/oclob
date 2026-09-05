@@ -1128,6 +1128,59 @@ mod tests {
         assert_eq!(reopened.queue.summaries().unwrap().len(), 1);
     }
     #[test]
+    fn corporate_api_accepts_separate_client_outbox_and_replays_original_authorization() {
+        use crate::corporate_api::{CorporateRequest, CorporateResponse};
+        let server_files = Files::new();
+        let client_files = Files::new();
+        let api = api_fixture(&server_files);
+        let client = NativeCorporateJournal::initialize(
+            client_files.path(),
+            &[82; 32],
+            &api.config,
+            &api.cluster,
+        )
+        .unwrap();
+        let (intent, authorization) = authorized_intent(&api.config, 21);
+        client.save_intent("external-1", &intent).unwrap();
+        client
+            .save_authorization("external-1", &authorization, &api.config)
+            .unwrap();
+        let client_bytes = fs::read(client_files.path()).unwrap();
+        assert!(api.journal.intent("external-1").unwrap().is_none());
+        let request = || CorporateRequest::Enqueue {
+            request_id: "external-1".into(),
+            intent: Box::new(client.intent("external-1").unwrap().unwrap()),
+            authorization: Box::new(client.authorization("external-1").unwrap().unwrap()),
+            source_note: None,
+        };
+        assert!(matches!(
+            api.handle(request(), 101).unwrap(),
+            CorporateResponse::Queued {
+                already_present: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            api.handle(request(), 1100).unwrap(),
+            CorporateResponse::Queued {
+                already_present: true,
+                ..
+            }
+        ));
+        assert_eq!(api.queue.summaries().unwrap().len(), 1);
+        assert_eq!(client_bytes, fs::read(client_files.path()).unwrap());
+        assert!(!client_files.root.join("dispatch.enc").exists());
+        assert!(client.reservations().unwrap().is_empty());
+        assert!(NativeCorporateJournal::open(
+            server_files.path(),
+            &[82; 32],
+            &api.config,
+            &api.cluster
+        )
+        .is_err());
+    }
+
+    #[test]
     fn corporate_api_rejects_invalid_or_expired_intake_before_writing() {
         use crate::corporate_api::CorporateRequest;
         let files = Files::new();

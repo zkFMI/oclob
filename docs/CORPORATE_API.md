@@ -9,6 +9,7 @@ corporate queue, and reads the corporation's own canonical holdings.
 flowchart LR
     subgraph OWNER["Corporate environment"]
         CLIENT["Signing client / internal system"] -->|"Pinned mutual TLS"| API["Corporate API"]
+        CLIENT --> OUTBOX["Client-only encrypted retry outbox"]
         API --> QUEUE["Encrypted corporate queue"]
         QUEUE --> WORKER["Corporate dispatch worker"]
         API -->|"Read and privately reconstruct"| WALLET["Own holdings and facility capacity"]
@@ -81,17 +82,31 @@ Build and test on Softbank or Omen, never on the developer laptop:
 ```sh
 make remote-native-http-e2e REMOTE_TEST_HOST=softbank-l40s \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' \
-  NATIVE_HTTP_MANIFEST=/research/manifests/oclob_native_http_006.json \
+  NATIVE_HTTP_MANIFEST=/research/manifests/oclob_native_http_007.json \
   NATIVE_CORPORATE_API=1
 ```
 
 The optional `deploy/docker-compose.corporate-api.yml` adds `maker-api` and
 `taker-api`. Provisioning creates separate server certificates and permits each
 corporation's existing signing client, not the other company's certificate.
-The existing CLI remains the local signing adapter and retains its existing
-intent/authorization journal; the separate API inserts into the dispatch queue.
-Thus this first integration does not yet demonstrate a completely journal-free
-external signing client or browser-owned credential wallet.
+The CLI is the signing adapter. In the corporate API Docker profile it now uses
+a separate encrypted retry outbox with an independently generated storage key.
+Its identity mount contains an explicit list of client/configuration files, not
+the service's identity directory or its nested queue. Only the API and worker
+mount the service journal and dispatch queue. The client still has its own
+durable storage: eliminating that storage would lose exact retry information
+after a timeout. This is not a browser-owned credential wallet or HSM boundary;
+the lab client retains corporate signing/funding configuration.
+
+The isolated-client scenario 007 passed with four API orders, two actual fills
+totaling 7,500, both cross-company denials, locked balances of 45 and zero,
+exact-request replay after API restart, and validator-restart recovery.
+[`oclob_native_corporate_client_sources.json`](../artifacts/oclob_native_corporate_client_sources.json)
+binds all 171 executed source files and the result. Remote formatting, Clippy
+and 132 Rust tests passed. Read-only checks after settlement confirmed that
+both client outboxes were private, with no dispatch file, service queue directory
+or API server key in their mounts. The older 006b evidence below describes the
+shared-journal predecessor. Neither result establishes browser acceptance.
 
 The scenario routes all four orders through the actual API and existing workers,
 checks both cross-corporate access failures, reads before/after wallet snapshots,

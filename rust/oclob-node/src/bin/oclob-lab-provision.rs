@@ -340,7 +340,42 @@ fn provision(root: &Path) -> Result<(), String> {
             }),
             0o600,
         )?;
-        corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
+        // The API signing client has its own durable outbox, never a mount of
+        // the service's journal, dispatch queue, or reservation history.
+        let client_name = if seed == 11 {
+            "maker-client"
+        } else {
+            "taker-client"
+        };
+        let client_dir = create_private_dir(root.join(client_name))?;
+        let client_state = create_private_dir(root.join(format!("{client_name}-state")))?;
+        for name in [
+            "tls.pem",
+            "tls-key.pem",
+            "application-key.raw",
+            "client.json",
+            "native.json",
+        ] {
+            write_private(
+                &client_dir.join(name),
+                &fs::read(directory.join(name)).map_err(err)?,
+            )?;
+        }
+        let mut client_journal_key = [0; 32];
+        rand::rngs::OsRng.fill_bytes(&mut client_journal_key);
+        write_private(&client_dir.join("outbox-key.raw"), &client_journal_key)?;
+        corporate_journals.push((
+            client_state.join("outbox.enc"),
+            client_journal_key,
+            config.clone(),
+            false,
+        ));
+        corporate_journals.push((
+            directory.join("queue/outbox.enc"),
+            journal_key,
+            config,
+            true,
+        ));
         for (name, price, quantity) in if seed == 11 {
             vec![
                 ("depth-high-order.json", 101, 30),
@@ -356,6 +391,10 @@ fn provision(root: &Path) -> Result<(), String> {
                 "limit_price":price,"quantity":quantity,"time_in_force":if seed == 11 {"good_til_cancelled"} else {"immediate_or_cancel"},
                 "valid_for_seconds":1200}),
                 0o600,
+            )?;
+            write_private(
+                &client_state.join(name),
+                &fs::read(directory.join("queue").join(name)).map_err(err)?,
             )?;
         }
         if seed == 11 {
@@ -502,11 +541,13 @@ fn provision(root: &Path) -> Result<(), String> {
         &serde_json::to_value(&public).map_err(err)?,
         0o644,
     )?;
-    for (path, key, config) in corporate_journals {
-        oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
-            path.with_file_name("dispatch.enc"),
-            &key,
-        )?;
+    for (path, key, config, dispatch) in corporate_journals {
+        if dispatch {
+            oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
+                path.with_file_name("dispatch.enc"),
+                &key,
+            )?;
+        }
         oclob_node::corporate_journal::NativeCorporateJournal::initialize(
             path, &key, &config, &public,
         )?;
