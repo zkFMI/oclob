@@ -14,8 +14,6 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment, SecretOrder, TimeInForce};
-use openssl::derive::Deriver;
-use openssl::pkey::{Id, PKey, Private, Public};
 use openssl::symm::{Cipher, Crypter, Mode};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::handles::Handle;
@@ -24,7 +22,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::Arc;
 use thiserror::Error;
+use zeroize::Zeroizing;
+use zkfmi_crypto::hybrid::kem::{HybridKemEncapsulator, HybridKemKey};
+use zkfmi_crypto::suite::{Suite, SuiteId, ML_KEM_768_EK_BYTES};
+use zkfmi_crypto::traits::{KemDecapsulator, KemEncapsulator};
 use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::ReservationPermit;
@@ -55,7 +58,7 @@ const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMEN
 const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
 const PREAUTHORIZED_SETTLEMENT_DOMAIN: &[u8] = b"OCLOB:PREAUTHORIZED-SETTLEMENT:v1";
 const RESERVATION_AUTHORITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:RESERVATION-AUTHORITY:v1";
-const VERSION: u16 = 5;
+const VERSION: u16 = 6;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -387,42 +390,54 @@ impl PartyOrderShare {
     }
 }
 
-/// X25519 key retained by exactly one MPC node.
+/// Hybrid decryption key retained by exactly one MPC node.
 #[derive(Clone)]
-pub struct NodeDecryptionKey(PKey<Private>);
+pub struct NodeDecryptionKey {
+    key: Arc<HybridKemKey>,
+    seed: Zeroizing<[u8; 96]>,
+}
 
-/// Public X25519 key distributed in the signed venue configuration.
+/// X25519 + ML-KEM-768 public key in the authenticated venue configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NodeEncryptionKey(pub Digest32);
+pub struct NodeEncryptionKey(pub Vec<u8>);
+
+impl NodeEncryptionKey {
+    pub fn fingerprint(&self) -> Digest32 {
+        Sha256::new()
+            .chain_update(b"OCLOB:HYBRID-NODE-KEY:v1")
+            .chain_update(&self.0)
+            .finalize()
+            .into()
+    }
+    pub fn valid_encoding(&self) -> bool {
+        self.0.len() == 32 + ML_KEM_768_EK_BYTES && self.0[..32].iter().any(|byte| *byte != 0)
+    }
+}
 
 impl NodeDecryptionKey {
     pub fn generate() -> Result<Self, EdgeError> {
-        PKey::generate_x25519()
-            .map(Self)
-            .map_err(|error| EdgeError::Crypto(error.to_string()))
+        let mut seed = Zeroizing::new([0u8; 96]);
+        rand_core::OsRng
+            .try_fill_bytes(seed.as_mut())
+            .map_err(|error| EdgeError::Crypto(error.to_string()))?;
+        Self::from_raw(*seed)
     }
 
-    pub fn from_raw(raw: Digest32) -> Result<Self, EdgeError> {
-        PKey::private_key_from_raw_bytes(&raw, Id::X25519)
-            .map(Self)
-            .map_err(|error| EdgeError::Crypto(error.to_string()))
+    pub fn from_raw(raw: [u8; 96]) -> Result<Self, EdgeError> {
+        let seed = Zeroizing::new(raw);
+        Ok(Self {
+            key: Arc::new(HybridKemKey::from_seed(&seed)),
+            seed,
+        })
     }
 
-    pub fn raw_private_key(&self) -> Result<Digest32, EdgeError> {
-        self.0
-            .raw_private_key()
-            .map_err(|error| EdgeError::Crypto(error.to_string()))?
-            .try_into()
-            .map_err(|_| EdgeError::Crypto("X25519 private key is not 32 bytes".into()))
+    /// Caller must erase the exported seed after writing its owner-only store.
+    pub fn raw_private_key(&self) -> Result<[u8; 96], EdgeError> {
+        Ok(*self.seed)
     }
 
     pub fn public_key(&self) -> Result<NodeEncryptionKey, EdgeError> {
-        self.0
-            .raw_public_key()
-            .map_err(|error| EdgeError::Crypto(error.to_string()))?
-            .try_into()
-            .map(NodeEncryptionKey)
-            .map_err(|_| EdgeError::Crypto("X25519 public key is not 32 bytes".into()))
+        Ok(NodeEncryptionKey(self.key.public_key()))
     }
 }
 
@@ -434,7 +449,8 @@ pub struct SealedPartyShare {
     pub party: u16,
     pub commitment: OrderCommitment,
     pub recipient: Digest32,
-    pub ephemeral_public: Digest32,
+    pub suite: Suite,
+    pub kem_ciphertext: Vec<u8>,
     pub nonce: [u8; 12],
     pub ciphertext: Vec<u8>,
 }
@@ -458,7 +474,8 @@ impl SealedPartyShare {
         hash.update(self.party.to_be_bytes());
         hash.update(self.commitment.0);
         hash.update(self.recipient);
-        hash.update(self.ephemeral_public);
+        hash.update(self.suite.encode());
+        hash.update(&self.kem_ciphertext);
         hash.update(self.nonce);
         hash.update((self.ciphertext.len() as u64).to_be_bytes());
         hash.update(&self.ciphertext);
@@ -476,19 +493,21 @@ impl SealedPartyShare {
             || self.party != expected_party
             || self.commitment != manifest.commitment
             || self.ciphertext.len() != SEALED_SHARE_CLEAR_BYTES + 16
-            || key.public_key()?.0 != self.recipient
+            || self.suite != Suite::new(SuiteId::X25519MlKem768)
+            || key.public_key()?.fingerprint() != self.recipient
         {
             return Err(EdgeError::Envelope);
         }
-        let ephemeral = PKey::public_key_from_raw_bytes(&self.ephemeral_public, Id::X25519)
+        let shared = key
+            .key
+            .decapsulate(&self.kem_ciphertext)
             .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-        let shared = shared_secret(&key.0, &ephemeral)?;
         let derived = derive_envelope_key(
             &shared,
             self.party,
             self.commitment,
             self.recipient,
-            self.ephemeral_public,
+            &self.kem_ciphertext,
         );
         let clear = decrypt(&derived, &self.nonce, &self.ciphertext, &envelope_aad(self))?;
         let share = decode_fixed_clear(&clear)?;
@@ -612,7 +631,8 @@ pub struct SealedCapabilityKeyShare {
     pub order_commitment: OrderCommitment,
     pub capability_commitment: Digest32,
     pub recipient: Digest32,
-    pub ephemeral_public: Digest32,
+    pub suite: Suite,
+    pub kem_ciphertext: Vec<u8>,
     pub nonce: [u8; 12],
     pub ciphertext: Vec<u8>,
 }
@@ -637,7 +657,8 @@ impl SealedCapabilityKeyShare {
         hash.update(self.order_commitment.0);
         hash.update(self.capability_commitment);
         hash.update(self.recipient);
-        hash.update(self.ephemeral_public);
+        hash.update(self.suite.encode());
+        hash.update(&self.kem_ciphertext);
         hash.update(self.nonce);
         hash.update((self.ciphertext.len() as u64).to_be_bytes());
         hash.update(&self.ciphertext);
@@ -656,20 +677,22 @@ impl SealedCapabilityKeyShare {
             || self.order_commitment != manifest.commitment
             || self.capability_commitment != manifest.settlement_capability_commitment
             || self.ciphertext.len() != SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES + 16
-            || key.public_key()?.0 != self.recipient
+            || self.suite != Suite::new(SuiteId::X25519MlKem768)
+            || key.public_key()?.fingerprint() != self.recipient
         {
             return Err(EdgeError::Envelope);
         }
-        let ephemeral = PKey::public_key_from_raw_bytes(&self.ephemeral_public, Id::X25519)
+        let shared = key
+            .key
+            .decapsulate(&self.kem_ciphertext)
             .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-        let shared = shared_secret(&key.0, &ephemeral)?;
         let derived = derive_capability_key_share_envelope_key(
             &shared,
             self.party,
             self.order_commitment,
             self.capability_commitment,
             self.recipient,
-            self.ephemeral_public,
+            &self.kem_ciphertext,
         );
         let mut clear = decrypt(
             &derived,
@@ -1597,22 +1620,17 @@ fn seal_share<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> Result<SealedPartyShare, EdgeError> {
     let clear = encode_fixed_clear(share, rng)?;
-    let ephemeral_private =
-        PKey::generate_x25519().map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    let ephemeral_public: Digest32 = ephemeral_private
-        .raw_public_key()
-        .map_err(|error| EdgeError::Crypto(error.to_string()))?
-        .try_into()
-        .map_err(|_| EdgeError::Crypto("X25519 public key is not 32 bytes".into()))?;
-    let recipient_key = PKey::public_key_from_raw_bytes(&recipient.0, Id::X25519)
+    let encapsulated = HybridKemEncapsulator
+        .encapsulate(&recipient.0)
         .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    let shared = shared_secret(&ephemeral_private, &recipient_key)?;
+    let kem_ciphertext = encapsulated.ciphertext;
+    let shared = encapsulated.shared_secret;
     let key = derive_envelope_key(
         &shared,
         share.party,
         share.commitment,
-        recipient.0,
-        ephemeral_public,
+        recipient.fingerprint(),
+        &kem_ciphertext,
     );
     let mut nonce = [0_u8; 12];
     rng.fill_bytes(&mut nonce);
@@ -1620,8 +1638,9 @@ fn seal_share<R: RngCore + CryptoRng>(
         version: VERSION,
         party: share.party,
         commitment: share.commitment,
-        recipient: recipient.0,
-        ephemeral_public,
+        recipient: recipient.fingerprint(),
+        suite: Suite::new(SuiteId::X25519MlKem768),
+        kem_ciphertext,
         nonce,
         ciphertext: Vec::new(),
     };
@@ -1635,23 +1654,18 @@ fn seal_capability_key_share<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> Result<SealedCapabilityKeyShare, EdgeError> {
     let mut clear = encode_capability_key_share_clear(share, rng)?;
-    let ephemeral_private =
-        PKey::generate_x25519().map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    let ephemeral_public: Digest32 = ephemeral_private
-        .raw_public_key()
-        .map_err(|error| EdgeError::Crypto(error.to_string()))?
-        .try_into()
-        .map_err(|_| EdgeError::Crypto("X25519 public key is not 32 bytes".into()))?;
-    let recipient_key = PKey::public_key_from_raw_bytes(&recipient.0, Id::X25519)
+    let encapsulated = HybridKemEncapsulator
+        .encapsulate(&recipient.0)
         .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    let shared = shared_secret(&ephemeral_private, &recipient_key)?;
+    let kem_ciphertext = encapsulated.ciphertext;
+    let shared = encapsulated.shared_secret;
     let key = derive_capability_key_share_envelope_key(
         &shared,
         share.party,
         share.order_commitment,
         share.capability_commitment,
-        recipient.0,
-        ephemeral_public,
+        recipient.fingerprint(),
+        &kem_ciphertext,
     );
     let mut nonce = [0_u8; 12];
     rng.fill_bytes(&mut nonce);
@@ -1660,8 +1674,9 @@ fn seal_capability_key_share<R: RngCore + CryptoRng>(
         party: share.party,
         order_commitment: share.order_commitment,
         capability_commitment: share.capability_commitment,
-        recipient: recipient.0,
-        ephemeral_public,
+        recipient: recipient.fingerprint(),
+        suite: Suite::new(SuiteId::X25519MlKem768),
+        kem_ciphertext,
         nonce,
         ciphertext: Vec::new(),
     };
@@ -1820,30 +1835,19 @@ fn decode_settlement_clear(clear: &[u8]) -> Result<SettlementCapabilityClear, Ed
     serde_json::from_slice(&clear[payload_start..payload_end]).map_err(|_| EdgeError::Envelope)
 }
 
-fn shared_secret(private: &PKey<Private>, public: &PKey<Public>) -> Result<Vec<u8>, EdgeError> {
-    let mut deriver =
-        Deriver::new(private).map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    deriver
-        .set_peer(public)
-        .map_err(|error| EdgeError::Crypto(error.to_string()))?;
-    deriver
-        .derive_to_vec()
-        .map_err(|error| EdgeError::Crypto(error.to_string()))
-}
-
 fn derive_envelope_key(
     shared: &[u8],
     party: u16,
     commitment: OrderCommitment,
     recipient: Digest32,
-    ephemeral_public: Digest32,
+    kem_ciphertext: &[u8],
 ) -> Digest32 {
     let salt = [SHARE_ENVELOPE_DOMAIN, &commitment.0, &party.to_be_bytes()].concat();
     let pseudorandom = hmac_sha256(&salt, shared);
     let info = [
         SHARE_ENVELOPE_DOMAIN,
         &recipient,
-        &ephemeral_public,
+        kem_ciphertext,
         &commitment.0,
         &[1_u8],
     ]
@@ -1857,7 +1861,7 @@ fn derive_capability_key_share_envelope_key(
     order_commitment: OrderCommitment,
     capability_commitment: Digest32,
     recipient: Digest32,
-    ephemeral_public: Digest32,
+    kem_ciphertext: &[u8],
 ) -> Digest32 {
     let salt = [
         CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN,
@@ -1870,7 +1874,7 @@ fn derive_capability_key_share_envelope_key(
     let info = [
         CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN,
         &recipient,
-        &ephemeral_public,
+        kem_ciphertext,
         &party.to_be_bytes(),
         &order_commitment.0,
         &capability_commitment,
@@ -1888,7 +1892,8 @@ fn capability_key_share_envelope_aad(envelope: &SealedCapabilityKeyShare) -> Vec
         &envelope.order_commitment.0,
         &envelope.capability_commitment,
         &envelope.recipient,
-        &envelope.ephemeral_public,
+        &envelope.suite.encode(),
+        &envelope.kem_ciphertext,
     ]
     .concat()
 }
@@ -1900,7 +1905,8 @@ fn envelope_aad(envelope: &SealedPartyShare) -> Vec<u8> {
         &envelope.party.to_be_bytes(),
         &envelope.commitment.0,
         &envelope.recipient,
-        &envelope.ephemeral_public,
+        &envelope.suite.encode(),
+        &envelope.kem_ciphertext,
     ]
     .concat()
 }
@@ -2242,6 +2248,60 @@ mod tests {
             .open(&private[0], &manifest, 0, 1_900_000_000)
             .is_err());
         assert!(manifest.verify(2_000_000_001).is_err());
+    }
+
+    #[test]
+    fn stored_shares_require_both_kem_components_and_restore_the_same_hybrid_key() {
+        let (private, public) = node_keys();
+        let signer = SigningKey::generate(&mut rand::rngs::OsRng);
+        let bundle = EdgeOrderBundle::create(
+            &sample_order(),
+            [14; 32],
+            [15; 32],
+            &signer,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let manifest = bundle.manifest().clone();
+        let deliveries = bundle.into_deliveries();
+        let (_, sealed, capability) = &deliveries[0];
+        let mut seed = Zeroizing::new(private[0].raw_private_key().unwrap());
+        let restored = NodeDecryptionKey::from_raw(*seed).unwrap();
+        assert_eq!(restored.public_key().unwrap(), public[0]);
+        assert_eq!(sealed.kem_ciphertext.len(), 32 + 1_088);
+        assert_eq!(sealed.suite, Suite::new(SuiteId::X25519MlKem768));
+        assert!(sealed.open(&restored, &manifest, 0, 1_900_000_000).is_ok());
+        for index in [0, 32] {
+            let mut changed = sealed.clone();
+            changed.kem_ciphertext[index] ^= 1;
+            assert!(changed
+                .open(&restored, &manifest, 0, 1_900_000_000)
+                .is_err());
+            let mut changed = capability.clone();
+            changed.kem_ciphertext[index] ^= 1;
+            assert!(changed
+                .open(&restored, &manifest, 0, 1_900_000_000)
+                .is_err());
+        }
+        let mut classical_only = sealed.clone();
+        classical_only.kem_ciphertext.truncate(32);
+        assert!(classical_only
+            .open(&restored, &manifest, 0, 1_900_000_000)
+            .is_err());
+        let mut wrong_suite = sealed.clone();
+        wrong_suite.suite = Suite::new(SuiteId::MlKem768);
+        assert!(wrong_suite
+            .open(&restored, &manifest, 0, 1_900_000_000)
+            .is_err());
+        let mut legacy = sealed.clone();
+        legacy.version = 5;
+        assert!(legacy.open(&restored, &manifest, 0, 1_900_000_000).is_err());
+        seed[32] ^= 1;
+        let wrong_pq_key = NodeDecryptionKey::from_raw(*seed).unwrap();
+        assert!(sealed
+            .open(&wrong_pq_key, &manifest, 0, 1_900_000_000)
+            .is_err());
     }
 
     #[test]

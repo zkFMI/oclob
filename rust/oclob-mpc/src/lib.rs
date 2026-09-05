@@ -71,6 +71,7 @@ impl MpcRunner {
         let compiler = OfficialCompiler::from_checkout(root)
             .map_err(|error| MpcError::Setup(error.to_string()))?;
         let root = compiler.root().to_path_buf();
+        qomm_mpc::engine_policy::verify(&root).map_err(MpcError::Setup)?;
         let binary = root.join("malicious-shamir-party.x");
         if !binary.is_file() {
             return Err(MpcError::Setup(format!(
@@ -158,6 +159,7 @@ impl MpcRunner {
         &mut self,
         input: &PrivateMatchBatch,
     ) -> Result<MpcBatchReceipt, MpcError> {
+        qomm_mpc::engine_policy::verify(&self.root).map_err(MpcError::Setup)?;
         if input.resting.len() > MAX_MATCH_SLOTS {
             return Err(MpcError::Input(format!(
                 "a batch supports at most {MAX_MATCH_SLOTS} resting slots"

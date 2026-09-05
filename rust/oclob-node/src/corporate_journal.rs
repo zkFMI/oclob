@@ -471,7 +471,7 @@ mod tests {
             identity_seed: [11; 32],
         };
         let cluster = ClusterPublicConfig {
-            version: 3,
+            version: 4,
             market_id: "CORPORATE-UNIT".into(),
             program: "oclob_match_v1".into(),
             settlement_release_threshold: 3,
@@ -813,7 +813,7 @@ mod tests {
             assert_eq!(old.wire_digest(), new.wire_digest());
             assert_eq!(old_key.wire_digest(), new_key.wire_digest());
         }
-        restored.deliveries[0].1.recipient = cluster.nodes[1].share_encryption_key.0;
+        restored.deliveries[0].1.recipient = cluster.nodes[1].share_encryption_key.fingerprint();
         assert!(restored.validate(&cluster, 100).is_err());
         restored = serde_json::from_slice(&encoded).unwrap();
         restored.deliveries[0].0 = 7;

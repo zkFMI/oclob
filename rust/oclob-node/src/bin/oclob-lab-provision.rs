@@ -315,7 +315,7 @@ fn provision(root: &Path) -> Result<(), String> {
         let trusted_defmi_id: [u8; 32] = Sha256::digest(b"oclob-integrated-defmi-v1").into();
         let trusted_venue_id: [u8; 32] = Sha256::digest(b"defmi:oclob:v1").into();
         let config = json!({
-            "version": 2,
+            "version": 3,
             "party": party,
             "listen": format!("0.0.0.0:{RPC_PORT}"),
             "tls_certificate": "/node/tls.pem",
@@ -361,7 +361,7 @@ fn provision(root: &Path) -> Result<(), String> {
         0o600,
     )?;
     let public = ClusterPublicConfig {
-        version: 3,
+        version: 4,
         market_id: MARKET.into(),
         program: PROGRAM.into(),
         settlement_release_threshold: SETTLEMENT_KEY_THRESHOLD,

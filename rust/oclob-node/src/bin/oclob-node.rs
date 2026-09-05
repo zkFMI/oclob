@@ -4,7 +4,8 @@ use ed25519_dalek::SigningKey;
 use oclob_edge::NodeDecryptionKey;
 use oclob_node::executor::PartyExecutor;
 use oclob_node::network::{
-    load_secret_32, server_tls_context, ClusterPublicConfig, NodeRpcServer, Principal,
+    load_hybrid_kem_seed, load_secret_32, server_tls_context, ClusterPublicConfig, NodeRpcServer,
+    Principal,
 };
 use oclob_node::proof_network::{ProofRpcServer, ProofRpcServerConfig};
 use oclob_node::NodeShareStore;
@@ -71,11 +72,11 @@ fn main() {
 fn run() -> Result<(), String> {
     let path = parse_config_path()?;
     let config: Config = read_json(&path)?;
-    if config.version != 2 {
+    if config.version != 3 {
         return Err("unsupported node configuration version".into());
     }
     let share_key = NodeDecryptionKey::from_raw(
-        load_secret_32(&config.share_private_key).map_err(|error| error.to_string())?,
+        load_hybrid_kem_seed(&config.share_private_key).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let receipt_key = SigningKey::from_bytes(

@@ -14,7 +14,7 @@ use oclob_edge::{
 use oclob_ordering::OrderCertificate;
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderVote};
 use openssl::pkey::{PKey, Private};
-use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
+use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode};
 use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -493,7 +493,7 @@ pub fn server_tls_context(
 ) -> Result<ServerTlsConfig, NetworkError> {
     let private_key = load_owner_private_key(private_key.as_ref())?;
     let mut builder = SslAcceptor::mozilla_modern_v5(SslMethod::tls_server())?;
-    builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+    zkfmi_crypto::tls::require_hybrid_key_exchange(&mut builder)?;
     builder.set_certificate_chain_file(certificate)?;
     builder.set_private_key(&private_key)?;
     builder.set_ca_file(ca)?;
@@ -511,7 +511,7 @@ pub fn client_tls_context(
 ) -> Result<ClientTlsConfig, NetworkError> {
     let private_key = load_owner_private_key(private_key.as_ref())?;
     let mut builder = SslConnector::builder(SslMethod::tls_client())?;
-    builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+    zkfmi_crypto::tls::require_hybrid_key_exchange(&mut builder)?;
     builder.set_certificate_chain_file(certificate)?;
     builder.set_private_key(&private_key)?;
     builder.set_ca_file(ca)?;
@@ -718,7 +718,7 @@ pub struct ClusterPublicConfig {
 
 impl ClusterPublicConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 3
+        if self.version != 4
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
@@ -734,7 +734,7 @@ impl ClusterPublicConfig {
                 || node.proof_port == 0
                 || node.server_name.is_empty()
                 || node.tls_certificate_sha256 == [0; 32]
-                || node.share_encryption_key.0 == [0; 32]
+                || !node.share_encryption_key.valid_encoding()
                 || VerifyingKey::from_bytes(&node.receipt_verifying_key).is_err()
             {
                 return Err(NetworkError::Configuration);
@@ -1446,6 +1446,15 @@ fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, NetworkError> {
 /// Load a raw 32-byte application key through the same owner-only file gate
 /// used for TLS keys. The bytes are never formatted or returned by an API.
 pub fn load_secret_32(path: impl AsRef<Path>) -> Result<Digest32, NetworkError> {
+    load_secret_array(path)
+}
+
+/// Load the independently random X25519 and ML-KEM seed components.
+pub fn load_hybrid_kem_seed(path: impl AsRef<Path>) -> Result<[u8; 96], NetworkError> {
+    load_secret_array(path)
+}
+
+fn load_secret_array<const N: usize>(path: impl AsRef<Path>) -> Result<[u8; N], NetworkError> {
     let path = path.as_ref();
     let symlink = fs::symlink_metadata(path)?;
     if symlink.file_type().is_symlink() {
@@ -1453,13 +1462,13 @@ pub fn load_secret_32(path: impl AsRef<Path>) -> Result<Digest32, NetworkError> 
     }
     let metadata = fs::metadata(path)?;
     if !metadata.is_file()
-        || metadata.len() != 32
+        || metadata.len() != N as u64
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
         return Err(NetworkError::UnsafeKey);
     }
-    let mut secret = [0_u8; 32];
+    let mut secret = [0_u8; N];
     File::open(path)?.read_exact(&mut secret)?;
     Ok(secret)
 }

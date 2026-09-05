@@ -354,6 +354,7 @@ impl PartyExecutor {
         }
         reject_symlink(&root)?;
         reject_symlink(&work_root)?;
+        qomm_mpc::engine_policy::verify(&root).map_err(oclob_mpc::MpcError::Setup)?;
         let binary = root.join("malicious-shamir-party.x");
         if !binary.is_file() {
             return Err(PartyExecutionError::Config);
@@ -394,6 +395,7 @@ impl PartyExecutor {
         prepared: &PreparedPartyInput,
         plan: &RoundPlan,
     ) -> Result<NodeExecutionReceipt, PartyExecutionError> {
+        qomm_mpc::engine_policy::verify(&self.root).map_err(oclob_mpc::MpcError::Setup)?;
         if prepared.party() != self.party {
             return Err(PartyExecutionError::PartyBinding);
         }

@@ -117,8 +117,8 @@ impl PreparedEdgeDelivery {
                 || share.commitment != self.manifest.commitment
                 || key.order_commitment != self.manifest.commitment
                 || key.capability_commitment != self.manifest.settlement_capability_commitment
-                || share.recipient != node.share_encryption_key.0
-                || key.recipient != node.share_encryption_key.0
+                || share.recipient != node.share_encryption_key.fingerprint()
+                || key.recipient != node.share_encryption_key.fingerprint()
             {
                 return Err(EdgeClientError::Receipt);
             }

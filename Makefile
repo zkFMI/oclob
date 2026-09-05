@@ -15,6 +15,10 @@ NATIVE_LIFECYCLE ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
+ifeq ($(PQC_INTEGRATION),1)
+remote-test:
+	../zkfmi-crypto/scripts/pqc-remote.sh oclob '$(REMOTE_TEST_COMMAND)'
+else
 remote-test:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
@@ -47,6 +51,8 @@ remote-test:
 	  test -f "$$relative" || { echo "export destination must already be a file: $$relative" >&2; exit 2; }; \
 	  rsync -a --compress -e "ssh $(REMOTE_TEST_SSH_OPTIONS)" "$(REMOTE_TEST_HOST):$$remote_dir/oclob/$$relative" "$$relative"; \
 	done
+
+endif
 
 remote-distributed-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-distributed-e2e:

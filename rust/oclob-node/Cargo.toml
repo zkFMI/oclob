@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+zkfmi-crypto = { workspace = true, features = ["tls"] }
 oclob-core.workspace = true
 oclob-dekyx.workspace = true
 oclob-edge.workspace = true
