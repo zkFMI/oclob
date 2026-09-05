@@ -20,11 +20,15 @@ fn main() {
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(args.is_empty()
-        || args.len() == 1 && matches!(args[0].as_str(), "--once" | "--status" | "--initialize")
+        || args.len() == 1
+            && matches!(
+                args[0].as_str(),
+                "--once" | "--status" | "--preparation-status" | "--initialize"
+            )
         || args.len() == 2 && matches!(args[0].as_str(), "--wait-admitted" | "--wait-reconciled"))
     {
         return Err(
-            "usage: oclob-corporate-worker [--once|--status|--initialize|--wait-admitted ID|--wait-reconciled ID]"
+            "usage: oclob-corporate-worker [--once|--status|--preparation-status|--initialize|--wait-admitted ID|--wait-reconciled ID]"
                 .into(),
         );
     }
@@ -43,6 +47,29 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let queue = NativeCorporateDispatch::open(queue_path, &secret)?;
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--preparation-status")
+    {
+        let mut entries = Vec::new();
+        for entry in queue.summaries()? {
+            let authorization = journal.authorization(&entry.request_id)?;
+            if let Some(value) = &authorization {
+                value.validate(&config)?;
+            }
+            entries.push(serde_json::json!({"request_id":entry.request_id,
+                "authorization_digest":authorization.as_ref().map(|a| a.digest().map(hex::encode)).transpose()?,
+                "order_commitment":authorization.as_ref().map(|a| oclob_core::SecretOrder::from_secret_wire(&a.order_wire).map(|o|o.commitment().hex()).map_err(|e|e.to_string())).transpose()?,
+                "funding_prepared":journal.stage::<oclob_node::corporate::PreparedCorporateReserve>(&entry.request_id,"reserve")?.is_some(),
+                "admitted":journal.stage::<oclob_node::edge_client::EdgeAdmissionReceipt>(&entry.request_id,"receipt")?.is_some(),
+                "ended":journal.ended_authorization(&entry.request_id)?.is_some()}));
+        }
+        println!(
+            "{}",
+            serde_json::to_string(&entries).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if args.first().is_some_and(|arg| arg == "--status") {
         println!(
             "{}",
@@ -58,6 +85,23 @@ fn run() -> Result<(), String> {
                 .into_iter()
                 .find(|entry| entry.request_id == args[1])
             {
+                if matches!(
+                    entry.state,
+                    zkpi_defmi_sdk::corporate::OutboxState::AbortedBeforeReserve { .. }
+                ) {
+                    if let Some(ended) = journal.ended_authorization(&args[1])? {
+                        let status = match ended.reason {
+                            oclob_node::corporate_journal::AuthorizationEndReason::Expired => "never_reserved",
+                            oclob_node::corporate_journal::AuthorizationEndReason::InsufficientFunding => "funding_rejected",
+                        };
+                        println!(
+                            "{}",
+                            serde_json::json!({"status":status,"request_id":args[1],
+                            "funding_prepared":journal.stage::<oclob_node::corporate::PreparedCorporateReserve>(&args[1],"reserve")?.is_some()})
+                        );
+                        return Ok(());
+                    }
+                }
                 if let Some(result) = journal.completed_expiry(&args[1])? {
                     use oclob_node::corporate_expiry::ExpiryOutcome;
                     use zkpi_defmi_sdk::corporate::OutboxState;

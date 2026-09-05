@@ -45,6 +45,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-worker-v1"
                     | "oclob-native-expiry-v1"
                     | "oclob-native-expiry-v2"
+                    | "oclob-native-deferred-v1"
             )
         )
     {
@@ -276,14 +277,26 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     {
         return Err(failure("native corporate worker recovery is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-multifill-v1"
-        && (result["atomic_multi_fill"] != true
-            || result["fill_count"] != 2
-            || result["atomically_settled_fills"] != 2
-            || result["node_observed_canonical_finality"] != 14
-            || result["partial_observation_did_not_advance"] != true
-            || result["batch_extraction_rejected"] != true
-            || result["posttrade_facility_sequences"] != json!([4, 3]))
+    if manifest["contract_id"] == "oclob-native-deferred-v1"
+        && (result["deferred_authorization"]["queued_without_funding"] != 3
+            || result["deferred_authorization"]["accepted_maker_orders"] != 2
+            || result["deferred_authorization"]["over_capacity_rejected"] != 1
+            || result["deferred_authorization"]["worker_restart_unchanged"] != true)
+    {
+        return Err(failure(
+            "native deferred authorization acceptance is incomplete",
+        ));
+    }
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-multifill-v1" | "oclob-native-deferred-v1")
+    ) && (result["atomic_multi_fill"] != true
+        || result["fill_count"] != 2
+        || result["atomically_settled_fills"] != 2
+        || result["node_observed_canonical_finality"] != 14
+        || result["partial_observation_did_not_advance"] != true
+        || result["batch_extraction_rejected"] != true
+        || result["posttrade_facility_sequences"] != json!([4, 3]))
     {
         return Err(failure("native atomic multi-fill acceptance is incomplete"));
     }

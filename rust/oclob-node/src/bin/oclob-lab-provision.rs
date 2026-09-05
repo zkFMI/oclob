@@ -254,6 +254,12 @@ fn provision(root: &Path) -> Result<(), String> {
             0o600,
         )?;
         corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
+        write_json(
+            &directory.join("queue/over-capacity-order.json"),
+            &json!({"side":"sell", "limit_price":101, "quantity":70,
+                "time_in_force":"good_til_cancelled", "valid_for_seconds":600}),
+            0o600,
+        )?;
         let credential = issuer
             .issue_wallet(seed, label.as_bytes(), &mut rand::rngs::OsRng)
             .map_err(err)?;

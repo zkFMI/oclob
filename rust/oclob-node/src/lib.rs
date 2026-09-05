@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod corporate;
+pub mod corporate_authorization;
 pub mod corporate_dispatch;
 pub mod corporate_expiry;
 pub mod corporate_journal;

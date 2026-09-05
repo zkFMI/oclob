@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-09-05T17:21:30Z",
+  "recorded_at": "2026-09-05 17:12:03 UTC",
   "verdict": "smoke_only",
-  "contract_id": "oclob-native-worker-v1",
-  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
-  "manifest": "research/manifests/oclob_native_worker_005.json",
-  "manifest_sha256": "630334ee025303849df43f127f17fa43261b4885283894604aacab98b26b48e2",
-  "artifact": "artifacts/oclob_native_worker.json",
-  "artifact_sha256": "bb185c7e14034dcea484278cfcfec7bda6ee493a14c10d2b149ab35412e35873",
-  "dependency_commit": "5dd1f68d43da3f81e640c6eae25749d358e6680f",
   "remote_host": "softbank-l40s",
-  "remote_snapshot": "/tmp/oclob-native.mLDREM/oclob",
+  "remote_snapshot": "/tmp/oclob-native.2nF6cz/oclob",
+  "dependency_commit": "5dd1f68d43da3f81e640c6eae25749d358e6680f",
+  "contract_id": "oclob-native-deferred-v1",
+  "contract_sha256": "ce7e91bcc926fb04ba33c5e716bc32d5afaa1796ea7a943b011d641196864a2d",
+  "manifest": "research/manifests/oclob_native_deferred_003.json",
+  "manifest_sha256": "473af8e24dae471092e97e97a05780bd9507775b2e6473ac60929f02ec26a544",
+  "artifact": "artifacts/oclob_native_deferred.json",
+  "artifact_sha256": "3b3f741519b965129dd9ef89930af57059f43c563af6927bb434fe13ab89da75",
   "code_gate": {
     "command": "make remote-test REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' REMOTE_TEST_REUSE_IMAGE=1 REMOTE_TEST_COMMAND='cargo fmt --all -- --check && cargo test --workspace --release -j 16 && cargo clippy --workspace --all-targets --release -j 16 -- -D warnings'",
     "exit_code": 0,
@@ -19,27 +19,27 @@
     "log_sha256": "824b47f9642abdb3a8b3f8e91de1f5915207ce74a24c1958fed97e349bc03e8a"
   },
   "whole_run": {
-    "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
+    "command": "make remote-native-deferred-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
     "exit_code": 0,
-    "log": "/tmp/oclob-native-worker-deferred-005-20260906.log",
-    "log_sha256": "e4577d897fffec09677abfa1e02bd88042cbad2b49f91c4f1be0ecc38db3db31",
-    "completed_dispatches": 1,
-    "actual_node_outage": true,
-    "reserve_response_loss_recovered": true,
-    "node_response_loss_recovered": true,
-    "worker_lock_exclusion": true,
-    "corporate_worker_restart_unchanged": true,
-    "completed_native_rounds": 2,
-    "total_native_fills": 3,
-    "completed_native_releases": 2,
-    "recipient_claims_redeemed": 9,
-    "final_facility_sequences": [
-      8,
-      5
+    "log": "/tmp/oclob-native-deferred-final-003-20260906.log",
+    "log_sha256": "f3f645f32a011d7eff166f934f2cab705bba44073a252f63b97c15cd5a21a653",
+    "accepted_maker_orders": 2,
+    "actual_defmi_pause": true,
+    "actual_mpc_outage": true,
+    "concurrent_intake_clients": 2,
+    "original_authorizations_unchanged": true,
+    "over_capacity_rejected": 1,
+    "queued_without_funding": 3,
+    "worker_restart_unchanged": true,
+    "atomically_settled_fills": 2,
+    "node_observed_canonical_finality": 14,
+    "posttrade_facility_sequences": [
+      4,
+      3
     ],
-    "node_restart_state_preserved": true,
+    "post_match_participant_signatures": 0,
     "validator_restart_recovered": true,
-    "final_canonical_root": "3aa96536cd31fc5001329d0aaa557f01e54556ecb500656be96ab9b3e5c29f83"
+    "final_canonical_root": "9d667a05503e0cb02c7111c96808aa18f0273d5f3b2317d799483a67abfffbc2"
   },
   "exact_source_files": {
     "Cargo.lock": "572188815297c945451640fc735b970d80dbe089bac35f9ffdaaa3fd4dd87eb4",
@@ -115,8 +115,9 @@
     "rust/oclob-settlement/tests/pretrade.rs": "9c30b4420f66eab69950b43d6b9145a87f3b40ad68ff48f11167b611897dd5ae"
   },
   "limitations": [
-    "Full existing R11/R10 lifecycle rerun against R13 deferred authorization source; no weaker counts or financial request replacement.",
-    "One-host smoke, not independent operators, WAN, throughput, economics or product promotion. No UI change or UI acceptance claim.",
-    "71 exact runtime source/config/manifest files match local and retained remote snapshot. Private corporate runtime excluded."
+    "One-host real-container functional smoke, not independent operators, WAN, performance, economic comparison, or product promotion.",
+    "One logical corporate journal and facility with two concurrent intake processes. Independent conflicting journals, ambiguous already-sent proof regeneration, pre-queue intake crash recovery, multi-note funding selection and unattended market/API/UI cutover remain.",
+    "Only existing DeKYX presentations and the pinned DeFMI funding proof builder are used. The demo issuer remains an intake-only lab adapter. No issuer key or credential witness at the worker.",
+    "Runtime sources/Cargo/config/acceptance manifests matched SHA256 on local checkout and retained remote snapshot. Private corporate state, credentials, signing keys and witness openings are excluded."
   ]
 }

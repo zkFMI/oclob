@@ -14,6 +14,7 @@ NATIVE_CYCLE ?= 0
 NATIVE_LIFECYCLE ?= 0
 NATIVE_WORKER ?= 0
 NATIVE_EXPIRY ?= 0
+NATIVE_DEFERRED ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -208,6 +209,9 @@ remote-native-worker-e2e:
 .PHONY: remote-native-expiry-e2e
 remote-native-expiry-e2e:
 	$(MAKE) remote-native-e2e NATIVE_EXPIRY=1
+.PHONY: remote-native-deferred-e2e
+remote-native-deferred-e2e:
+	$(MAKE) remote-native-e2e NATIVE_DEFERRED=1 NATIVE_MULTIFILL=1
 remote-native-wallet-e2e:
 	$(MAKE) remote-native-e2e NATIVE_WALLET=1
 remote-native-recovery-e2e:
@@ -221,6 +225,7 @@ remote-native-e2e:
 	@case '$(NATIVE_FINALITY):$(NATIVE_WALLET)' in 0:0|0:1|1:1) ;; *) echo 'native finality acceptance requires wallet reuse' >&2; exit 2 ;; esac
 	@case '$(NATIVE_LIFECYCLE):$(NATIVE_CYCLE)' in 0:*|1:1) ;; *) echo 'lifecycle requires the continuing cycle' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WORKER):$(NATIVE_LIFECYCLE)' in 0:*|1:1) ;; *) echo 'worker requires the full lifecycle' >&2; exit 2 ;; esac
+	@case '$(NATIVE_DEFERRED):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_WORKER):$(NATIVE_EXPIRY):$(NATIVE_RECOVERY)' in 0:*|1:1:0:0:0:0) ;; *) echo 'deferred intake requires its two-fill acceptance' >&2; exit 2 ;; esac
 	@case '$(NATIVE_EXPIRY):$(NATIVE_RECOVERY):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_WORKER)' in 0:*|1:0:0:0:0) ;; *) echo 'queued expiry uses its separate acceptance contract' >&2; exit 2 ;; esac
 	@case '$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_RECOVERY):$(NATIVE_FINALITY):$(NATIVE_CYCLE)' in 0:*:*:*:0|1:0:0:0:0|1:1:0:0:1) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
 	@set -eu; \
@@ -241,8 +246,9 @@ remote-native-e2e:
 	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_002.json; fi; \
 	  if [ '$(NATIVE_CYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_cycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_cycle_006.json; fi; \
 	  if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_lifecycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_lifecycle_004.json; fi; \
-	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_worker_004.json; fi; \
-	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_expiry_fenced_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_expiry_002.json; fi; \
+	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_worker_005.json; fi; \
+	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_expiry_fenced_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_expiry_003.json; fi; \
+	  if [ '$(NATIVE_DEFERRED)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_deferred_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_deferred_003.json; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -281,6 +287,29 @@ remote-native-e2e:
 	    \$$compose run --rm -e OCLOB_CORPORATE_REQUEST_ID=native-expiry-next-003 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/queued-expiry-reuse.json maker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/queued-expiry-next.json --settlement-handoff /handoff/queued-expiry-next-authority.json --scenario maker; \
 	    \$$compose run --rm native-coordinator; \
 	  else \
+	  if [ '$(NATIVE_DEFERRED)' = 1 ]; then \
+	    nodes='node-0 node-1 node-2 node-3 node-4 node-5 node-6'; \
+	    \$$compose run --rm -e OCLOB_NATIVE_CACHE_SCOPE=1 maker; \
+	    \$$compose stop \$$nodes; \
+	    docker pause \$$defmi_container; \
+	    docker inspect --format '{{.State.Running}}' \$$(\$$compose ps -a -q \$$nodes) > \"\$$runtime/handoff/deferred-nodes-stopped.txt\"; \
+	    docker inspect --format '{{.State.Paused}}' \$$defmi_container > \"\$$runtime/handoff/deferred-defmi-paused.txt\"; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized maker; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-maker-too-large -e OCLOB_CORPORATE_ORDER_FILE=/corporate/over-capacity-order.json maker > \"\$$runtime/handoff/deferred-large-intake.log\" 2>&1 & large_pid=\$$!; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-maker-002 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/multifill-order.json maker > \"\$$runtime/handoff/deferred-other-intake.log\" 2>&1 & other_pid=\$$!; \
+	    wait \$$large_pid; wait \$$other_pid; \
+	    \$$compose run --rm maker oclob-corporate-worker --preparation-status > \"\$$runtime/handoff/deferred-before.json\"; \
+	    docker unpause \$$defmi_container; \
+	    \$$compose up -d --wait --wait-timeout 180 \$$nodes; \
+	    \$$compose up -d maker-worker; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-admitted native-maker-001; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-admitted native-maker-002; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-reconciled native-maker-too-large > \"\$$runtime/handoff/deferred-rejected.json\"; \
+	    \$$compose run --rm maker oclob-corporate-worker --preparation-status > \"\$$runtime/handoff/deferred-after.json\"; \
+	    \$$compose run --rm maker oclob-corporate-worker --status > \"\$$runtime/handoff/deferred-queue-before-restart.json\"; \
+	    \$$compose restart maker-worker; \
+	    \$$compose run --rm maker oclob-corporate-worker --status > \"\$$runtime/handoff/deferred-queue-after-restart.json\"; \
+	  fi; \
 	  if [ '$(NATIVE_WORKER)' = 1 ]; then \
 	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=1 maker; \
 	    \$$compose stop node-6; \
@@ -358,6 +387,7 @@ remote-native-e2e:
 	if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then artifact=artifacts/oclob_native_lifecycle.json; fi; \
 	if [ '$(NATIVE_WORKER)' = 1 ]; then artifact=artifacts/oclob_native_worker.json; fi; \
 	if [ '$(NATIVE_EXPIRY)' = 1 ]; then artifact=artifacts/oclob_native_expiry.json; fi; \
+	if [ '$(NATIVE_DEFERRED)' = 1 ]; then artifact=artifacts/oclob_native_deferred.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

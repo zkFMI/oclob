@@ -59,6 +59,23 @@ struct BoundRecord<T> {
 pub struct NativeCorporateJournal {
     outbox: CorporateOutbox,
     context: [u8; 32],
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorizationEndReason {
+    Expired,
+    InsufficientFunding,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndedCorporateAuthorization {
+    pub request_id: String,
+    pub authorization_digest: [u8; 32],
+    pub ended_at: u64,
+    pub reason: AuthorizationEndReason,
 }
 
 impl NativeCorporateJournal {
@@ -102,13 +119,17 @@ impl NativeCorporateJournal {
             .chain_update(serde_json::to_vec(cluster).map_err(err)?)
             .finalize()
             .into();
-        let outbox = CorporateOutbox::new(path, secret, 1024, RECORD_BYTES)?;
+        let outbox = CorporateOutbox::new(&path, secret, 1024, RECORD_BYTES)?;
         if initialize {
             outbox.initialize()?;
         } else {
             outbox.summaries()?;
         }
-        let journal = Self { outbox, context };
+        let journal = Self {
+            outbox,
+            context,
+            path,
+        };
         // A wrong deployment or key is an error, never a new empty wallet.
         let stored: [u8; 32] = journal.put_first("context", &context, 1, u64::MAX)?;
         if stored != context {
@@ -127,6 +148,160 @@ impl NativeCorporateJournal {
 
     pub fn intent(&self, id: &str) -> Result<Option<StoredCorporateIntent>, String> {
         self.get(&record_id("intent", id)?)
+    }
+
+    /// Serializes corporate intake's intent/authorization/queue insertions so
+    /// the journal and dispatch FIFO cannot acquire opposite orders.
+    pub fn acquire_intake(&self) -> Result<std::fs::File, String> {
+        crate::corporate_dispatch::acquire_corporate_lock(
+            &self.path.with_extension("intake.lock"),
+            true,
+        )
+    }
+
+    pub fn authorization_scope(
+        &self,
+        config: &CorporateNativeConfig,
+        identity: &crate::network::ClientIdentityConfig,
+    ) -> Result<qomm_defmi::application_reservation::ApplicationReserveScope, String> {
+        use crate::corporate_authorization::{read_authorization_scope, validate_scope};
+        let saved = match self.get("authorization-scope")? {
+            Some(saved) => saved,
+            None => self.put_first(
+                "authorization-scope",
+                &read_authorization_scope(config, identity)?,
+                1,
+                u64::MAX,
+            )?,
+        };
+        validate_scope(config, &saved)?;
+        Ok(saved)
+    }
+
+    pub fn authorization(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::corporate_authorization::CorporateReserveAuthorization>, String> {
+        self.get(&record_id("authorization", id)?)
+    }
+
+    pub fn save_authorization(
+        &self,
+        id: &str,
+        value: &crate::corporate_authorization::CorporateReserveAuthorization,
+        config: &CorporateNativeConfig,
+    ) -> Result<crate::corporate_authorization::CorporateReserveAuthorization, String> {
+        let intent = self
+            .intent(id)?
+            .ok_or("authorization has no durable corporate intent")?;
+        value.validate(config)?;
+        if value.order_wire != intent.order_wire
+            || value.signing_key != intent.signing_key
+            || value.eligibility_commitment != intent.eligibility_commitment
+            || value.mandate.valid_from < intent.accepted_at
+            || value.mandate.valid_until != intent.expires_at
+        {
+            return Err("authorization differs from corporate intake".into());
+        }
+        let saved = self.put_first(
+            &record_id("authorization", id)?,
+            value,
+            intent.accepted_at,
+            intent.expires_at,
+        )?;
+        let saved: crate::corporate_authorization::CorporateReserveAuthorization = saved;
+        saved.validate(config)?;
+        if saved.order_wire != intent.order_wire
+            || saved.signing_key != intent.signing_key
+            || saved.eligibility_commitment != intent.eligibility_commitment
+            || saved.mandate.valid_from < intent.accepted_at
+            || saved.mandate.valid_until != intent.expires_at
+        {
+            return Err("saved authorization differs from corporate intake".into());
+        }
+        Ok(saved)
+    }
+
+    pub fn ended_authorization(
+        &self,
+        id: &str,
+    ) -> Result<Option<EndedCorporateAuthorization>, String> {
+        let ended: Option<EndedCorporateAuthorization> =
+            self.get(&record_id("authorization-end", id)?)?;
+        if let Some(value) = &ended {
+            let authorization = self
+                .authorization(id)?
+                .ok_or("ended authorization lost its terms")?;
+            let intent = self
+                .intent(id)?
+                .ok_or("ended authorization lost its intent")?;
+            let decision: ReserveSendDecision = self
+                .get(&record_id("reserve-send", id)?)?
+                .ok_or("ended authorization has no send fence")?;
+            if value.request_id != id
+                || value.authorization_digest != authorization.digest()?
+                || !intent.reserve_send_tracking
+                || decision.may_send
+                || decision.intent_digest != intent.input_digest
+                || decision.reserve_digest != value.authorization_digest
+                || value.ended_at < intent.accepted_at
+                || value.reason == AuthorizationEndReason::Expired
+                    && value.ended_at <= intent.expires_at
+            {
+                return Err("ended authorization is inconsistent or could have been sent".into());
+            }
+        }
+        Ok(ended)
+    }
+
+    /// Only before any funding request exists. An immutable send fence also
+    /// prevents a racing preparation from ever sending its late result.
+    pub fn end_unprepared_authorization(
+        &self,
+        id: &str,
+        at: u64,
+        reason: AuthorizationEndReason,
+    ) -> Result<EndedCorporateAuthorization, String> {
+        if let Some(saved) = self.ended_authorization(id)? {
+            return Ok(saved);
+        }
+        let intent = self
+            .intent(id)?
+            .ok_or("ending authorization has no intent")?;
+        if !intent.reserve_send_tracking
+            || at < intent.accepted_at
+            || reason == AuthorizationEndReason::Expired && at <= intent.expires_at
+        {
+            return Err("authorization cannot end before its permitted boundary".into());
+        }
+        for stage in ["reserve", "admission", "delivery", "receipt"] {
+            if self.stage::<serde_json::Value>(id, stage)?.is_some() {
+                return Err(
+                    "prepared or delivered authorization requires canonical reconciliation".into(),
+                );
+            }
+        }
+        let authorization = self
+            .authorization(id)?
+            .ok_or("ending authorization has no signed terms")?;
+        let digest = authorization.digest()?;
+        if self.choose_reserve_send(id, digest, false, at)? {
+            return Err("authorization has an ambiguous send".into());
+        }
+        let ended = EndedCorporateAuthorization {
+            request_id: id.into(),
+            authorization_digest: digest,
+            ended_at: at,
+            reason,
+        };
+        self.put_first::<EndedCorporateAuthorization>(
+            &record_id("authorization-end", id)?,
+            &ended,
+            at,
+            u64::MAX,
+        )?;
+        self.ended_authorization(id)?
+            .ok_or("authorization end was not durable".into())
     }
 
     pub fn save_intent(
@@ -151,11 +326,11 @@ impl NativeCorporateJournal {
     pub fn require_turn(&self, id: &str) -> Result<(), String> {
         let target = record_id("intent", id)?;
         let records = self.outbox.summaries()?;
-        if records
-            .iter()
-            .any(|r| r.request_id == format!("resolved:{id}"))
-        {
-            return Err("corporate request already ended after expiry".into());
+        if records.iter().any(|r| {
+            r.request_id == format!("resolved:{id}")
+                || r.request_id == format!("authorization-end:{id}")
+        }) {
+            return Err("corporate request already ended without admission".into());
         }
         let completed: BTreeSet<_> = records
             .iter()
@@ -163,6 +338,7 @@ impl NativeCorporateJournal {
                 r.request_id
                     .strip_prefix("receipt:")
                     .or_else(|| r.request_id.strip_prefix("resolved:"))
+                    .or_else(|| r.request_id.strip_prefix("authorization-end:"))
             })
             .collect();
         if completed.contains(id) {
@@ -194,6 +370,7 @@ impl NativeCorporateJournal {
         let intent = self
             .intent(id)?
             .ok_or("reserve send has no durable intent")?;
+        let reserve_digest = self.send_binding(id, reserve_digest)?;
         let decision: ReserveSendDecision = self.put_first(
             &record_id("reserve-send", id)?,
             &ReserveSendDecision {
@@ -210,6 +387,28 @@ impl NativeCorporateJournal {
             return Err("reserve send decision differs from the original request".into());
         }
         Ok(decision.may_send)
+    }
+
+    fn send_binding(&self, id: &str, digest: [u8; 32]) -> Result<[u8; 32], String> {
+        let Some(authorization) = self.authorization(id)? else {
+            return Ok(digest);
+        };
+        let binding = authorization.digest()?;
+        if digest != binding {
+            let prepared: PreparedCorporateReserve = self
+                .stage(id, "reserve")?
+                .ok_or("authorized send lost its prepared funding")?;
+            if digest != crate::corporate_submission::reserve_digest(&prepared)?
+                || prepared.request.mandate != authorization.mandate
+                || prepared.order_wire != authorization.order_wire
+                || prepared.request.order_authorization_salt
+                    != authorization.order_authorization_salt
+                || prepared.request.reserve_reblinding != authorization.reserve_reblinding
+            {
+                return Err("prepared send differs from the original signed authorization".into());
+            }
+        }
+        Ok(binding)
     }
 
     pub(crate) fn mark_reserve_send_started(
@@ -281,7 +480,8 @@ impl NativeCorporateJournal {
             if !intent.reserve_send_tracking
                 || decision.may_send
                 || decision.intent_digest != intent.input_digest
-                || decision.reserve_digest != value.reserve_digest
+                || decision.reserve_digest
+                    != self.send_binding(&value.request_id, value.reserve_digest)?
             {
                 return Err("absence record cannot exclude an ambiguous or legacy send".into());
             }
@@ -308,6 +508,18 @@ impl NativeCorporateJournal {
         &self,
         prepared: &PreparedCorporateReserve,
     ) -> Result<bool, String> {
+        for record in self.outbox.summaries()? {
+            if let Some(id) = record.request_id.strip_prefix("authorization-end:") {
+                if self.ended_authorization(id)?.is_some()
+                    && self
+                        .authorization(id)?
+                        .is_some_and(|a| a.mandate.hold_id == prepared.request.mandate.hold_id)
+                {
+                    self.send_binding(id, crate::corporate_submission::reserve_digest(prepared)?)?;
+                    return Ok(true);
+                }
+            }
+        }
         Ok(self.expiry_resolution(prepared)?.is_some_and(|value| {
             matches!(
                 value.outcome,
@@ -634,6 +846,8 @@ fn record_id(stage: &str, id: &str) -> Result<String, String> {
                 | "expiry"
                 | "resolved"
                 | "reserve-send"
+                | "authorization"
+                | "authorization-end"
         )
     {
         return Err("corporate request ID or stage is invalid".into());
@@ -746,6 +960,317 @@ mod tests {
             expires_at: 1000,
             reserve_send_tracking: true,
         }
+    }
+
+    fn authorized_intent(
+        config: &CorporateNativeConfig,
+        seed: u8,
+    ) -> (
+        StoredCorporateIntent,
+        crate::corporate_authorization::CorporateReserveAuthorization,
+    ) {
+        let (_, issuer) = oclob_dekyx::deterministic_demo_environment("CORPORATE-UNIT").unwrap();
+        let wallet = issuer
+            .issue_wallet(u64::from(seed), &[seed], &mut rand::rngs::OsRng)
+            .unwrap();
+        let handle =
+            qomm_zkpi::handles::Identity::from_seed(config.identity_seed).handle(b"defmi:oclob:v1");
+        let order = SecretOrder::new_with_dekyx_nullifier(
+            "CORPORATE-UNIT",
+            Side::Sell,
+            100,
+            60,
+            TimeInForce::GoodTilCancelled,
+            1000,
+            handle.point.compress().to_bytes(),
+            wallet.subject_nullifier(),
+            [seed; 32],
+            [seed + 1; 32],
+        )
+        .unwrap();
+        let intent = StoredCorporateIntent {
+            input_digest: [seed; 32],
+            order_wire: order.to_secret_wire(),
+            signing_key: [seed; 32],
+            eligibility_commitment: [15; 32],
+            accepted_at: 100,
+            expires_at: 1000,
+            reserve_send_tracking: true,
+        };
+        let scope = qomm_defmi::application_reservation::ApplicationReserveScope {
+            application_binding: zkpi_defmi_sdk::application::oclob_manifest_v1()
+                .digest()
+                .unwrap(),
+            venue_id: config.venue_id,
+            defmi_id: config.defmi_id,
+            committee_key_digest: [7; 32],
+            committee_epoch: 1,
+            amount_bits: 32,
+        };
+        let authorization = crate::corporate_authorization::CorporateReserveAuthorization::create(
+            config,
+            scope,
+            &wallet,
+            &order,
+            &handle,
+            intent.eligibility_commitment,
+            &SigningKey::from_bytes(&intent.signing_key),
+            100,
+        )
+        .unwrap();
+        (intent, authorization)
+    }
+
+    #[test]
+    fn original_authorization_checks_terms_identity_signature_scope_and_openings() {
+        let (config, _) = fixture();
+        let (_, original) = authorized_intent(&config, 21);
+        original.validate(&config).unwrap();
+        let mut changed = original.clone();
+        changed.order_wire[0] ^= 1;
+        assert!(changed.validate(&config).is_err());
+        changed = original.clone();
+        changed.mandate.valid_until -= 1;
+        assert!(changed.validate(&config).is_err());
+        changed = original.clone();
+        changed.identity.nullifier[0] ^= 1;
+        assert!(changed.validate(&config).is_err());
+        changed = original.clone();
+        changed.identity.context.request_digest[0] ^= 1;
+        assert!(changed.validate(&config).is_err());
+        changed = original.clone();
+        changed.reserve_reblinding = [255; 32];
+        assert!(changed.validate(&config).is_err());
+        changed = original.clone();
+        changed.reserve_blinding = Scalar::from(99u64).to_bytes();
+        assert!(changed.validate(&config).is_err());
+        let mut other = config;
+        other.defmi_id = [99; 32];
+        assert!(original.validate(&other).is_err());
+    }
+
+    #[test]
+    fn signed_authorization_survives_encrypted_reopen_without_issuer_or_witness() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let (intent, authorization) = authorized_intent(&config, 21);
+        journal.save_intent("auth-001", &intent).unwrap();
+        let saved = journal
+            .save_authorization("auth-001", &authorization, &config)
+            .unwrap();
+        let digest = saved.digest().unwrap();
+        assert!(journal
+            .stage::<serde_json::Value>("auth-001", "reserve")
+            .unwrap()
+            .is_none());
+        let bytes = fs::read(files.path()).unwrap();
+        assert!(!bytes
+            .windows(intent.order_wire.len())
+            .any(|w| w == intent.order_wire));
+        assert!(!bytes
+            .windows(intent.signing_key.len())
+            .any(|w| w == intent.signing_key));
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let restored = reopened.authorization("auth-001").unwrap().unwrap();
+        restored.validate(&config).unwrap();
+        assert_eq!(restored.digest().unwrap(), digest);
+        assert!(restored.mandate == saved.mandate);
+        assert_eq!(restored.order_wire, intent.order_wire);
+        let (another, other_authorization) = authorized_intent(&config, 22);
+        assert!(reopened
+            .save_authorization("auth-001", &other_authorization, &config)
+            .is_err());
+        assert!(reopened.save_intent("auth-001", &another).is_err());
+    }
+
+    #[test]
+    fn rejected_unprepared_authorization_is_fenced_and_advances_fifo_after_restart() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let (first, authorization) = authorized_intent(&config, 21);
+        let (second, _) = authorized_intent(&config, 22);
+        journal.save_intent("first", &first).unwrap();
+        journal
+            .save_authorization("first", &authorization, &config)
+            .unwrap();
+        journal.save_intent("second", &second).unwrap();
+        assert!(journal.require_turn("second").is_err());
+        journal
+            .end_unprepared_authorization("first", 101, AuthorizationEndReason::InsufficientFunding)
+            .unwrap();
+        assert!(journal
+            .mark_reserve_send_started("first", authorization.digest().unwrap(), 102)
+            .is_err());
+        assert!(journal.require_turn("first").is_err());
+        journal.require_turn("second").unwrap();
+        drop(journal);
+        let journal =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        assert!(journal.ended_authorization("first").unwrap().is_some());
+        assert!(journal
+            .mark_reserve_send_started("first", authorization.digest().unwrap(), 103)
+            .is_err());
+        journal.require_turn("second").unwrap();
+    }
+
+    #[test]
+    fn local_authorization_end_refuses_live_deadline_legacy_and_prepared_or_sent_work() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let (intent, authorization) = authorized_intent(&config, 21);
+        for stage in ["reserve", "admission", "delivery"] {
+            journal.save_intent(stage, &intent).unwrap();
+            journal
+                .save_authorization(stage, &authorization, &config)
+                .unwrap();
+            // Unit-only presence fixture: no fake financial receipt is used by
+            // any integration journey. Any existing financial stage must block.
+            journal
+                .save_stage(
+                    stage,
+                    stage,
+                    &serde_json::json!({"unit_presence_only":true}),
+                    &intent,
+                )
+                .unwrap();
+            assert!(journal
+                .end_unprepared_authorization(stage, 1001, AuthorizationEndReason::Expired)
+                .is_err());
+        }
+        journal.save_intent("live", &intent).unwrap();
+        journal
+            .save_authorization("live", &authorization, &config)
+            .unwrap();
+        assert!(journal
+            .end_unprepared_authorization("live", 1000, AuthorizationEndReason::Expired)
+            .is_err());
+        journal
+            .mark_reserve_send_started("live", authorization.digest().unwrap(), 101)
+            .unwrap();
+        assert!(journal
+            .end_unprepared_authorization("live", 1001, AuthorizationEndReason::Expired)
+            .is_err());
+        let mut legacy = intent;
+        legacy.reserve_send_tracking = false;
+        journal.save_intent("legacy", &legacy).unwrap();
+        journal
+            .save_authorization("legacy", &authorization, &config)
+            .unwrap();
+        assert!(journal
+            .end_unprepared_authorization("legacy", 1001, AuthorizationEndReason::Expired)
+            .is_err());
+    }
+
+    #[test]
+    fn authorized_expiry_and_interrupted_local_end_finish_without_network_or_tls() {
+        use crate::corporate_dispatch::{DispatchProgress, NativeCorporateDispatch};
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let queue_path = files.root.join("dispatch.enc");
+        let queue = NativeCorporateDispatch::initialize(&queue_path, &[19; 32]).unwrap();
+        let (intent, authorization) = authorized_intent(&config, 21);
+        for id in ["expired", "interrupted"] {
+            journal.save_intent(id, &intent).unwrap();
+            journal
+                .save_authorization(id, &authorization, &config)
+                .unwrap();
+            assert!(!queue
+                .enqueue_authorized(&journal, &config, id, None)
+                .unwrap());
+            assert!(queue
+                .enqueue_authorized(&journal, &config, id, None)
+                .unwrap());
+        }
+        let unavailable = crate::network::ClientIdentityConfig {
+            version: 1,
+            tls_certificate: "/intentionally-missing".into(),
+            tls_private_key: "/intentionally-missing".into(),
+            tls_ca: "/intentionally-missing".into(),
+            application_signing_key: "/intentionally-missing".into(),
+        };
+        assert_eq!(
+            queue
+                .pump(
+                    &config,
+                    &unavailable,
+                    &cluster,
+                    &journal,
+                    1001,
+                    2,
+                    |_| panic!("no financial side effect allowed")
+                )
+                .unwrap(),
+            DispatchProgress::NeverReserved {
+                request_id: "expired".into()
+            }
+        );
+        // Model the precise local crash boundary: end is durable, queue is not.
+        journal
+            .end_unprepared_authorization(
+                "interrupted",
+                1001,
+                AuthorizationEndReason::InsufficientFunding,
+            )
+            .unwrap();
+        drop(queue);
+        let queue = NativeCorporateDispatch::open(&queue_path, &[19; 32]).unwrap();
+        assert_eq!(
+            queue
+                .pump(
+                    &config,
+                    &unavailable,
+                    &cluster,
+                    &journal,
+                    1002,
+                    2,
+                    |_| panic!("no financial side effect allowed")
+                )
+                .unwrap(),
+            DispatchProgress::FundingRejected {
+                request_id: "interrupted".into()
+            }
+        );
+        assert!(queue.summaries().unwrap().iter().all(|e| matches!(
+            e.state,
+            zkpi_defmi_sdk::corporate::OutboxState::AbortedBeforeReserve { .. }
+        )));
+        for id in ["expired", "interrupted"] {
+            assert!(journal
+                .stage::<serde_json::Value>(id, "reserve")
+                .unwrap()
+                .is_none());
+            assert!(journal
+                .mark_reserve_send_started(id, authorization.digest().unwrap(), 1003)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn intake_lock_excludes_independent_journal_writer_and_releases_on_drop() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let first =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let second =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let guard = first.acquire_intake().unwrap();
+        assert!(crate::corporate_dispatch::acquire_corporate_lock(
+            &second.path.with_extension("intake.lock"),
+            false
+        )
+        .is_err());
+        drop(guard);
+        assert!(second.acquire_intake().is_ok());
     }
 
     #[test]

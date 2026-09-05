@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zkpi_defmi_sdk::corporate::{
     CorporateOutbox, MpcAdmissionReceipt, OutboxEntrySummary, QueueAction,
@@ -28,6 +28,8 @@ struct DispatchRequest {
     request_id: String,
     intent_digest: [u8; 32],
     reserve_digest: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authorization_digest: Option<[u8; 32]>,
     source_note: Option<[u8; 32]>,
 }
 
@@ -55,6 +57,9 @@ pub enum DispatchProgress {
         transaction_id: String,
     },
     NeverReserved {
+        request_id: String,
+    },
+    FundingRejected {
         request_id: String,
     },
 }
@@ -98,32 +103,7 @@ impl NativeCorporateDispatch {
     /// lock, not a PID file or a time lease that can expire during a live RPC.
     /// Source: https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock
     pub fn acquire_worker(&self) -> Result<File, String> {
-        let parent = self.path.parent().ok_or("dispatch path has no parent")?;
-        let meta = fs::symlink_metadata(parent).map_err(err)?;
-        if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
-            return Err("dispatch parent must be an owner-only directory".into());
-        }
-        let lock = self.path.with_extension("worker.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(lock)
-            .map_err(err)?;
-        let lock_meta = file.metadata().map_err(err)?;
-        if !lock_meta.is_file()
-            || lock_meta.nlink() != 1
-            || lock_meta.uid() != meta.uid()
-            || lock_meta.permissions().mode() & 0o077 != 0
-        {
-            return Err("dispatch worker lock is unsafe".into());
-        }
-        file.try_lock()
-            .map_err(|_| "dispatch worker lock unavailable; another worker may own it")?;
-        Ok(file)
+        acquire_corporate_lock(&self.path.with_extension("worker.lock"), false)
     }
 
     pub fn enqueue(
@@ -149,8 +129,51 @@ impl NativeCorporateDispatch {
             request_id: request_id.into(),
             intent_digest: intent.input_digest,
             reserve_digest: reserve_digest(&reserve)?,
+            authorization_digest: None,
             source_note,
         };
+        self.enqueue_request(&request, &intent)
+    }
+
+    pub fn enqueue_authorized(
+        &self,
+        journal: &NativeCorporateJournal,
+        config: &CorporateNativeConfig,
+        request_id: &str,
+        source_note: Option<[u8; 32]>,
+    ) -> Result<bool, String> {
+        let intent = journal
+            .intent(request_id)?
+            .ok_or("authorized queue request has no intent")?;
+        let authorization = journal
+            .authorization(request_id)?
+            .ok_or("authorized queue request has no signed terms")?;
+        authorization.validate(config)?;
+        if authorization.order_wire != intent.order_wire
+            || authorization.signing_key != intent.signing_key
+        {
+            return Err("authorized queue request differs from corporate intake".into());
+        }
+        self.enqueue_request(
+            &DispatchRequest {
+                version: 2,
+                journal_context: journal.context_digest(),
+                request_id: request_id.into(),
+                intent_digest: intent.input_digest,
+                reserve_digest: [0; 32],
+                authorization_digest: Some(authorization.digest()?),
+                source_note,
+            },
+            &intent,
+        )
+    }
+
+    fn enqueue_request(
+        &self,
+        request: &DispatchRequest,
+        intent: &crate::corporate_journal::StoredCorporateIntent,
+    ) -> Result<bool, String> {
+        let request_id = &request.request_id;
         let bytes = serde_json::to_vec(&request).map_err(err)?;
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let outcome = self.outbox.enqueue_first_seen(
@@ -203,14 +226,23 @@ impl NativeCorporateDispatch {
         let intent = journal
             .intent(request_id)?
             .ok_or("dispatch intent disappeared")?;
-        let prepared: PreparedCorporateReserve = journal
-            .stage(request_id, "reserve")?
-            .ok_or("dispatch reserve disappeared")?;
-        if request.version != 1
+        let source_matches = match (request.version, request.authorization_digest) {
+            (1, None) => journal
+                .stage::<PreparedCorporateReserve>(request_id, "reserve")?
+                .map(|prepared| reserve_digest(&prepared).map(|d| d == request.reserve_digest))
+                .transpose()?
+                .unwrap_or(false),
+            (2, Some(digest)) if request.reserve_digest == [0; 32] => journal
+                .authorization(request_id)?
+                .map(|authorization| authorization.digest().map(|d| d == digest))
+                .transpose()?
+                .unwrap_or(false),
+            _ => false,
+        };
+        if !source_matches
             || request.journal_context != journal.context_digest()
             || request.request_id != request_id
             || request.intent_digest != intent.input_digest
-            || request.reserve_digest != reserve_digest(&prepared)?
         {
             return Err("dispatch payload does not match its corporate journal".into());
         }
@@ -228,9 +260,25 @@ impl NativeCorporateDispatch {
         now: u64,
         observe: impl FnMut(SubmissionCheckpoint) -> Result<(), String>,
     ) -> Result<DispatchProgress, String> {
-        self.verified_request(journal, &request_id, request_digest)?;
+        let request = self.verified_request(journal, &request_id, request_digest)?;
         self.outbox
             .mark_release_pending(&request_id, request_digest, now)?;
+        if request.version == 2
+            && journal
+                .stage::<PreparedCorporateReserve>(&request_id, "reserve")?
+                .is_none()
+        {
+            match journal.end_unprepared_authorization(
+                &request_id,
+                now,
+                crate::corporate_journal::AuthorizationEndReason::Expired,
+            ) {
+                Ok(ended) => return self.record_authorization_end(request_digest, ended),
+                Err(_) => {
+                    return Ok(DispatchProgress::ReleaseReconciliationRequired { request_id })
+                }
+            }
+        }
         let result = match crate::corporate_expiry::reconcile_expired_submission(
             config,
             identity,
@@ -288,6 +336,20 @@ impl NativeCorporateDispatch {
     ) -> Result<DispatchProgress, String> {
         if !(1..=300).contains(&retry_after_seconds) {
             return Err("dispatch retry interval outside1..300 seconds".into());
+        }
+        // Crash after the durable pre-funding end but before updating the queue.
+        // No network is needed to finish this already fenced local transition.
+        for entry in self.outbox.summaries()? {
+            if matches!(
+                entry.state,
+                zkpi_defmi_sdk::corporate::OutboxState::AbortedBeforeReserve { .. }
+            ) {
+                continue;
+            }
+            if let Some(ended) = journal.ended_authorization(&entry.request_id)? {
+                self.verified_request(journal, &entry.request_id, entry.request_digest)?;
+                return self.record_authorization_end(entry.request_digest, ended);
+            }
         }
         // Expiry reconciliation must not wait for any MPC node or even start
         // its health connections: canonical funds can be recovered while all
@@ -351,6 +413,62 @@ impl NativeCorporateDispatch {
         };
         let request =
             self.verified_request(journal, &claimed.request_id, claimed.request_digest)?;
+        if request.version == 2
+            && journal
+                .stage::<PreparedCorporateReserve>(&claimed.request_id, "reserve")?
+                .is_none()
+        {
+            let preparation = (|| {
+                journal.require_turn(&claimed.request_id)?;
+                let authorization = journal
+                    .authorization(&claimed.request_id)?
+                    .ok_or_else(|| "queued authorization disappeared".to_string())?;
+                let intent = journal
+                    .intent(&claimed.request_id)?
+                    .ok_or_else(|| "queued intent disappeared".to_string())?;
+                let funding = journal.latest_funding(config)?;
+                let prepared = crate::corporate_authorization::prepare_authorized_reservation(
+                    &funding,
+                    identity,
+                    &authorization,
+                    now,
+                    request.source_note,
+                )?;
+                journal.save_stage::<PreparedCorporateReserve>(
+                    &claimed.request_id,
+                    "reserve",
+                    &prepared,
+                    &intent,
+                )?;
+                Ok::<_, crate::corporate_authorization::PreparationError>(())
+            })();
+            match preparation {
+                Ok(()) => (),
+                Err(crate::corporate_authorization::PreparationError::InsufficientFunding) => {
+                    let ended = journal.end_unprepared_authorization(
+                        &claimed.request_id,
+                        now,
+                        crate::corporate_journal::AuthorizationEndReason::InsufficientFunding,
+                    )?;
+                    return self.record_authorization_end(claimed.request_digest, ended);
+                }
+                Err(crate::corporate_authorization::PreparationError::Retry(_)) => {
+                    // Recover only from real canonical heads and local witness
+                    // history. A missing/changed head remains an explicit retry.
+                    if let Ok(witness) = crate::native_wallet::recover_facility(
+                        config,
+                        &crate::corporate::private_client(config, identity)?.chain()?,
+                        journal,
+                    ) {
+                        journal.save_funding_witness(&witness)?;
+                    }
+                    return Ok(DispatchProgress::RetryScheduled {
+                        request_id: claimed.request_id,
+                        attempt: claimed.attempt,
+                    });
+                }
+            }
+        }
         let completed = match complete_native_submission(
             config,
             identity,
@@ -382,6 +500,62 @@ impl NativeCorporateDispatch {
             request_id: claimed.request_id,
             receipt_digest: hex::encode(completed.receipt.receipt_digest),
         })
+    }
+
+    fn record_authorization_end(
+        &self,
+        digest: [u8; 32],
+        ended: crate::corporate_journal::EndedCorporateAuthorization,
+    ) -> Result<DispatchProgress, String> {
+        self.outbox
+            .record_pre_reserve_abort(&ended.request_id, digest, ended.ended_at)?;
+        Ok(match ended.reason {
+            crate::corporate_journal::AuthorizationEndReason::Expired => {
+                DispatchProgress::NeverReserved {
+                    request_id: ended.request_id,
+                }
+            }
+            crate::corporate_journal::AuthorizationEndReason::InsufficientFunding => {
+                DispatchProgress::FundingRejected {
+                    request_id: ended.request_id,
+                }
+            }
+        })
+    }
+}
+
+pub(crate) fn acquire_corporate_lock(path: &Path, wait: bool) -> Result<File, String> {
+    let parent = path.parent().ok_or("corporate lock path has no parent")?;
+    let meta = fs::symlink_metadata(parent).map_err(err)?;
+    if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+        return Err("corporate lock parent must be an owner-only directory".into());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(err)?;
+    let lock_meta = file.metadata().map_err(err)?;
+    if !lock_meta.is_file()
+        || lock_meta.nlink() != 1
+        || lock_meta.uid() != meta.uid()
+        || lock_meta.permissions().mode() & 0o077 != 0
+    {
+        return Err("corporate lock file is unsafe".into());
+    }
+    let started = std::time::Instant::now();
+    loop {
+        if file.try_lock().is_ok() {
+            return Ok(file);
+        }
+        if !wait || started.elapsed() >= Duration::from_secs(30) {
+            return Err("corporate lock unavailable; another writer may own it".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

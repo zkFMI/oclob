@@ -1,35 +1,35 @@
 {
   "contract_sha256": "c2e175e7dea340ea7242c3d4c928c69d38de319398a651efb9330fee050c1cf1",
   "independent_operators": false,
-  "manifest_id": "oclob-native-expiry-fenced-002",
+  "manifest_id": "oclob-native-expiry-deferred-regression-003",
   "native": {
     "completed_native_releases": 1,
     "contract_sha256": "c2e175e7dea340ea7242c3d4c928c69d38de319398a651efb9330fee050c1cf1",
     "exact_released_note_reused": true,
-    "manifest_id": "oclob-native-expiry-fenced-002",
+    "manifest_id": "oclob-native-expiry-deferred-regression-003",
     "mpc_nodes_down_during_reconciliation": 7,
-    "native_after_root": "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
+    "native_after_root": "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
     "never_reserved": 1,
     "next_order_admitted_nodes": 7,
-    "next_order_commitment": "a79429227eabfeae555e3c0846df8469c26e6b0a824e5c7acd39419088df5a9c",
+    "next_order_commitment": "4dc22d0d19dbeb866128131f4dd572d8d552397d4b10df2685c612d36bb590ce",
     "next_order_matched": false,
     "partial_admission_cleanup_claimed": false,
     "reconciled_expired_requests": 2,
     "release": {
-      "after_root": "1569a0956e00676ae37c3eec8a4fc272a0353d546fe6c0fcd094e10d2cb9732a",
-      "before_root": "4e168f61232ef438ab1c1f66eb7f1137de9d3c1a8c29cc035c370d97c170b09b",
-      "block_id": "VMbzYroc9h31Z1vVj5pNzKp5n8SCQ54sM4VtGfyJnhJuWHWH5",
+      "after_root": "8f233444296ea0fd973822d27ddfd5a6a85a9d1c04f90a25911075c478a96970",
+      "before_root": "ba30e5667a325c6bc7736b55ffa8226eb6895fe9bbc418cf15dd06eb5c0a1994",
+      "block_id": "ZE7bWxzwA8sEXrLic17FMWSfZhHqBWLFtAMLqQ2pfwU43Utf2",
       "height": 13,
-      "hold_id": "ffe81595c1246f8bc7534a84cd1bffc5003bff263c6bd5660c43b67a123038cf",
+      "hold_id": "f648030ff9675b533c2f31b8c14065017263851ea1fbc1f9b550d10e3c704492",
       "request_id": "native-expiry-release-002",
-      "statement": "ae16b9d00cf38eddcb2a8de401affba08bb80a0963660fff6458a3d81dadc5f8",
+      "statement": "4d8a2a123f62fa9b40973812c9faa902fd3ce3736c562a80e712ffd73b089895",
       "status": "released",
-      "transaction_id": "Pe9CqfFr7oDgootHY3Q2ehjkb8zM28jijyMeBiRtHicg5x7fR"
+      "transaction_id": "JPPkJeCXbHhoufa6vbnT6RAUKPxbzvVTsyyTTZmrwhA78pkR2"
     },
     "release_response_loss_recovered": true,
     "verdict": "smoke_only",
     "wallet": {
-      "after_root": "1569a0956e00676ae37c3eec8a4fc272a0353d546fe6c0fcd094e10d2cb9732a",
+      "after_root": "8f233444296ea0fd973822d27ddfd5a6a85a9d1c04f90a25911075c478a96970",
       "expected_private_balances_verified": true,
       "facility_sequence": 2,
       "unfilled_releases_recovered": 1,
@@ -38,20 +38,20 @@
     "worker_restart_unchanged": true
   },
   "recovered_validator_roots": [
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9"
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf"
   ],
   "status": "smoke_only",
   "validator_restart_recovered": true,
   "validator_roots": [
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9",
-    "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9"
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf",
+    "56842d889604be84921d601f35547ddf612198d4c55cc7baf1c11d574eb958cf"
   ],
   "wan_evidence": false
 }

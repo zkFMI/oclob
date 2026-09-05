@@ -88,15 +88,15 @@ make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
 ```
 
-試験条件は `research/oclob_native_expiry_fenced_contract.json`、実行前の予測は `research/manifests/oclob_native_expiry_002.json` に固定している。[実行結果](../artifacts/oclob_native_expiry.json)と[実行ソース66ファイルの対応表](../artifacts/oclob_native_expiry_sources.json)を公開し、個別の実行判定は `research/experiment-ledger.jsonl` に記録する。
+試験条件は `research/oclob_native_expiry_fenced_contract.json`、現行ソースでの再試験の予測は `research/manifests/oclob_native_expiry_003.json` に固定している。[実行結果](../artifacts/oclob_native_expiry.json)と[実行ソース71ファイルの対応表](../artifacts/oclob_native_expiry_sources.json)を公開し、個別の実行判定は `research/experiment-ledger.jsonl` に記録する。
 
-2026年9月6日（日本時間）の `oclob-native-expiry-fenced-002` は、Softbankで次を確認した。
+2026年9月6日（日本時間）の `oclob-native-expiry-deferred-regression-003` は、資金証明を後から作る受付を加えたソースで、従来の準備済み要求の経路をSoftbankで再確認した。先行する `fenced-002` の結果を流用していない。
 
 - 7ノードを実際に停止した二つの境界で、未送信終了1件と正本での資産解放1件を完了。
 - 確保直後・解放直後の2か所で法人プロセスを実際に終了し、同じ要求から復旧。
 - 解放された5単位の保有記録を次の予約で実際に消費し、全7ノードの署名付き受付を検証。
 - 法人ワーカーの再起動で終了状態が変わらず、5つの検証ノードの台帳が検証ノード再起動後も一致。
-- 別のコード検査でRustテスト103件、整形、全対象の警告を許さない静的検査に合格。送信と未送信終了の競合、旧記録、再起動、法人が送る不正な解放指図の拒否を含む。
+- 別のコード検査でRustテスト109件、整形、全対象の警告を許さない静的検査に合格。送信と未送信終了の競合、旧記録、再起動、法人が送る不正な解放指図の拒否を含む。
 
 同じソースと依存版による `oclob-native-worker-expiry-regression-004` も、2回の決済・3約定、2回の解放、累計9受取権、保証枠更新番号8/5、7 MPCノードと5検証ノードの再起動確認まで完了した。結果は[常駐送信の実行証拠](../artifacts/oclob_native_worker.json)に分けている。
 

@@ -1,0 +1,20 @@
+{
+  "contract_id": "oclob-native-deferred-v1",
+  "objective": "Accept immutable signed corporate order authorizations while all7 MPC containers are stopped and the real DeFMI container is paused; prepare each funding proof only at its FIFO turn after recovery, reject excess use of one120-unit corporate facility without a reserve side effect, and atomically settle two accepted maker orders through actual7-node MPC and5 native Avalanche validators.",
+  "primary_metric": "atomically_settled_fills",
+  "truth_provider": "Actual corporate encrypted journals/queue and signed original mandates; Docker stopped/paused state; canonical reserves and facility generations,7 node-signed receipts and real MPC outputs,5 live native validator roots and restart readback.",
+  "hard_constraints": [
+    "Original order terms, one-time signing key, signed reserve mandate and DeKYX presentation are saved before queue acceptance. Workers cannot issue credentials or replace signed mandates. Use pinned DeFMI funding proof construction against fresh state only when this request reaches the front.",
+    "Read-only deployment scope is cached from the configured authenticated ingress before outage. All3 maker requests must be durably accepted with no prepared funding request while all7 MPC containers are stopped and DeFMI is actually paused.",
+    "First60-unit maker is enqueued before two genuinely concurrent corporate CLI submissions for70 and60 units. Total190 exceeds facility120. Exactly two60-unit orders are admitted;70 must have no prepared reserve, no canonical application or synthetic receipt. Its local terminal state is fenced against future sends.",
+    "An intake OS lock makes journal intent FIFO and dispatch FIFO consistent across concurrent corporate processes. Worker restart preserves all queue states and original authorization digests. Unknown/legacy/ambiguous financial requests are not automatically re-signed.",
+    "Accepted makers are the ones matched:60at100 and30at101 against one90-unit taker, all in one actual canonical transaction.14 node finality observations, partial-observation and batch-extraction rejection, exact transaction retry and facility generations4/3 must pass.",
+    "All builds/tests/Docker are onSoftbank/Omen. Private order bodies, signing keys, credentials, witness openings and encrypted runtime files never enter public evidence."
+  ],
+  "non_claims": [
+    "Singlehost functional smoke, not independent-operator/WAN, throughput, fairness, economic or product promotion.",
+    "One logical corporate journal/facility with concurrent processes. Independent conflicting corporate journals, stale already-sent proof regeneration, unbounded queues and arbitrary external facility writes remain separate requirements.",
+    "Preparation uses the original signed financial authorization and existing proof library. The demo intake credential issuer remains a laboratory adapter; no new credential format or issuer key at the worker.",
+    "Existing prepared-queue mode remains supported for exact-request recovery. This new authorized-queue mode is the production-shaped path for deferred funding; authenticated native API/UI cutover is not part of this run."
+  ]
+}

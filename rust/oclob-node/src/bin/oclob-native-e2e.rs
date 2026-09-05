@@ -76,6 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-worker-v1"
                     | "oclob-native-expiry-v1"
                     | "oclob-native-expiry-v2"
+                    | "oclob-native-deferred-v1"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -123,8 +124,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "/handoff/taker.json"
     })?;
-    let multifill =
-        manifest["contract_id"] == "oclob-native-multifill-v1" || (cycle && !next_match);
+    let multifill = matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-multifill-v1" | "oclob-native-deferred-v1")
+    ) || (cycle && !next_match);
     let mut makers = vec![maker.clone()];
     if multifill {
         makers.push(read("/handoff/maker2.json")?);
@@ -658,7 +661,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if repeated != finalized {
         return Err("exact private-head finalization retry changed signed state receipts".into());
     }
-    let result = json!({"native_note_settlement": true, "contract_sha256": contract_hash,
+    let mut result = json!({"native_note_settlement": true, "contract_sha256": contract_hash,
         "manifest_id": manifest["manifest_id"], "verdict": "smoke_only", "mpc_nodes": 7,
         "post_match_participant_signatures": 0, "raw_order_capability_opened": false,
         "canonical_transaction": accepted.tx_id, "canonical_height": accepted.height,
@@ -687,6 +690,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "mpc_output_sha256": hex::encode(output),
         "zkpi_sha256": hex::encode(Sha256::digest(&signed.instruction)),
         "maker_reserve_active": true, "taker_reserve_closed": true, "elapsed_ms": started.elapsed().as_millis()});
+    if manifest["contract_id"] == "oclob-native-deferred-v1" {
+        result["deferred_authorization"] = verify_deferred_intake(&makers)?;
+    }
     if cycle && !next_match {
         publish_result(
             &serde_json::to_value(&taker_certificate)?,
@@ -709,6 +715,86 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     publish_result(&result, target)?;
     println!("{}", result);
     Ok(())
+}
+
+fn verify_deferred_intake(
+    makers: &[EdgeAdmissionReceipt],
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let stopped = fs::read_to_string("/handoff/deferred-nodes-stopped.txt")?;
+    if stopped.lines().count() != 7
+        || stopped.lines().any(|l| l != "false")
+        || fs::read_to_string("/handoff/deferred-defmi-paused.txt")?.trim() != "true"
+    {
+        return Err("deferred intake did not run during actual MPC and DeFMI outage".into());
+    }
+    let before: Vec<Value> = read("/handoff/deferred-before.json")?;
+    let after: Vec<Value> = read("/handoff/deferred-after.json")?;
+    let queue_before: Value = read("/handoff/deferred-queue-before-restart.json")?;
+    let queue_after: Value = read("/handoff/deferred-queue-after-restart.json")?;
+    let rejected: Value = read("/handoff/deferred-rejected.json")?;
+    if before.len() != 3
+        || after.len() != 3
+        || queue_before != queue_after
+        || rejected["status"] != "funding_rejected"
+        || rejected["funding_prepared"] != false
+    {
+        return Err("deferred queue did not reject overcommit or survive restart".into());
+    }
+    let mut accepted = std::collections::BTreeSet::new();
+    for original in &before {
+        let updated = after
+            .iter()
+            .find(|a| a["request_id"] == original["request_id"])
+            .ok_or("deferred request disappeared")?;
+        if original["funding_prepared"] != false
+            || original["admitted"] != false
+            || original["authorization_digest"]
+                .as_str()
+                .is_none_or(|v| v.len() != 64)
+            || original["authorization_digest"] != updated["authorization_digest"]
+            || original["order_commitment"] != updated["order_commitment"]
+        {
+            return Err("deferred intake prepared funding offline or changed signed terms".into());
+        }
+        if original["request_id"] == "native-maker-too-large" {
+            if updated["funding_prepared"] != false
+                || updated["admitted"] != false
+                || updated["ended"] != true
+            {
+                return Err("over-capacity request produced a financial reserve".into());
+            }
+        } else {
+            if updated["funding_prepared"] != true
+                || updated["admitted"] != true
+                || updated["ended"] != false
+            {
+                return Err("deferred accepted maker did not reach real MPC admission".into());
+            }
+            accepted.insert(
+                updated["order_commitment"]
+                    .as_str()
+                    .ok_or("missing admitted commitment")?
+                    .to_owned(),
+            );
+        }
+    }
+    // The admission manifest binds the signed original source order to the
+    // funded order. Its final commitment additionally includes the reservation
+    // admission; equating the two would reject every legitimate native reserve.
+    if accepted.len() != 2
+        || makers
+            .iter()
+            .map(|m| hex::encode(m.manifest.source_order_commitment))
+            .collect::<std::collections::BTreeSet<_>>()
+            != accepted
+    {
+        return Err("deferred makers differ from the makers actually settled".into());
+    }
+    Ok(
+        json!({"queued_without_funding":3,"accepted_maker_orders":2,"over_capacity_rejected":1,
+        "actual_mpc_outage":true,"actual_defmi_pause":true,"concurrent_intake_clients":2,
+        "original_authorizations_unchanged":true,"worker_restart_unchanged":true}),
+    )
 }
 
 fn publish_result(result: &Value, target: &str) -> Result<(), Box<dyn std::error::Error>> {

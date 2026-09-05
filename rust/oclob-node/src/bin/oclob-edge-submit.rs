@@ -217,6 +217,11 @@ fn run_native(
     let secret = load_secret_32(PathBuf::from(journal_key)).map_err(|e| e.to_string())?;
     let journal =
         NativeCorporateJournal::open(PathBuf::from(journal_path), &secret, config, cluster)?;
+    if std::env::var("OCLOB_NATIVE_CACHE_SCOPE").ok().as_deref() == Some("1") {
+        journal.authorization_scope(config, identity)?;
+        println!("{}", json!({"status":"authorization_scope_cached"}));
+        return Ok(());
+    }
     if std::env::var("OCLOB_NATIVE_CANCEL_ORDER").ok().as_deref() == Some("1") {
         let intent = journal
             .intent(&request_id)?
@@ -295,6 +300,13 @@ fn run_native(
             },
         ))?
     };
+    let enqueue_mode = std::env::var("OCLOB_NATIVE_ENQUEUE").unwrap_or_default();
+    if !matches!(enqueue_mode.as_str(), "" | "1" | "authorized") {
+        return Err("native enqueue mode must be1 or authorized".into());
+    }
+    // Intake and dispatch must agree on FIFO even when separate departmental
+    // clients finish credential/authorization preparation in different orders.
+    let _intake_guard = journal.acquire_intake()?;
     let handle = Identity::from_seed(config.identity_seed).handle(VENUE_DOMAIN);
     let (_, issuer) =
         deterministic_demo_environment(&cluster.market_id).map_err(|e| e.to_string())?;
@@ -346,8 +358,42 @@ fn run_native(
     if intent.input_digest != input_digest {
         return Err("corporate request ID names a different order instruction".into());
     }
-    journal.require_turn(&request_id)?;
     let order = SecretOrder::from_secret_wire(&intent.order_wire).map_err(|e| e.to_string())?;
+    let source_note = instruction
+        .as_ref()
+        .map(|input| input.source())
+        .transpose()?
+        .flatten();
+    if enqueue_mode == "authorized" {
+        if journal.authorization(&request_id)?.is_none() {
+            let authorization =
+                oclob_node::corporate_authorization::CorporateReserveAuthorization::create(
+                    config,
+                    journal.authorization_scope(config, identity)?,
+                    &wallet,
+                    &order,
+                    &handle,
+                    intent.eligibility_commitment,
+                    &SigningKey::from_bytes(&intent.signing_key),
+                    unix_seconds()?,
+                )?;
+            journal.save_authorization(&request_id, &authorization, config)?;
+        }
+        let queue_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
+            .map(PathBuf::from)
+            .ok_or("corporate journal path is missing")?
+            .with_file_name("dispatch.enc");
+        let queue =
+            oclob_node::corporate_dispatch::NativeCorporateDispatch::open(queue_path, &secret)?;
+        let duplicate = queue.enqueue_authorized(&journal, config, &request_id, source_note)?;
+        println!(
+            "{}",
+            json!({"status":"authorized_and_queued", "request_id":request_id,
+            "already_present":duplicate, "funding_prepared":journal.stage::<PreparedCorporateReserve>(&request_id,"reserve")?.is_some()})
+        );
+        return Ok(());
+    }
+    journal.require_turn(&request_id)?;
     let prepared: PreparedCorporateReserve =
         if let Some(saved) = journal.stage(&request_id, "reserve")? {
             saved
@@ -371,12 +417,7 @@ fn run_native(
             journal.save_stage(&request_id, "reserve", &pending, &intent)?
         };
     prepared.validate(config)?;
-    let source_note = instruction
-        .as_ref()
-        .map(|input| input.source())
-        .transpose()?
-        .flatten();
-    if std::env::var("OCLOB_NATIVE_ENQUEUE").ok().as_deref() == Some("1") {
+    if enqueue_mode == "1" {
         let queue_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
             .map(PathBuf::from)
             .ok_or("corporate journal path is missing")?

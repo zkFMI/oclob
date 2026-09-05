@@ -1,0 +1,47 @@
+{
+  "manifest_id": "oclob-native-deferred-rough-001",
+  "contract_id": "oclob-native-deferred-v1",
+  "contract_path": "research/oclob_native_deferred_contract.json",
+  "contract_sha256": "ce7e91bcc926fb04ba33c5e716bc32d5afaa1796ea7a943b011d641196864a2d",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "R12 requires funding preparation before enqueue and journal.require_turn rejects later pending orders. Concurrent corporate intake can bind stale facility state and cannot operate while DeFMI is unavailable.",
+  "causal_hypothesis": "Separate immutable signed financial authorization from mutable funding preparation. Use one corporate intake lock for consistent journal/queue FIFO, prepare only the current request against fresh canonical capacity, and fence an insufficient-funding authorization as terminal before any reserve request exists. Exactly two60-unit makers should settle despite simultaneous70-unit overcommit.",
+  "single_intended_change": "Integrate a v2 authorization queue into the same native corporate worker using the existing DeKYX presentation and pinned DeFMI funding proof builder. Cache authenticated deployment scope, preserve signed mandates, add typed pre-funding completion and a real outage/concurrent-intake acceptance attached to the existing native two-fill path.",
+  "baseline": "PublishedOCLOBbe2af0f13316e0a99b1f648fb4b39e26f8d21349,DeFMI5dd1f68,103tests,R12expiry002andworker004. Closest runnable reference is the repository's native-multifill path which settles60at100 plus30at101 but prepares requests sequentially in active client processes.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "concurrent_maker_clients": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "maker_intakes": 3
+  },
+  "primary_metric": "atomically_settled_fills",
+  "point_prediction": {
+    "queued_without_funding": 3,
+    "accepted_maker_orders": 2,
+    "over_capacity_rejected": 1,
+    "atomically_settled_fills": 2,
+    "posttrade_facility_sequences": [
+      4,
+      3
+    ],
+    "worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The two persistent FIFOs may disagree or the fresh funding proof may not match the saved signed mandate after the first reserve changes the facility; an observed failure must remain rejected rather than triggering replacement consent or relaxed counts.",
+  "rejection_rules": [
+    "stalecontracthash",
+    "intakequeriespausedDeFMI",
+    "anyfundingpreparebeforeunpause",
+    "originalauthorizationdigestchanges",
+    "FIFOdeadlock",
+    "70-unitrequestcreatesareserve",
+    "onlyoneacceptedmaker",
+    "acceptedmakersnotthesettledmakers",
+    "existing14-observation/batch/finality/restartgatesfail"
+  ],
+  "promotion_rules": [
+    "smoke_only when all real whole-flow predictions and invariants pass; no product/WAN/performance/economic promotion"
+  ],
+  "command": "make remote-native-deferred-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}
