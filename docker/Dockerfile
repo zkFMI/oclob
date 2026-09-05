@@ -69,6 +69,7 @@ RUN --mount=type=cache,id=oclob-npm,target=/root/.npm \
        /var/cache/oclob/target/release/oclob-lab-provision \
        /var/cache/oclob/target/release/oclob-edge-submit \
        /var/cache/oclob/target/release/oclob-corporate-worker \
+       /var/cache/oclob/target/release/oclob-market-worker \
        /var/cache/oclob/target/release/oclob-cluster-e2e \
        /var/cache/oclob/target/release/oclob-native-bootstrap \
        /var/cache/oclob/target/release/oclob-native-e2e \
@@ -140,6 +141,7 @@ RUN --mount=type=cache,id=oclob-cargo-registry,target=/usr/local/cargo/registry 
        /var/cache/oclob/target/release/oclob-lab-provision \
        /var/cache/oclob/target/release/oclob-edge-submit \
        /var/cache/oclob/target/release/oclob-corporate-worker \
+       /var/cache/oclob/target/release/oclob-market-worker \
        /var/cache/oclob/target/release/oclob-cluster-e2e \
        /var/cache/oclob/target/release/oclob-native-bootstrap \
        /var/cache/oclob/target/release/oclob-native-e2e \
@@ -180,6 +182,7 @@ COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-node /usr/local/bin/oclob
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-lab-provision /usr/local/bin/oclob-lab-provision
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-edge-submit /usr/local/bin/oclob-edge-submit
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-corporate-worker /usr/local/bin/oclob-corporate-worker
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-market-worker /usr/local/bin/oclob-market-worker
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-cluster-e2e /usr/local/bin/oclob-cluster-e2e
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-native-bootstrap /usr/local/bin/oclob-native-bootstrap
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-native-e2e /usr/local/bin/oclob-native-e2e

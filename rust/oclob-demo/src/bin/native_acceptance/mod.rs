@@ -46,6 +46,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-expiry-v1"
                     | "oclob-native-expiry-v2"
                     | "oclob-native-deferred-v1"
+                    | "oclob-native-market-v1"
             )
         )
     {
@@ -221,6 +222,19 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         }
     } else if result["native_note_settlement"] != true {
         return Err(failure("native settlement result is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-market-v1"
+        && (result["admitted_orders"] != 3
+            || result["completed_market_rounds"] != 3
+            || result["autonomously_settled_fills"] != 2
+            || result["trade_notional"] != 9030
+            || result["node_finality_observations"] != 14
+            || result["post_match_participant_signatures"] != 0
+            || result["restart_did_not_duplicate_settlement"] != true
+            || result["canonical_response_loss_recovered"] != true
+            || result["contract_sha256"] != contract_hash)
+    {
+        return Err(failure("resident native market acceptance is incomplete"));
     }
     if manifest["contract_id"] == "oclob-native-finality-v1"
         && (result["node_observed_canonical_finality"] != 7

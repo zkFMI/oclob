@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-market-final-source-002",
+  "contract_id": "oclob-native-market-v1",
+  "contract_path": "research/oclob_native_market_contract.json",
+  "contract_sha256": "0a2d96cbfcc55f06daa8619aafeabfb2766ccf40062afee900effe4075ed2240",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Rough001 met the full resident pipeline prediction; the remaining gate is deterministic regression and a repeat on the final formatted implementation with intake envelope-header validation.",
+  "causal_hypothesis": "The original resident pipeline should preserve its actual 9030 price-priority settlement and exact post-canonical recovery after public-envelope checks and regression additions. This is a final-source functional regression, not optimization.",
+  "single_intended_change": "Complete bounded regression coverage and public envelope admission validation for the already observed R14 resident pipeline; preserve all original canonical outcome gates.",
+  "baseline": "Rough001 actual Softbank snapshot /tmp/oclob-native.nAVMpF/oclob;2fills,9030notional,14observations,3rounds,exit75 recovery and5validator restart. Artifact SHA256b4d0745fb470307c7134ba5adc5a431727e050cbc9d83ba10dc5c96536384a44;DeFMI5dd1f68 unchanged.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_clients": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 3
+  },
+  "primary_metric": "autonomously_settled_fills",
+  "point_prediction": {
+    "admitted_orders": 3,
+    "completed_market_rounds": 3,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 9030,
+    "node_finality_observations": 14,
+    "post_match_participant_signatures": 0,
+    "restart_did_not_duplicate_settlement": true
+  },
+  "most_likely_prediction_error": "Generic price priority or the resident progress journal may misbind slot-specific proof/authority data or repeat a financial side effect after process restart. Reject rather than use hand-picked scenario output or relax matching/settlement counts.",
+  "rejection_rules": [
+    "stale contract hash",
+    "manual maker/taker selection at service",
+    "raw-order service intake",
+    "wrong or unauthenticated receipt/envelope admitted",
+    "input-order rather than price-priority allocation",
+    "changed exact in-flight financial request",
+    "fewer than2 canonical fills",
+    "notional differs from9030",
+    "missing actual service restart",
+    "duplicate canonical application",
+    "advancing state before all14 finality confirmations"
+  ],
+  "promotion_rules": [
+    "smoke_only when full native prediction and invariants pass; never full product/WAN/crypto/performance/economic promotion"
+  ],
+  "command": "make remote-native-market-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

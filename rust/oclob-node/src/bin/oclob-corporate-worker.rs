@@ -182,6 +182,12 @@ fn run() -> Result<(), String> {
     let _worker_guard = queue.acquire_worker()?;
     let mut previous = String::new();
     loop {
+        if oclob_node::market_network::publish_corporate_admissions(&journal, &identity, &cluster)
+            .is_err()
+        {
+            // Keep durable admissions pending; do not print participant data.
+            eprintln!("market handoff pending; original admission retained");
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -215,6 +221,11 @@ fn run() -> Result<(), String> {
         if line != previous {
             println!("{line}");
             previous = line;
+        }
+        if oclob_node::market_network::publish_corporate_admissions(&journal, &identity, &cluster)
+            .is_err()
+        {
+            eprintln!("market handoff pending; original admission retained");
         }
         if args.first().is_some_and(|arg| arg == "--once") {
             return Ok(());

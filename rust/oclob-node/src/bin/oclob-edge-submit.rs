@@ -450,6 +450,7 @@ fn run_native(
     let reused_receipt = completed.reused_completed_receipt;
     publish_unchanged(authority_handoff, &completed.authority)?;
     publish_unchanged(handoff, &receipt)?;
+    oclob_node::market_network::publish_corporate_admissions(&journal, identity, cluster)?;
     if source_note.is_some() {
         publish_unchanged(
             &handoff.with_extension("corporate.json"),

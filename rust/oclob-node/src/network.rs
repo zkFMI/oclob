@@ -159,7 +159,7 @@ pub struct NodeAdmissionReceipt {
 }
 
 impl NodeAdmissionReceipt {
-    fn sign(
+    pub(crate) fn sign(
         party: u16,
         manifest: &EdgeOrderManifest,
         order_share_digest: Digest32,
@@ -487,7 +487,7 @@ pub struct ServerTlsConfig {
 
 #[derive(Clone)]
 pub struct ClientTlsConfig {
-    connector: Arc<SslConnector>,
+    pub(crate) connector: Arc<SslConnector>,
 }
 
 pub fn server_tls_context(
@@ -1702,6 +1702,80 @@ mod tests {
             Duration::from_secs(3),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn market_transport_pins_peer_enforces_participant_and_saves_before_ack() {
+        use crate::market_journal::MarketJournal;
+        use crate::market_network::{
+            receive_connection, submit, MarketEndpoint, MarketServiceConfig,
+        };
+        let files = tls_files();
+        let (cluster, input, _) = crate::market_tests::fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let journal = Arc::new(
+            MarketJournal::open(&files.root.join("market.enc"), &[31; 32], &cluster, true).unwrap(),
+        );
+        let tls = server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap();
+        let config = MarketServiceConfig {
+            endpoint: MarketEndpoint {
+                host: address.ip().to_string(),
+                port: address.port(),
+                server_name: "localhost".into(),
+                certificate_sha256: files.server_fingerprint,
+            },
+            participants: vec![files.participant_fingerprint],
+            journal: files.root.join("market.enc"),
+            journal_key: files.root.join("unused-config-key"),
+            base_asset: [1; 32],
+            quote_asset: [2; 32],
+        };
+        let identity = ClientIdentityConfig {
+            version: 1,
+            tls_certificate: files.participant_cert.clone(),
+            tls_private_key: files.participant_key.clone(),
+            tls_ca: files.ca.clone(),
+            application_signing_key: files.root.join("unused-transport-key"),
+        };
+        let endpoint = config.endpoint.clone();
+        let server_journal = journal.clone();
+        let server_cluster = cluster.clone();
+        let worker = thread::spawn(move || {
+            let mut exchanges = 0;
+            for connection in listener.incoming().take(5) {
+                let _ = receive_connection(
+                    connection.unwrap(),
+                    &tls,
+                    &config,
+                    &server_cluster,
+                    &server_journal,
+                );
+                exchanges += 1;
+            }
+            exchanges
+        });
+        submit(&endpoint, &identity, &input).unwrap();
+        assert_eq!(
+            journal.next().unwrap().unwrap().digest().unwrap(),
+            input.digest().unwrap()
+        );
+        submit(&endpoint, &identity, &input).unwrap();
+        let mut bad = input.clone();
+        bad.signature[0] ^= 1;
+        assert!(submit(&endpoint, &identity, &bad).is_err());
+        let mut unauthorized = identity.clone();
+        unauthorized.tls_certificate = files.coordinator_cert.clone();
+        unauthorized.tls_private_key = files.coordinator_key.clone();
+        assert!(submit(&endpoint, &unauthorized, &input).is_err());
+        let mut wrong_pin = endpoint;
+        wrong_pin.certificate_sha256 = [0; 32];
+        assert!(submit(&wrong_pin, &identity, &input).is_err());
+        assert_eq!(worker.join().unwrap(), 5);
+        assert_eq!(
+            journal.next().unwrap().unwrap().digest().unwrap(),
+            input.digest().unwrap()
+        );
     }
 
     #[test]

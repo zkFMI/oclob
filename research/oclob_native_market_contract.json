@@ -1,0 +1,17 @@
+{
+  "contract_id": "oclob-native-market-v1",
+  "objective": "Run the real native market as a resident service: receive only participant-signed seven-node admission receipts and threshold-encrypted reservation authorities over authenticated TLS, autonomously sequence all accepted orders, execute secret price/time-priority matching, jointly prove and canonically settle all fills, persist progress and resume after actual process restart. No issuer keys, raw orders, manually chosen maker/taker handoff filenames, or scenario matching functions at the service.",
+  "primary_metric": "autonomously_settled_fills",
+  "truth_provider": "Original participant/node signatures, durable market journal, resident MPC execution receipts, existing collaborative proof/threshold zkPI, native five-validator canonical transactions and restart readback.",
+  "hard_constraints": [
+    "Use existing MP-SPDZ and pinned DeFMI cryptographic implementations, not a plain matching fallback. Secret price priority must work when higher-priced sell liquidity arrived first. Keep original slot identity for proof and reservation binding.",
+    "In the same whole journey queue two60-unit sell orders priced101 then100 and one90-unit buy at101. Autonomous matching allocates30 to101 and60 to100, notional9030, in two atomic fills with14 node finality observations. No post-match participant signature.",
+    "Authenticate and pin market ingress, validate complete seven-node receipts and participant signature over exact encrypted reservation envelope, persist before acknowledgement, deduplicate exact input and refuse conflicting payloads. No participant credentials, funding witnesses or raw Shamir shares enter the service.",
+    "No advancing public/secret book ahead of canonical settlement. Preserve exact planned/signed financial requests across retries; journal service progress and test real restart without duplicate trade.",
+    "All builds/tests/Docker on Softbank or Omen. Source-bind artifacts; do not publish private runtime."
+  ],
+  "non_claims": [
+    "Single-host bounded-book functional smoke, not WAN/independent-operator/performance/economic or product promotion. Full API/UI cutover and independent cryptographic audit remain required.",
+    "This is a first complete resident native-order path; idle IOC release, lifecycle scheduling, prolonged stale work and multi-operator recovery must be explicitly accounted for, never silently called complete."
+  ]
+}

@@ -87,6 +87,8 @@ fn provision(root: &Path) -> Result<(), String> {
     let coordinator_dir = create_private_dir(root.join("coordinator"))?;
     let settlement_dir = create_private_dir(root.join("settlement"))?;
     let defmi_dir = create_private_dir(root.join("defmi"))?;
+    let market_dir = create_private_dir(root.join("market"))?;
+    create_private_dir(market_dir.join("state"))?;
     let (ca_key, ca_cert) = create_ca()?;
     write_public(&public_dir.join("ca.pem"), &ca_cert.to_pem().map_err(err)?)?;
 
@@ -132,6 +134,37 @@ fn provision(root: &Path) -> Result<(), String> {
     let taker_fingerprint = certificate_fingerprint(&taker_cert.to_der().map_err(err)?);
     let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
     let settlement_fingerprint = certificate_fingerprint(&settlement_cert.to_der().map_err(err)?);
+    let (market_tls_key, market_cert) =
+        issue_leaf(&ca_key, &ca_cert, "oclob-market", &["oclob-market"], true)?;
+    write_private(
+        &market_dir.join("tls-key.pem"),
+        &market_tls_key.private_key_to_pem_pkcs8().map_err(err)?,
+    )?;
+    write_public(
+        &market_dir.join("tls.pem"),
+        &market_cert.to_pem().map_err(err)?,
+    )?;
+    let mut market_journal_key = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut market_journal_key);
+    write_private(&market_dir.join("journal-key.raw"), &market_journal_key)?;
+    let market_config = oclob_node::market_network::MarketServiceConfig {
+        endpoint: oclob_node::market_network::MarketEndpoint {
+            host: "oclob-market".into(),
+            port: 9445,
+            server_name: "oclob-market".into(),
+            certificate_sha256: certificate_fingerprint(&market_cert.to_der().map_err(err)?),
+        },
+        participants: vec![maker_fingerprint, taker_fingerprint],
+        journal: PathBuf::from("/market/state.enc"),
+        journal_key: PathBuf::from("/market-identity/journal-key.raw"),
+        base_asset: oclob_settlement::canonical_securities_asset_id(MARKET),
+        quote_asset: oclob_settlement::canonical_cash_asset_id(),
+    };
+    write_json(
+        &public_dir.join("market.json"),
+        &serde_json::to_value(market_config).map_err(err)?,
+        0o644,
+    )?;
     let principals = vec![
         Principal {
             certificate_sha256: maker_fingerprint,
@@ -254,6 +287,19 @@ fn provision(root: &Path) -> Result<(), String> {
             0o600,
         )?;
         corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
+        if seed == 11 {
+            for (name, price) in [
+                ("market-high-order.json", 101),
+                ("market-low-order.json", 100),
+            ] {
+                write_json(
+                    &directory.join("queue").join(name),
+                    &json!({"side":"sell","limit_price":price,"quantity":60,
+                    "time_in_force":"good_til_cancelled","valid_for_seconds":1200}),
+                    0o600,
+                )?;
+            }
+        }
         write_json(
             &directory.join("queue/over-capacity-order.json"),
             &json!({"side":"sell", "limit_price":101, "quantity":70,

@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-09-05T18:28:28Z",
+  "recorded_at": "2026-09-05T18:19:41Z",
   "verdict": "smoke_only",
   "remote_host": "softbank-l40s",
-  "remote_snapshot": "/tmp/oclob-native.SbLPdP/oclob",
+  "remote_snapshot": "/tmp/oclob-native.WSrepH/oclob",
   "dependency_commit": "5dd1f68d43da3f81e640c6eae25749d358e6680f",
-  "contract_id": "oclob-native-worker-v1",
-  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
-  "manifest": "research/manifests/oclob_native_worker_006.json",
-  "manifest_sha256": "ad9850350ab42e5a3d6b72285317ce1e90617ccb4f30f09738d68aa2a32cefbc",
-  "artifact": "artifacts/oclob_native_worker.json",
-  "artifact_sha256": "993f2be9cef4d237beab5ec6889e58761a06497534d232dba7575c7e848ccd0d",
+  "contract_id": "oclob-native-market-v1",
+  "contract_sha256": "0a2d96cbfcc55f06daa8619aafeabfb2766ccf40062afee900effe4075ed2240",
+  "manifest": "research/manifests/oclob_native_market_002.json",
+  "manifest_sha256": "ba1399d2c6d7da9773082502ff107cdcd722246d318baf794bae0c758075786f",
+  "artifact": "artifacts/oclob_native_market.json",
+  "artifact_sha256": "5fe2686a16b95927f7e6f709566359518971c89d24a90e6d3b1c85ddfb8c71f7",
   "code_gate": {
     "command": "make remote-test REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_REUSE_IMAGE=1 REMOTE_TEST_COMMAND='cargo fmt --all -- --check && cargo test --workspace --release -j 16 && cargo clippy --workspace --all-targets --release -j 16 -- -D warnings'",
     "exit_code": 0,
@@ -19,19 +19,19 @@
     "log_sha256": "382be481758e3d521f3c0f531d77b31bdd3036cefa4218b33c07238d011ff377"
   },
   "whole_run": {
-    "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
+    "command": "make remote-native-market-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
     "exit_code": 0,
-    "log": "/tmp/oclob-native-worker-market-006-20260906.log",
-    "log_sha256": "a8fe9eaab20e9ea4b7c8ffb5c6402d54a39b1422604c4f9651b7e77f06939b90",
-    "completed_native_rounds": 2,
-    "total_native_fills": 3,
-    "completed_native_releases": 2,
-    "recipient_claims_redeemed": 9,
-    "final_facility_sequences": [
-      8,
-      5
-    ],
-    "node_restart_state_preserved": true,
+    "log": "/tmp/oclob-native-market-final-002-20260906.log",
+    "log_sha256": "92d34725e896fc81487f64facfbc55dd92a8c8bee8da255b3ddc122f2090924c",
+    "admitted_orders": 3,
+    "completed_market_rounds": 3,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 9030,
+    "node_finality_observations": 14,
+    "post_match_participant_financial_signatures": 0,
+    "actual_post_canonical_process_exit": 75,
+    "distinct_market_processes": 3,
+    "exact_canonical_transaction_recovered": true,
     "validator_restart_recovered": true
   },
   "exact_source_files": {
@@ -110,7 +110,8 @@
     "rust/oclob-settlement/tests/pretrade.rs": "9c30b4420f66eab69950b43d6b9145a87f3b40ad68ff48f11167b611897dd5ae"
   },
   "limitations": [
-    "Legacy scenario coordinator is used by this regression; it does not prove resident lifecycle automation. The separate native_market002 proves autonomous order processing.",
-    "One-host functional smoke, not independent operators/WAN/performance/economics/product or cryptographic promotion. Exact73 source files match native_market002; no private runtime export."
+    "Single host, bounded book, functional smoke; no WAN/product/performance/economic or independent cryptographic promotion.",
+    "No native public-depth/API/ReactFlow/lifecycle cutover. No anonymous transport identity, mid-proof/stale-plan/full-disk-rollback recovery or live old-program migration claim.",
+    "Only public results and source hashes exported; private runtime and journals excluded."
   ]
 }

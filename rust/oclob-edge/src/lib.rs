@@ -847,6 +847,20 @@ pub struct VerifiedReservationAuthority {
 }
 
 impl SealedReservationAuthority {
+    /// Check only the public envelope; its encrypted contents still require
+    /// threshold opening and native authority verification after matching.
+    pub fn validate_envelope(&self, manifest: &EdgeOrderManifest) -> Result<(), EdgeError> {
+        if !manifest.uses_pretrade_reservation()
+            || self.0.version != VERSION
+            || self.0.order_commitment != manifest.commitment
+            || self.0.capability_commitment != manifest.settlement_capability_commitment
+            || self.0.ciphertext.len() != SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES + 16
+        {
+            return Err(EdgeError::Envelope);
+        }
+        Ok(())
+    }
+
     pub fn open(
         &self,
         key: &SettlementCapabilityKey,

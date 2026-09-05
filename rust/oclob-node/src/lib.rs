@@ -13,6 +13,11 @@ pub mod corporate_dispatch;
 pub mod corporate_expiry;
 pub mod corporate_journal;
 pub mod corporate_submission;
+pub mod market_journal;
+pub mod market_network;
+pub mod market_runtime;
+#[cfg(test)]
+mod market_tests;
 pub mod native_admission;
 pub mod native_finality;
 pub mod native_lifecycle;

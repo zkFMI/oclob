@@ -150,6 +150,17 @@ impl NativeCorporateJournal {
         self.get(&record_id("intent", id)?)
     }
 
+    /// Corporate-only enumeration for resuming delivery of public signed
+    /// admissions. No order bodies or participant keys leave this method.
+    pub fn admitted_request_ids(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .outbox
+            .summaries()?
+            .into_iter()
+            .filter_map(|e| e.request_id.strip_prefix("receipt:").map(str::to_owned))
+            .collect())
+    }
+
     /// Serializes corporate intake's intent/authorization/queue insertions so
     /// the journal and dispatch FIFO cannot acquire opposite orders.
     pub fn acquire_intake(&self) -> Result<std::fs::File, String> {
@@ -640,7 +651,7 @@ impl NativeCorporateJournal {
         body: &T,
         intent: &StoredCorporateIntent,
     ) -> Result<T, String> {
-        if !matches!(stage, "reserve" | "admission" | "delivery") {
+        if !matches!(stage, "reserve" | "admission" | "delivery" | "market") {
             return Err("unknown corporate submission stage".into());
         }
         self.put_first(
@@ -848,6 +859,7 @@ fn record_id(stage: &str, id: &str) -> Result<String, String> {
                 | "reserve-send"
                 | "authorization"
                 | "authorization-end"
+                | "market"
         )
     {
         return Err("corporate request ID or stage is invalid".into());

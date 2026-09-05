@@ -66,10 +66,50 @@ services:
       - ${OCLOB_RUNTIME_DIR}/cluster/maker:/identity:ro
       - ${OCLOB_RUNTIME_DIR}/cluster/maker/queue:/corporate:rw
     environment:
+      OCLOB_MARKET_CONFIG: ${OCLOB_MARKET_CONFIG:-}
       OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
       OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
       OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
     command: [oclob-corporate-worker]
+  taker-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker/queue:/corporate:rw
+    environment:
+      OCLOB_MARKET_CONFIG: ${OCLOB_MARKET_CONFIG:-}
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+    command: [oclob-corporate-worker]
+  market-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks:
+      oclob-private:
+        aliases: [oclob-market]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/settlement:/settlement:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market:/market-identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market/state:/market:rw
+      - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+      - ${OCLOB_SOURCE_DIR}/research:/research:ro
+    environment:
+      OCLOB_MARKET_CRASH_AFTER_CANONICAL: ${OCLOB_MARKET_CRASH_AFTER_CANONICAL:-0}
+      OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_market_contract.json}
+      OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_market_002.json}
+    command: [oclob-market-worker]
   native-coordinator:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
