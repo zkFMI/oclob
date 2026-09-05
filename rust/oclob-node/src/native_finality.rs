@@ -152,17 +152,23 @@ pub(crate) fn observe(
         return Err("native finality request differs from this node's signed execution".into());
     }
     // Lazily connects using this node's own mTLS identity and configured peer.
-    let scope: ApplicationReserveScope =
-        serde_json::from_value(client.call("scope", json!({}))?)
-            .map_err(|_| "configured DeFMI returned a malformed application scope")?;
+    let scope: ApplicationReserveScope = serde_json::from_value(
+        client
+            .call("scope", json!({}))
+            .map_err(|e| format!("configured DeFMI scope read failed: {e}"))?,
+    )
+    .map_err(|_| "configured DeFMI returned a malformed application scope")?;
     if scope != fill.scope || scope.venue_id != trust.venue_id || scope.defmi_id != trust.defmi_id {
         return Err("canonical finality scope differs from the configured deployment".into());
     }
-    let accepted = client.chain()?.wait_accepted(
-        &request.transaction_id,
-        Duration::from_secs(10),
-        Duration::from_millis(100),
-    )?;
+    let accepted = client
+        .chain()?
+        .wait_accepted(
+            &request.transaction_id,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+        )
+        .map_err(|e| format!("configured DeFMI accepted-transaction read failed: {e}"))?;
     let batch_statement = match (&fill.batch, &request.batch) {
         (None, None) => None,
         (Some(binding), Some(batch)) => {

@@ -1,0 +1,19 @@
+{
+  "manifest_id": "oclob-native-cycle-rough-001",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "R9: native multi-fill settlement ends before recovery and actual trading with the resulting refund/private remainder; prior reuse gate proves admission only.",
+  "causal_hypothesis": "Corporate claim materialization and cumulative facility reconstruction, with the exact refund-funded next order and node-owned carried private state, can complete a second native MPC settlement without reopening orders or obtaining post-match participant signatures.",
+  "single_intended_change": "Connect the existing atomic native settlement, recipient recovery and subsequent-round execution into one continuing journey with a public signed sequence checkpoint.",
+  "baseline": "OCLOB ac936854259216c44139018da5bb386ddb507009: native2-fill/1tx/14observations and separate1-fill-wallet-reuse-admission passed, no second native match.",
+  "dependency_candidate": "Unchanged DeFMI33d0c97380c28c665d20d624d351fac559ef1ada and existing MP-SPDZ/zkPI primitives.",
+  "evaluation_population": {"operator_hosts":1,"corporate_containers":2,"maker_legal_entities":1,"mpc_containers":7,"live_validators":5,"continuing_rounds":2,"scenario_count":1},
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {"completed_native_rounds":2,"total_native_fills":3,"recipient_claims_redeemed":8,"final_facility_sequences":[5,5],"next_order_matched":true},
+  "most_likely_prediction_error": "Maker2's carried private reserve or the cumulative facility witness may differ from the current native head, causing a fail-closed second-round proof or recovery rejection.",
+  "rejection_rules": ["stale contract hash","next order only admitted rather than actually settled","wrong source serial consumed","incorrect maker remainder or facility balances","duplicate claims on repeat","incomplete independent node observations","five roots or validator restart disagree"],
+  "promotion_rules": ["smoke_only after every hard constraint; no economic/performance/independent-operator/product promotion"],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

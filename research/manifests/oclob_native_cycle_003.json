@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-cycle-repair-003",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Diagnostic002 reproduced Broken pipe on node0 when finality reused a persistent signing connection after canonical settlement waits.",
+  "causal_hypothesis": "A dedicated finality client opening a new authenticated connection for each observation will remove the cross-phase stale-socket failure while preserving every exact rejection and node-owned finality check.",
+  "single_intended_change": "Separate finality transport lifetime from completed stateful signing sessions; no automatic signing retry or weakened canonical checks.",
+  "baseline": "Diagnostic002: first5 claims and second canonical fill reached finality, where the unchanged negative probe failed with Broken pipe; log SHA256986d370771d5980ae7ad4c15fbe68fb310f020afe4be53fefcf175cdb430fd1d.",
+  "dependency_candidate": "Unchanged DeFMI33d0c97380c28c665d20d624d351fac559ef1ada and existing MP-SPDZ/zkPI primitives.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "maker_legal_entities": 1,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "continuing_rounds": 2,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "recipient_claims_redeemed": 8,
+    "final_facility_sequences": [
+      5,
+      5
+    ],
+    "next_order_matched": true
+  },
+  "most_likely_prediction_error": "Maker2's carried private reserve or the cumulative facility witness may differ from the current native head, causing a fail-closed second-round proof or recovery rejection.",
+  "rejection_rules": [
+    "stale contract hash",
+    "next order only admitted rather than actually settled",
+    "wrong source serial consumed",
+    "incorrect maker remainder or facility balances",
+    "duplicate claims on repeat",
+    "incomplete independent node observations",
+    "five roots or validator restart disagree"
+  ],
+  "promotion_rules": [
+    "smoke_only after every hard constraint; no economic/performance/independent-operator/product promotion"
+  ],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

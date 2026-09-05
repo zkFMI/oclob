@@ -453,11 +453,8 @@ fn recover_native_wallet(
     let recovered = oclob_node::native_wallet::recover_wallet(config, identity, journal)?;
     // Fixed financial assertions and next-order construction are explicitly
     // confined to the opt-in lab acceptance, not the reusable recovery API.
-    if std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
+    let acceptance = std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE").unwrap_or_default();
+    if !matches!(acceptance.as_str(), "1" | "cycle-first" | "cycle-final") {
         println!(
             "{}",
             json!({"status": "wallet_recovered", "notes": recovered.notes.len(),
@@ -465,33 +462,40 @@ fn recover_native_wallet(
         );
         return Ok(());
     }
-    let expected = match scenario {
-        Scenario::Maker => [60, 20, 40],
-        Scenario::Taker => [6000, 0, 4000],
-    };
-    let expected_notes = match scenario {
-        Scenario::Maker => 1,
-        Scenario::Taker => 2,
+    let (expected, expected_sequence, expected_notes) = match (acceptance.as_str(), scenario) {
+        ("cycle-first", Scenario::Maker) => ([0, 30, 90], 4, 2),
+        ("cycle-first", Scenario::Taker) => ([970, 0, 9030], 3, 3),
+        ("cycle-final", Scenario::Maker) => ([0, 29, 91], 5, 3),
+        ("cycle-final", Scenario::Taker) => ([869, 0, 9131], 5, 5),
+        (_, Scenario::Maker) => ([60, 20, 40], 2, 1),
+        (_, Scenario::Taker) => ([6000, 0, 4000], 2, 2),
     };
     if recovered.facility.values != expected
-        || recovered.facility.sequence != 2
+        || recovered.facility.sequence != expected_sequence
         || recovered.notes.len() != expected_notes
     {
         return Err("lab wallet recovery differs from the executed native fill".into());
     }
-    if matches!(scenario, Scenario::Taker) {
+    if matches!(scenario, Scenario::Taker) && acceptance != "cycle-final" {
         let note = recovered
             .own_asset_refund
             .ok_or("actual cash refund note was not recovered")?;
         let instruction = NativeOrderInstruction {
             side: Side::Buy,
-            limit_price: 40,
+            limit_price: if acceptance == "cycle-first" { 101 } else { 40 },
             quantity: 1,
             time_in_force: TimeInForce::GoodTilCancelled,
             valid_for_seconds: 600,
             source_note: Some(hex::encode(note)),
         };
-        publish_unchanged(Path::new("/corporate/reuse-order.json"), &instruction)?;
+        publish_unchanged(
+            Path::new(if acceptance == "cycle-first" {
+                "/corporate/cycle-reuse-order.json"
+            } else {
+                "/corporate/reuse-order.json"
+            }),
+            &instruction,
+        )?;
     }
     let report = json!({"wallet_recovered": true, "notes": recovered.notes.len(),
         "facility_sequence": recovered.facility.sequence, "facility_id": hex::encode(config.facility_id),

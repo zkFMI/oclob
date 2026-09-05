@@ -1,0 +1,19 @@
+{
+  "manifest_id": "oclob-native-cycle-repair-004",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Repair003 still fails with node0 Broken pipe despite a fresh coordinator-to-node TLS connection. Source tracing shows the node's long-lived PrivateAdmissionClient retains successful connections while AdmissionRpcServer closes idle connections after30 seconds; the nested read error is serialized by the proof server without a transport log.",
+  "causal_hypothesis": "Ending every private-admission exchange, including successful reads, prevents reuse of the stale node-to-DeFMI socket and allows the second actual round and cumulative corporate recovery to finish.",
+  "single_intended_change": "Close PrivateAdmissionClient's transport after each call, with no implicit retry. Remove repair003's ineffective outer finality-client abstraction, restoring the original signing transport; retain strict negative/retry checks and add stage context to canonical read errors.",
+  "baseline": "Repair003 log SHA256d638f4fda746f4b4172ea9427de7e8fbc3c9e1338c199a486facb92dbf435ccc: first5 claims and exact refund-funded admission pass; second round stops at canonical-parent rejection probe. No final2-round artifact.",
+  "dependency_candidate": "Reuse unchanged pinned qomm_transport::ProofPartyTlsClient close/connect behavior and DeFMI33d0c97380c28c665d20d624d351fac559ef1ada. No new cryptography or transport library.",
+  "evaluation_population": {"operator_hosts":1,"corporate_containers":2,"maker_legal_entities":1,"mpc_containers":7,"live_validators":5,"continuing_rounds":2,"scenario_count":1},
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {"completed_native_rounds":2,"total_native_fills":3,"recipient_claims_redeemed":8,"final_facility_sequences":[5,5],"next_order_matched":true},
+  "most_likely_prediction_error": "With the transport path repaired, cumulative private wallet recovery may expose an incorrect carried head or facility witness; that remains a failure, not grounds to relax the target.",
+  "rejection_rules": ["stale contract hash","next order only admitted rather than actually settled","wrong source serial consumed","incorrect maker remainder or facility balances","duplicate claims on repeat","incomplete independent node observations","five roots or validator restart disagree"],
+  "promotion_rules": ["smoke_only after every hard constraint; no economic/performance/independent-operator/product promotion"],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

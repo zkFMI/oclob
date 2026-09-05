@@ -40,6 +40,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
                     | "oclob-native-multifill-v1"
+                    | "oclob-native-cycle-v1"
             )
         )
     {
@@ -50,6 +51,21 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     let clients = rpc_clients(&options.node_uris, &options.chain_id)?;
     if clients.len() != 5 {
         return Err(failure("native-note acceptance needs five live validators"));
+    }
+    // ANR health can precede the custom VM's HTTP readiness (observed 503).
+    // Wait only on reads before issuing any financial/governance operation;
+    // never replay an ambiguous write as a startup workaround.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match agreed_roots(&clients) {
+            Ok(_) => break,
+            Err(error) if Instant::now() >= deadline => {
+                return Err(failure(format!(
+                    "native DeFMI read readiness failed: {error}"
+                )));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(200)),
+        }
     }
     let (authorizer, signers) = committee(&options.chain_id)?;
     let bridge = AvalancheNoteBridge::new(&authorizer, &clients[0]);
@@ -195,6 +211,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         return Err(failure("native finality/reuse acceptance is incomplete"));
     }
     let expected: [u8; 32] = hex::decode(
+        // The cycle contract additionally requires actual settlement after reuse.
         // The accepted transaction has already been read independently by all
         // seven nodes; this observer additionally checks five real validators.
         result["native_after_root"]
@@ -204,6 +221,16 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     .try_into()
     .map_err(|_| "native result root has incorrect length")?;
     let roots = wait_for_roots(&clients, expected, Duration::from_secs(30))?;
+    if manifest["contract_id"] == "oclob-native-cycle-v1"
+        && (result["completed_native_rounds"] != 2
+            || result["total_native_fills"] != 3
+            || result["recipient_claims_redeemed"] != 8
+            || result["next_order_matched"] != true
+            || result["recovered_note_funded_next_order"] != true
+            || result["final_facility_sequences"] != json!([5, 5]))
+    {
+        return Err(failure("native repeated settlement cycle is incomplete"));
+    }
     if manifest["contract_id"] == "oclob-native-multifill-v1"
         && (result["atomic_multi_fill"] != true
             || result["fill_count"] != 2

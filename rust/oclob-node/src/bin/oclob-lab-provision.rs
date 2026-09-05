@@ -227,6 +227,14 @@ fn provision(root: &Path) -> Result<(), String> {
         rand::rngs::OsRng.fill_bytes(&mut journal_key);
         write_private(&directory.join("outbox-key.raw"), &journal_key)?;
         create_private_dir(directory.join("queue"))?;
+        write_json(
+            &directory.join("queue/cycle-order.json"),
+            &json!({
+                "side": "buy", "limit_price": 104, "quantity": 90,
+                "time_in_force": "immediate_or_cancel", "valid_for_seconds": 1200
+            }),
+            0o600,
+        )?;
         // Owner-private, production-shaped orders for the separate two-fill
         // acceptance. The first maker request remains the original 60 @ 100.
         write_json(

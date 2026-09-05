@@ -66,6 +66,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
                     | "oclob-native-multifill-v1"
+                    | "oclob-native-cycle-v1"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -78,9 +79,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     coordinator.validate()?;
     let settlement: ClientIdentityConfig = read("/settlement/client.json")?;
     settlement.validate()?;
-    let maker: EdgeAdmissionReceipt = read("/handoff/maker.json")?;
-    let taker: EdgeAdmissionReceipt = read("/handoff/taker.json")?;
-    let multifill = manifest["contract_id"] == "oclob-native-multifill-v1";
+    let cycle = manifest["contract_id"] == "oclob-native-cycle-v1";
+    let next_match = std::env::var("OCLOB_NATIVE_NEXT_MATCH").ok().as_deref() == Some("1");
+    if next_match && !cycle {
+        return Err("next-match mode needs its cycle contract".into());
+    }
+    let maker: EdgeAdmissionReceipt = read(if next_match {
+        "/handoff/maker2.json"
+    } else {
+        "/handoff/maker.json"
+    })?;
+    let taker: EdgeAdmissionReceipt = read(if next_match {
+        "/handoff/reuse-taker.json"
+    } else {
+        "/handoff/taker.json"
+    })?;
+    let multifill =
+        manifest["contract_id"] == "oclob-native-multifill-v1" || (cycle && !next_match);
     let mut makers = vec![maker.clone()];
     if multifill {
         makers.push(read("/handoff/maker2.json")?);
@@ -131,7 +146,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         == Some("1")
     {
-        return finalize_wallet_acceptance(&client, &cluster, &contract_hash);
+        return if cycle {
+            finalize_cycle_acceptance(&client, &cluster, &contract_hash)
+        } else {
+            finalize_wallet_acceptance(&client, &cluster, &contract_hash)
+        };
     }
     let readonly = QuorumAuthorizer::new(
         BTreeMap::from([("read-only".into(), issuer)]),
@@ -140,25 +159,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "read-only",
     )?;
     let bridge = AvalancheNoteBridge::new(&readonly, &client);
-    let maker_certificate = collect_order_certificate(
-        &cluster,
-        &tls,
-        None,
-        maker.commitment(),
-        maker.manifest.retention_deadline,
-        Duration::from_secs(30),
-    )?;
-    let maker_plan = RoundPlan::sign(
-        maker_certificate.clone(),
-        vec![],
-        now()?,
-        now()? + 300,
-        &key,
-    )?;
-    let maker_execution =
-        execute_agreed_round(&cluster, &tls, &maker_plan, Duration::from_secs(300))?;
-    if maker_execution.result.slots.iter().any(|fill| fill.matched) {
-        return Err("first native order unexpectedly matched".into());
+    let maker_certificate = if next_match {
+        // Public signed sequence checkpoint only. Each node still selects its
+        // own finalized private remainder rather than this caller's quantities.
+        read("/handoff/native-first-certificate.json")?
+    } else {
+        collect_order_certificate(
+            &cluster,
+            &tls,
+            None,
+            maker.commitment(),
+            maker.manifest.retention_deadline,
+            Duration::from_secs(30),
+        )?
+    };
+    if !next_match {
+        let maker_plan = RoundPlan::sign(
+            maker_certificate.clone(),
+            vec![],
+            now()?,
+            now()? + 300,
+            &key,
+        )?;
+        let maker_execution =
+            execute_agreed_round(&cluster, &tls, &maker_plan, Duration::from_secs(300))?;
+        if maker_execution.result.slots.iter().any(|fill| fill.matched) {
+            return Err("first native order unexpectedly matched".into());
+        }
     }
     // A no-fill admission leaves the source shares unchanged. Do not invent a
     // canonical trade receipt just to copy unchanged shares into private state.
@@ -213,8 +240,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|fill| fill.matched)
         .count()
         != makers.len()
-        || execution.result.slots[0].trade_price != 100
-        || execution.result.slots[0].trade_quantity != if multifill { 60 } else { 40 }
+        || execution.result.slots[0].trade_price != if next_match { 101 } else { 100 }
+        || execution.result.slots[0].trade_quantity
+            != if next_match {
+                1
+            } else if multifill {
+                60
+            } else {
+                40
+            }
         || (multifill
             && (execution.result.slots[1].trade_price != 101
                 || execution.result.slots[1].trade_quantity != 30))
@@ -245,17 +279,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         Ok(NativeReservationAuthority::from(&authority))
     };
-    let mut maker_authorities = vec![open(&maker, "/handoff/maker-capability.json")?];
+    let mut maker_authorities = vec![open(
+        &maker,
+        if next_match {
+            "/handoff/maker2-capability.json"
+        } else {
+            "/handoff/maker-capability.json"
+        },
+    )?];
     if multifill {
         maker_authorities.push(open(&makers[1], "/handoff/maker2-capability.json")?);
     }
     let maker_authority = &maker_authorities[0];
-    let taker_authority = open(&taker, "/handoff/taker-capability.json")?;
+    let taker_authority = open(
+        &taker,
+        if next_match {
+            "/handoff/reuse-taker-authority.json"
+        } else {
+            "/handoff/taker-capability.json"
+        },
+    )?;
     let maker_head =
         client.application_reservation_snapshot(maker_authority.permit.reservation_id)?;
     let mut taker_head =
         client.application_reservation_snapshot(taker_authority.permit.reservation_id)?;
-    if maker_head.sequence != 0 || taker_head.sequence != 0 {
+    if maker_head.sequence != u64::from(next_match) || taker_head.sequence != 0 {
         return Err("initial native holds were already consumed".into());
     }
     let reserve_sequences = [
@@ -268,7 +316,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .facility
             .sequence,
     ];
-    if reserve_sequences != [makers.len() as u64, 1] {
+    if reserve_sequences
+        != if next_match {
+            [4, 4]
+        } else {
+            [makers.len() as u64, 1]
+        }
+    {
         return Err("native fixture contains duplicate or unexpected pretrade reservations".into());
     }
     let output = execution.receipts[0].public_output_sha256;
@@ -437,7 +491,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let after_maker = client.application_reservation_snapshot(maker_head.binding.hold_id)?;
     let after_taker = client.application_reservation_snapshot(taker_head.binding.hold_id)?;
-    if after_maker.sequence != 1
+    if after_maker.sequence != maker_head.sequence + 1
         || after_maker.status != "active"
         || after_maker.remaining_opening.is_none()
         || after_taker.sequence != makers.len() as u64
@@ -500,7 +554,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         || error.contains(
                             "confirmed batch does not contain this exact signed fill",
                         ) => {}
-                _ => {
+                Err(error) => return Err(format!("canonical parent substitution reached unexpected guard on node {index}: {error}").into()),
+                Ok(_) => {
                     return Err(
                         "node did not reject substituted canonical transaction bytes".into(),
                     )
@@ -573,6 +628,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "trade_quantity": execution.result.slots[0].trade_quantity,
         "atomic_multi_fill": multifill, "fill_count": requests.len(),
         "atomically_settled_fills": requests.len(),
+        "arriving_order_commitment": plan.arriving.hex(),
+        "resting_order_commitments": plan.resting.iter().map(|order| order.hex()).collect::<Vec<_>>(),
+        "maker_head_sequence_before": maker_head.sequence,
+        "maker_head_sequence_after": after_maker.sequence,
         "fills": execution.result.slots.iter().filter(|s| s.matched).collect::<Vec<_>>(),
         "batch_extraction_rejected": multifill,
         "partial_observation_did_not_advance": multifill,
@@ -582,7 +641,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "mpc_output_sha256": hex::encode(output),
         "zkpi_sha256": hex::encode(Sha256::digest(&signed.instruction)),
         "maker_reserve_active": true, "taker_reserve_closed": true, "elapsed_ms": started.elapsed().as_millis()});
-    let target = if std::env::var("OCLOB_NATIVE_WALLET").ok().as_deref() == Some("1") {
+    if cycle && !next_match {
+        publish_result(
+            &serde_json::to_value(&taker_certificate)?,
+            "/handoff/native-first-certificate.json",
+        )?;
+    }
+    let target = if next_match {
+        "/handoff/native-next-match-result.json"
+    } else if std::env::var("OCLOB_NATIVE_WALLET").ok().as_deref() == Some("1") {
         "/handoff/native-match-result.json"
     } else {
         "/handoff/native-result.json"
@@ -605,6 +672,95 @@ fn publish_result(result: &Value, target: &str) -> Result<(), Box<dyn std::error
     // publishes atomically and refuses to replace a previous final result.
     fs::hard_link(&pending, target)?;
     fs::remove_file(&pending)?;
+    Ok(())
+}
+
+fn finalize_cycle_acceptance<C: AvalancheClient>(
+    client: &C,
+    cluster: &ClusterPublicConfig,
+    contract_hash: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut first: Value = read("/handoff/native-match-result.json")?;
+    let next: Value = read("/handoff/native-next-match-result.json")?;
+    let reuse: EdgeAdmissionReceipt = read("/handoff/reuse-taker.json")?;
+    reuse.verify(cluster, now()?)?;
+    let source: Value = read("/handoff/reuse-taker.corporate.json")?;
+    if first["contract_sha256"] != contract_hash
+        || next["contract_sha256"] != contract_hash
+        || first["native_note_settlement"] != true
+        || next["native_note_settlement"] != true
+        || first["atomically_settled_fills"] != 2
+        || next["atomically_settled_fills"] != 1
+        || first["node_observed_canonical_finality"] != 14
+        || next["node_observed_canonical_finality"] != 7
+        || next["trade_price"] != 101
+        || next["trade_quantity"] != 1
+        || next["maker_head_sequence_before"] != 1
+        || next["maker_head_sequence_after"] != 2
+        || next["arriving_order_commitment"] != reuse.commitment().hex()
+        || source["order_commitment"] != reuse.commitment().hex()
+        || source["selected_funding_note_spent_verified"] != true
+        || source["canonical_reserve_verified"] != true
+        || source["facility_sequence"] != 4
+        || first["canonical_transaction"] == next["canonical_transaction"]
+    {
+        return Err("native cycle is missing its exact refund-funded second match".into());
+    }
+    for (path, count, sequence, final_report) in [
+        ("/handoff/maker.wallet.json", 2, 4, false),
+        ("/handoff/taker.wallet.json", 3, 3, false),
+        ("/handoff/maker-cycle-final.wallet.json", 3, 5, true),
+        ("/handoff/taker-cycle-final.wallet.json", 5, 5, true),
+    ] {
+        let report: Value = read(path)?;
+        if report["wallet_recovered"] != true
+            || report["expected_private_balances_verified"] != true
+            || report["notes"] != count
+            || report["facility_sequence"] != sequence
+        {
+            return Err("corporate cycle recovery did not validate the expected balances".into());
+        }
+        let notes = report["canonical_notes"]
+            .as_array()
+            .ok_or("cycle notes missing")?;
+        if notes.len() != count as usize {
+            return Err("cycle note count differs".into());
+        }
+        for note in notes {
+            let id: [u8; 32] = hex::decode(note.as_str().ok_or("invalid cycle note")?)?
+                .try_into()
+                .map_err(|_| "invalid cycle note length")?;
+            let canonical = client.note_snapshot(id)?;
+            if canonical.output.note_id != id || canonical.output.lock_id != [0; 32] {
+                return Err("cycle note is not the canonical recipient output".into());
+            }
+        }
+        if final_report {
+            let id: [u8; 32] = hex::decode(
+                report["facility_id"]
+                    .as_str()
+                    .ok_or("cycle facility absent")?,
+            )?
+            .try_into()
+            .map_err(|_| "cycle facility length differs")?;
+            if client.credit_facility_snapshot(id)?.facility.sequence != sequence {
+                return Err("canonical cycle facility differs from the private witness".into());
+            }
+        }
+    }
+    first["first_settlement_root"] = first["native_after_root"].clone();
+    first["native_after_root"] = json!(hex::encode(client.state_root()?));
+    first["next_match"] = next;
+    first["completed_native_rounds"] = json!(2);
+    first["total_native_fills"] = json!(3);
+    first["recipient_claims_redeemed"] = json!(8);
+    first["private_facility_witnesses_recovered"] = json!(4);
+    first["recovered_note_funded_next_order"] = json!(true);
+    first["next_order_matched"] = json!(true);
+    first["next_order_mpc_nodes"] = json!(7);
+    first["final_facility_sequences"] = json!([5, 5]);
+    publish_result(&first, "/handoff/native-result.json")?;
+    println!("{}", first);
     Ok(())
 }
 

@@ -1,0 +1,19 @@
+{
+  "manifest_id": "oclob-native-cycle-repair-005",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Run004 did not reach corporate admission: ANR reported healthy but native DeFMI initialization returned HTTP503. Thus the internal one-exchange connection fix was not evaluated by the whole run;91 release tests including actualTLS close/no-replay regressions passed.",
+  "causal_hypothesis": "Bounded read-only convergence of all5 native RPC state roots before the first initialization write handles custom-VM readiness without replaying any financial operation. The unchanged004 connection fix should then allow the continuing two-round cycle.",
+  "single_intended_change": "Before initial asset registration, wait up to30 seconds for actual5-validator root reads to succeed and agree; no retry of writes, no changes to cryptographic/financial acceptance. Preregistered rerun of004 after its pre-trading startup obstruction.",
+  "baseline": "Run004 /tmp/oclob-native.cEpA84: no native-ready report or corporate order. Whole log SHA256abc320dc6fc16c8adf3e8cd43a45a1945e5d077bf67569efb045027e648fd16e. Code log SHA2566be7f7cb419f0775689443337ec88d4726e0faf7e14a225db0330cec33f49746.",
+  "dependency_candidate": "Unchanged pinned DeFMI33d0c97380c28c665d20d624d351fac559ef1ada, private-admission close-after-exchange fix and existing agreed_roots read path.",
+  "evaluation_population": {"operator_hosts":1,"corporate_containers":2,"maker_legal_entities":1,"mpc_containers":7,"live_validators":5,"continuing_rounds":2,"scenario_count":1},
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {"completed_native_rounds":2,"total_native_fills":3,"recipient_claims_redeemed":8,"final_facility_sequences":[5,5],"next_order_matched":true},
+  "most_likely_prediction_error": "The startup failure may occur after the initial read rather than at readiness; stage-specific failures remain errors. Once trading starts, cumulative wallet recovery can still expose a carried-head mismatch.",
+  "rejection_rules": ["stale contract hash","no actual target execution","next order only admitted rather than actually settled","wrong source serial consumed","incorrect maker remainder or facility balances","duplicate claims on repeat","incomplete independent node observations","five roots or validator restart disagree"],
+  "promotion_rules": ["smoke_only after every hard constraint; no economic/performance/independent-operator/product promotion"],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

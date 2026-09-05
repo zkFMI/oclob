@@ -1,0 +1,20 @@
+{
+  "contract_id": "oclob-native-cycle-v1",
+  "objective": "Recover every recipient claim from a native multi-fill settlement and use its exact refunded note to fund a second actual MPC match and canonical settlement against the carried private book, then recover the resulting wallets again.",
+  "primary_metric": "completed_native_rounds",
+  "truth_provider": "Corporate-only decrypted opening and witness checks; canonical native claim/note/serial/facility readbacks; actual seven-node MP-SPDZ private state and joint proofs; five Avalanche validators and restart.",
+  "hard_constraints": [
+    "First round: one maker entity reserves two60-unit sells at100/101; taker reserves90 at maximum104. Exactly60@100 and30@101 settle in one native batch.",
+    "First recovery materializes five recipient claims without duplicates and reconstructs maker[0,30,90]/sequence4 and taker[970,0,9030]/sequence3 private facilities.",
+    "The sole330 cash refund note from that round funds the next buy1@101. Corporate code verifies that the exact selected note serial was consumed, not merely that its ID appeared in a ring.",
+    "The second actual seven-party MPC round consumes maker2's carried private remainder and native head sequence1, fills1@101 and settles into head sequence2 without any participant signature after matching.",
+    "Second recovery reconstructs maker[0,29,91]/sequence5 and taker[869,0,9131]/sequence5; all eight cumulative recipient claims have exactly one materialization.",
+    "Both rounds retain node-owned finality, all-matched-slot coverage and exact retry checks. Five canonical roots agree before and after an actual validator restart.",
+    "Builds/tests/Docker only on Omen or Softbank. No raw order/secret witness in the coordinator or public report."
+  ],
+  "non_claims": [
+    "Single operator host, two corporations and one maker entity; no WAN or independent-operator guarantee.",
+    "Two honest continuing rounds are not unbounded concurrency, cancellation/expiry, automatic coordinator recovery, key rotation or production promotion.",
+    "Elapsed acceptance time includes deliberate negative/retry checks, not normal market latency."
+  ]
+}

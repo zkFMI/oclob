@@ -10,6 +10,7 @@ NATIVE_RECOVERY ?= 0
 NATIVE_WALLET ?= 0
 NATIVE_FINALITY ?= 0
 NATIVE_MULTIFILL ?= 0
+NATIVE_CYCLE ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -192,6 +193,9 @@ remote-native-finality-e2e:
 .PHONY: remote-native-multifill-e2e
 remote-native-multifill-e2e:
 	$(MAKE) remote-native-e2e NATIVE_MULTIFILL=1
+.PHONY: remote-native-cycle-e2e
+remote-native-cycle-e2e:
+	$(MAKE) remote-native-e2e NATIVE_MULTIFILL=1 NATIVE_WALLET=1 NATIVE_CYCLE=1
 remote-native-wallet-e2e:
 	$(MAKE) remote-native-e2e NATIVE_WALLET=1
 remote-native-recovery-e2e:
@@ -203,7 +207,7 @@ remote-native-e2e:
 	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WALLET):$(NATIVE_RECOVERY)' in 0:0|0:1|1:0) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
 	@case '$(NATIVE_FINALITY):$(NATIVE_WALLET)' in 0:0|0:1|1:1) ;; *) echo 'native finality acceptance requires wallet reuse' >&2; exit 2 ;; esac
-	@case '$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_RECOVERY):$(NATIVE_FINALITY)' in 0:*|1:0:0:0) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
+	@case '$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_RECOVERY):$(NATIVE_FINALITY):$(NATIVE_CYCLE)' in 0:*:*:*:0|1:0:0:0:0|1:1:0:0:1) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
 	@set -eu; \
 	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
@@ -220,6 +224,7 @@ remote-native-e2e:
 	  if [ '$(NATIVE_MULTIFILL)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_multifill_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_multifill_002.json; fi; \
 	  if [ '$(NATIVE_WALLET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_wallet_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_wallet_003.json; fi; \
 	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_002.json; fi; \
+	  if [ '$(NATIVE_CYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_cycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_cycle_006.json; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -245,20 +250,32 @@ remote-native-e2e:
 	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then \$$compose run --rm maker; fi; \
 	  if [ '$(NATIVE_MULTIFILL)' = 1 ]; then \
 	    \$$compose run --rm -e OCLOB_CORPORATE_REQUEST_ID=native-maker-002 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/multifill-order.json maker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/maker2.json --settlement-handoff /handoff/maker2-capability.json --scenario maker; \
-	    \$$compose run --rm -e OCLOB_CORPORATE_ORDER_FILE=/corporate/multifill-order.json taker; \
+	    if [ '$(NATIVE_CYCLE)' = 1 ]; then \$$compose run --rm -e OCLOB_CORPORATE_ORDER_FILE=/corporate/cycle-order.json taker; else \$$compose run --rm -e OCLOB_CORPORATE_ORDER_FILE=/corporate/multifill-order.json taker; fi; \
 	  else \$$compose run --rm taker; fi; \
 	  \$$compose run --rm native-coordinator; \
 	  if [ '$(NATIVE_WALLET)' = 1 ]; then \
+	  if [ '$(NATIVE_CYCLE)' = 1 ]; then \
+	    for actor in maker taker; do \
+	      \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=cycle-first \$$actor; \
+	      \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=cycle-first \$$actor; \
+	    done; \
+	    \$$compose run --rm -e OCLOB_CORPORATE_REQUEST_ID=native-taker-cycle-002 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/cycle-reuse-order.json taker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/reuse-taker.json --settlement-handoff /handoff/reuse-taker-authority.json --scenario taker; \
+	    \$$compose run --rm -e OCLOB_NATIVE_NEXT_MATCH=1 native-coordinator; \
+	    for actor in maker taker; do \
+	      for repeat in 1 2; do \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=cycle-final \$$actor oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/\$$actor-cycle-final.json --settlement-handoff /handoff/unused-\$$actor-cycle-authority.json --scenario \$$actor; done; \
+	    done; \
+	  else \
 	  \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=1 maker; \
 	  \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=1 maker; \
 	  \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=1 taker; \
 	  \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=1 taker; \
 	  \$$compose run --rm -e OCLOB_CORPORATE_REQUEST_ID=native-taker-002 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/reuse-order.json taker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/reuse-taker.json --settlement-handoff /handoff/reuse-taker-authority.json --scenario taker; \
+	  fi; \
 	  \$$compose run --rm -e OCLOB_NATIVE_WALLET_FINALIZE=1 native-coordinator; \
 	  fi; \
 	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
 	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
-	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; if [ '$(NATIVE_FINALITY)' = 1 ]; then artifact=artifacts/oclob_native_finality.json; fi; if [ '$(NATIVE_MULTIFILL)' = 1 ]; then artifact=artifacts/oclob_native_multifill.json; fi; \
+	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; if [ '$(NATIVE_FINALITY)' = 1 ]; then artifact=artifacts/oclob_native_finality.json; fi; if [ '$(NATIVE_MULTIFILL)' = 1 ]; then artifact=artifacts/oclob_native_multifill.json; fi; if [ '$(NATIVE_CYCLE)' = 1 ]; then artifact=artifacts/oclob_native_cycle.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

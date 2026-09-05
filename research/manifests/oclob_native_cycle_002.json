@@ -1,0 +1,41 @@
+{
+  "manifest_id": "oclob-native-cycle-diagnostic-002",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "First5 claims and actual second native settlement passed, but the negative canonical-parent probe returned an unexpected result; its original error was masked by the acceptance wrapper.",
+  "causal_hypothesis": "Corporate claim materialization and cumulative facility reconstruction, with the exact refund-funded next order and node-owned carried private state, can complete a second native MPC settlement without reopening orders or obtaining post-match participant signatures.",
+  "single_intended_change": "Preserve the exact unexpected guard error and node index without accepting any new outcome; otherwise rerun the identical whole candidate.",
+  "baseline": "OCLOB ac936854259216c44139018da5bb386ddb507009: native2-fill/1tx/14observations and separate1-fill-wallet-reuse-admission passed, no second native match.",
+  "dependency_candidate": "Unchanged DeFMI33d0c97380c28c665d20d624d351fac559ef1ada and existing MP-SPDZ/zkPI primitives.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "maker_legal_entities": 1,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "continuing_rounds": 2,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {
+    "completed_native_rounds": 1,
+    "unexpected_guard_is_rejection": true
+  },
+  "most_likely_prediction_error": "The altered parent may have been accepted (a true protocol failure), rather than rejected by an earlier guard.",
+  "rejection_rules": [
+    "stale contract hash",
+    "next order only admitted rather than actually settled",
+    "wrong source serial consumed",
+    "incorrect maker remainder or facility balances",
+    "duplicate claims on repeat",
+    "incomplete independent node observations",
+    "five roots or validator restart disagree"
+  ],
+  "promotion_rules": [
+    "diagnostic_only if it still fails at the unchanged guard; no weakening of the negative test; full2-round evidence still required"
+  ],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
+  "replication_of": "oclob-native-cycle-rough-001"
+}

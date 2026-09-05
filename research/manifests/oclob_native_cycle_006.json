@@ -1,0 +1,19 @@
+{
+  "manifest_id": "oclob-native-cycle-final-006",
+  "contract_id": "oclob-native-cycle-v1",
+  "contract_path": "research/oclob_native_cycle_contract.json",
+  "contract_sha256": "b79ab992fb5fd2d5abf1c0cfe9eea6707f3188b57debdd97c555107160ea9d9a",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Run005 passed the full2-round/3-fill/8-claim cycle and5-validator restart. Bind a preregistered replication to the final remotely formatted source and publish its exact source evidence.",
+  "causal_hypothesis": "The same inner-client close-after-exchange and read-only startup readiness changes reproduce the complete continuing native cycle on a fresh network without relaxed checks or replacement funds.",
+  "single_intended_change": "No protocol change. Preregistered fresh-network replication of005 with final source formatting and91-test regression gate; new manifest identity only.",
+  "baseline": "Run005 /tmp/oclob-native.OqYEWa, exit0. Historical public artifact SHA256207ad708598c1a5a8a3d7e34eed3692ce4d9d41dfef0ae1ca71f7c8c1bf6cf93; whole log SHA256c4e34f781a748f75d06566eb0409e099d74eeda328a9f70f09a1f9f7535ac9b4. Final91-test/fmt/all-target Clippy log SHA25641a63fc89d03946e9583df7eaf3818a115dc97fdcac3e15511cc4a91e956738f.",
+  "dependency_candidate": "Unchanged pinned DeFMI33d0c97380c28c665d20d624d351fac559ef1ada and existing cryptographic/runtime dependencies.",
+  "evaluation_population": {"operator_hosts":1,"corporate_containers":2,"maker_legal_entities":1,"mpc_containers":7,"live_validators":5,"continuing_rounds":2,"scenario_count":1},
+  "primary_metric": "completed_native_rounds",
+  "point_prediction": {"completed_native_rounds":2,"total_native_fills":3,"recipient_claims_redeemed":8,"final_facility_sequences":[5,5],"next_order_matched":true},
+  "most_likely_prediction_error": "A fresh-network timing or transport fault may expose another failure; record it without replaying ambiguous writes, weakening rejection checks or changing funding.",
+  "rejection_rules": ["stale contract hash","no actual target execution","next order only admitted rather than actually settled","wrong source serial consumed","incorrect maker remainder or facility balances","duplicate claims on repeat","incomplete independent node observations","five roots or validator restart disagree"],
+  "promotion_rules": ["smoke_only after every hard constraint; no economic/performance/independent-operator/product promotion"],
+  "command": "make remote-native-cycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

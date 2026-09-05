@@ -79,11 +79,13 @@ impl PrivateAdmissionClient {
             .lock()
             .map_err(|_| "private DeFMI client is poisoned")?;
         let response = rpc.call(method, params);
-        // Do not retry a state-changing request on a new connection. Recovery
-        // explicitly asks for its finalized permit using the same mandate.
-        if response.is_err() {
-            rpc.close();
-        }
+        // The ingress closes idle connections after 30 seconds, whereas this
+        // shared client can live across MPC rounds and corporate recovery.
+        // End every exchange here, including successful reads, so the next
+        // explicit request cannot reuse a server-closed socket. Never retry
+        // an ambiguous state-changing request: recovery explicitly asks for
+        // its finalized permit using the same mandate.
+        rpc.close();
         response
     }
 

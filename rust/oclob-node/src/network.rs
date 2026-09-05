@@ -1436,6 +1436,147 @@ mod tests {
         }
     }
 
+    /// Transport-only peer: real mutual TLS and the pinned bounded codec,
+    /// but no financial state machine. Native Docker acceptance separately
+    /// verifies the actual DeFMI reads/writes and validator state.
+    fn private_admission_exchange_peer(
+        files: &Files,
+        replies: Vec<Option<serde_json::Value>>,
+    ) -> (
+        SocketAddr,
+        JoinHandle<Vec<qomm_transport::proof_party::ProofRequest>>,
+    ) {
+        use qomm_transport::proof_party::{
+            encode_bounded_response, read_bounded_request_line, ProofRequest, ProofResponse,
+        };
+        use std::io::BufReader;
+        let tls = server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let expected_peer = files.participant_fingerprint;
+        let worker = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let until = std::time::Instant::now() + Duration::from_secs(5);
+                let tcp = loop {
+                    match listener.accept() {
+                        Ok((tcp, _)) => break tcp,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < until,
+                                "missing fresh connection"
+                            );
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept failed: {error}"),
+                    }
+                };
+                tcp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                tcp.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                let tls = tls.acceptor.accept(tcp).unwrap();
+                assert_eq!(
+                    certificate_fingerprint(
+                        &tls.ssl().peer_certificate().unwrap().to_der().unwrap()
+                    ),
+                    expected_peer
+                );
+                let mut stream = BufReader::new(tls);
+                let request: ProofRequest = serde_json::from_slice(
+                    &read_bounded_request_line(&mut stream).unwrap().unwrap(),
+                )
+                .unwrap();
+                let id = request.id;
+                seen.push(request);
+                if let Some(value) = reply {
+                    let response = ProofResponse {
+                        id,
+                        ok: true,
+                        result: Some(value),
+                        error: None,
+                    };
+                    stream
+                        .get_mut()
+                        .write_all(&encode_bounded_response(&response).unwrap())
+                        .unwrap();
+                    stream.get_mut().write_all(b"\n").unwrap();
+                    stream.get_mut().flush().unwrap();
+                    // Deterministic: the client must end a successful exchange,
+                    // not keep the socket until an idle timeout or next call.
+                    assert!(read_bounded_request_line(&mut stream).unwrap().is_none());
+                } else {
+                    // A request was received, but its reply is lost. No implicit
+                    // retry may turn this ambiguous outcome into a second write.
+                    let _ = stream.get_mut().shutdown();
+                    let _ = stream
+                        .get_ref()
+                        .get_ref()
+                        .shutdown(std::net::Shutdown::Both);
+                }
+            }
+            seen
+        });
+        (address, worker)
+    }
+
+    fn private_admission_client(
+        files: &Files,
+        address: SocketAddr,
+    ) -> oclob_settlement::pretrade::PrivateAdmissionClient {
+        oclob_settlement::pretrade::PrivateAdmissionClient::new(
+            "127.0.0.1",
+            address.port(),
+            "localhost",
+            qomm_transport::node_service::client_ssl_context(
+                &files.participant_cert,
+                &files.participant_key,
+                &files.ca,
+            )
+            .unwrap(),
+            Duration::from_secs(3),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn private_admission_clones_open_fresh_connections_after_success() {
+        let files = tls_files();
+        let value = serde_json::json!({"scope": "transport-unit-only"});
+        let (address, worker) =
+            private_admission_exchange_peer(&files, vec![Some(value.clone()), Some(value.clone())]);
+        let client = private_admission_client(&files, address);
+        assert_eq!(client.call("scope", serde_json::json!({})).unwrap(), value);
+        assert_eq!(
+            client.clone().call("scope", serde_json::json!({})).unwrap(),
+            value
+        );
+        let seen = worker.join().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|request| request.method == "scope"));
+        assert!(seen[0].id < seen[1].id);
+    }
+
+    #[test]
+    fn private_admission_lost_reply_requires_explicit_recovery_without_replay() {
+        let files = tls_files();
+        let recovered = serde_json::json!({"finalized": "transport-unit-only"});
+        let mandate = serde_json::json!({"same_mandate": "unit"});
+        let (address, worker) =
+            private_admission_exchange_peer(&files, vec![None, Some(recovered.clone())]);
+        let client = private_admission_client(&files, address);
+        assert!(client.call("reserve", mandate.clone()).is_err());
+        assert_eq!(
+            client.call("recover_reservation", mandate.clone()).unwrap(),
+            recovered
+        );
+        let seen = worker.join().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].method, "reserve");
+        assert_eq!(seen[1].method, "recover_reservation");
+        assert!(seen.iter().all(|request| request.params == mandate));
+        assert!(seen[0].id < seen[1].id);
+    }
+
     #[test]
     fn fixed_records_reject_corruption_and_do_not_expose_length() {
         let request = NodeRequest::Status;
