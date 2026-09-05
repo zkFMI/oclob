@@ -33,6 +33,7 @@ merlin = "3.0.0"
 openssl = "0.10.75"
 thiserror = "2.0.17"
 libc = "0.2"
+tiny_http = "=0.12.0"
 
 oclob-core = { path = "rust/oclob-core" }
 oclob-dekyx = { path = "rust/oclob-dekyx" }

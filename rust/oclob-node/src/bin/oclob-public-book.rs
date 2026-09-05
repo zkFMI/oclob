@@ -20,6 +20,14 @@ fn run() -> Result<(), String> {
     let endpoint: MarketEndpoint =
         serde_json::from_slice(&std::fs::read("/public/book-endpoint.json").map_err(err)?)
             .map_err(err)?;
+    if args.len() == 2 && args[0] == "--http" {
+        return oclob_node::public_depth_http::serve(
+            args[1].parse().map_err(err)?,
+            &endpoint,
+            Path::new("/public/ca.pem"),
+            &cluster,
+        );
+    }
     if args.len() == 2 && args[0] == "--get" {
         // Client mode loads no private identity or journal, even transiently.
         let minimum = args[1].parse().map_err(err)?;
@@ -36,7 +44,7 @@ fn run() -> Result<(), String> {
         }
     }
     if !args.is_empty() {
-        return Err("usage: oclob-public-book [--get MINIMUM_SEQUENCE]".into());
+        return Err("usage: oclob-public-book [--get MINIMUM_SEQUENCE | --http IP:PORT]".into());
     }
     serve(
         TcpListener::bind(("0.0.0.0", endpoint.port)).map_err(err)?,

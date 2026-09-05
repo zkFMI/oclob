@@ -174,7 +174,7 @@ ENTRYPOINT ["oclob-server", "--host", "0.0.0.0", "--port", "18800", "--state-dir
 FROM debian:bookworm-slim AS oclob-cluster
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates libssl3 libgmp10 libgmpxx4ldbl libsodium23 libboost-thread1.74.0 \
+       ca-certificates curl libssl3 libgmp10 libgmpxx4ldbl libsodium23 libboost-thread1.74.0 \
        libboost-filesystem1.74.0 libboost-iostreams1.74.0 libntl44 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 oclob \

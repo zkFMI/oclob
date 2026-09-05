@@ -42,7 +42,7 @@ The target is **content-informed insertion ahead of an order that has not yet be
 
 The [native public-depth path](docs/PUBLIC_DEPTH_JA.md) aggregates remaining quantities at equal prices inside the MPC and exports a node-signed, price-level-only snapshot. A separate read-only TLS service serves the snapshot without requiring corporate keys or access to the market journal. A matched round is published only after canonical settlement and all node finality confirmations.
 
-The final-source native run verified four network-fetched snapshots, two fills totaling 7,500, recovery after an actual post-settlement process exit, and validator restart. All 124 Rust tests, formatting checks, and all-target Clippy checks passed on Softbank. The existing corporate-worker, wallet, cancellation, and expiry regression also passed, including actual process failures and node restarts. This feed is not yet the browser API or the React Flow integration.
+The final-source native run verified four network-fetched snapshots, two fills totaling 7,500, recovery after an actual post-settlement process exit, and validator restart. All 127 Rust tests, formatting checks, and all-target Clippy checks passed on Softbank. The existing corporate-worker, wallet, cancellation, and expiry regression also passed, including actual process failures and node restarts. A separate [read-only HTTP adapter](docs/PUBLIC_BOOK_HTTP.md) now serves the verified feed; React Flow and financial API integration remain incomplete.
 
 ## Architecture
 
@@ -207,6 +207,7 @@ The README is in English. Several detailed operational guides below are currentl
 - [Recover expired orders while all MPC nodes are offline](docs/QUEUED_EXPIRY_JA.md)
 - [Resident native market service](docs/NATIVE_MARKET_JA.md)
 - [MPC-derived public price-level depth](docs/PUBLIC_DEPTH_JA.md)
+- [Read-only public-book HTTP API](docs/PUBLIC_BOOK_HTTP.md)
 - [Architecture and processing flow](docs/ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Related research and products](docs/RELATED_WORK.md)

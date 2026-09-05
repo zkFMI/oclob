@@ -29,5 +29,6 @@ qomm-zk.workspace = true
 curve25519-dalek.workspace = true
 zkpi-defmi-sdk.workspace = true
 libc.workspace = true
+tiny_http.workspace = true
 
 [dev-dependencies]

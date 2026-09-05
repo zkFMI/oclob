@@ -48,6 +48,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-deferred-v1"
                     | "oclob-native-market-v1"
                     | "oclob-native-depth-v1"
+                    | "oclob-native-http-v1"
             )
         )
     {
@@ -237,7 +238,8 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     {
         return Err(failure("resident native market acceptance is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-depth-v1"
+    if (manifest["contract_id"] == "oclob-native-depth-v1"
+        || manifest["contract_id"] == "oclob-native-http-v1")
         && (result["admitted_orders"] != 4
             || result["completed_market_rounds"] != 4
             || result["canonically_published_depth_snapshots"] != 4
@@ -252,6 +254,11 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
             || result["contract_sha256"] != contract_hash)
     {
         return Err(failure("native depth acceptance is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-http-v1"
+        && (result["http_verified_depth_snapshots"] != 4 || result["http_fail_closed_checks"] != 6)
+    {
+        return Err(failure("native HTTP book acceptance is incomplete"));
     }
     if manifest["contract_id"] == "oclob-native-finality-v1"
         && (result["node_observed_canonical_finality"] != 7

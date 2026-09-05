@@ -23,6 +23,7 @@ pub mod native_finality;
 pub mod native_lifecycle;
 pub mod native_wallet;
 pub mod public_depth;
+pub mod public_depth_http;
 pub mod public_depth_network;
 
 pub mod edge_client;

@@ -177,7 +177,8 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
     let contract = fs::read(std::env::var("OCLOB_RESEARCH_CONTRACT").map_err(err)?).map_err(err)?;
     let manifest: Value = read(std::env::var("OCLOB_RESEARCH_MANIFEST").map_err(err)?)?;
     let hash = hex::encode(Sha256::digest(&contract));
-    let depth = manifest["contract_id"] == "oclob-native-depth-v1";
+    let http = manifest["contract_id"] == "oclob-native-http-v1";
+    let depth = http || manifest["contract_id"] == "oclob-native-depth-v1";
     if manifest["contract_sha256"] != hash
         || (!depth && manifest["contract_id"] != "oclob-native-market-v1")
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -281,6 +282,13 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
         ];
         for (i, (path, levels)) in paths.iter().zip(expected).enumerate() {
             let public: FinalizedPublicBook = read(Path::new("/handoff").join(path))?;
+            if http {
+                let via_http: FinalizedPublicBook =
+                    read(Path::new("/handoff").join(format!("http-{path}")))?;
+                if via_http != public {
+                    return Err("HTTP public book differs from authenticated TLS snapshot".into());
+                }
+            }
             public.verify(&cluster, public.attestations[0].issued_at, (i + 1) as u64)?;
             if public.sequence != (i + 1) as u64
                 || rounds[i].public_snapshot.as_ref() != Some(&public)
@@ -314,6 +322,22 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
         result["posttrade_100_quantity"] = json!(15);
         result["posttrade_101_quantity"] = json!(30);
         result["public_snapshot"] = serde_json::to_value(after).map_err(err)?;
+        if http {
+            let statuses = fs::read_to_string("/handoff/http-statuses.txt").map_err(err)?;
+            if statuses.lines().collect::<Vec<_>>() != ["503", "404", "405", "400", "503", "503"] {
+                return Err("HTTP missing/malformed/future/offline rejection not observed".into());
+            }
+            for path in ["depth-before-finality.json", "depth-after-restart.json"] {
+                let via_http: FinalizedPublicBook =
+                    read(Path::new("/handoff").join(format!("http-{path}")))?;
+                let via_tls: FinalizedPublicBook = read(Path::new("/handoff").join(path))?;
+                if via_http != via_tls {
+                    return Err("HTTP recovery snapshot mismatch".into());
+                }
+            }
+            result["http_verified_depth_snapshots"] = json!(4);
+            result["http_fail_closed_checks"] = json!(6);
+        }
     }
     publish(Path::new("/handoff/native-result.json"), &result)?;
     println!("{}", result);

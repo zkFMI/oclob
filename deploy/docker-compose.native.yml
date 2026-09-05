@@ -125,6 +125,21 @@ services:
       - ${OCLOB_RUNTIME_DIR}/cluster/public-book:/book-identity:ro
       - ${OCLOB_RUNTIME_DIR}/cluster/market-public:/market-public:ro
     command: [oclob-public-book]
+  book-api:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+    command: [oclob-public-book, --http, "0.0.0.0:9880"]
+    healthcheck:
+      test: [CMD, curl, --silent, --output, /dev/null, --max-time, "2", "http://127.0.0.1:9880/v1/book"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
   book-reader:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
