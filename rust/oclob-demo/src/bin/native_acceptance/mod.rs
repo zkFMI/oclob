@@ -42,6 +42,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
+                    | "oclob-native-worker-v1"
             )
         )
     {
@@ -232,18 +233,30 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     {
         return Err(failure("native repeated settlement cycle is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-lifecycle-v1"
-        && (result["completed_native_rounds"] != 2
-            || result["completed_native_releases"] != 2
-            || result["recipient_claims_redeemed"] != 9
-            || result["final_facility_sequences"] != json!([8, 5])
-            || result["expiry_wallet"]["unfilled_releases_recovered"] != 1
-            || result["node_restart_state_preserved"] != true
-            || result["cancellation_refund_funded_expiry_order"] != true)
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-lifecycle-v1" | "oclob-native-worker-v1")
+    ) && (result["completed_native_rounds"] != 2
+        || result["completed_native_releases"] != 2
+        || result["recipient_claims_redeemed"] != 9
+        || result["final_facility_sequences"] != json!([8, 5])
+        || result["expiry_wallet"]["unfilled_releases_recovered"] != 1
+        || result["node_restart_state_preserved"] != true
+        || result["cancellation_refund_funded_expiry_order"] != true)
     {
         return Err(failure(
             "native cancellation/expiry lifecycle is incomplete",
         ));
+    }
+    if manifest["contract_id"] == "oclob-native-worker-v1"
+        && (result["corporate_worker"]["completed_dispatches"] != 1
+            || result["corporate_worker"]["waiting_without_dispatch"] != true
+            || result["corporate_worker"]["reserve_response_loss_recovered"] != true
+            || result["corporate_worker"]["node_response_loss_recovered"] != true
+            || result["corporate_worker"]["actual_restart_unchanged"] != true
+            || result["corporate_worker"]["admission_matches_settled_order"] != true)
+    {
+        return Err(failure("native corporate worker recovery is incomplete"));
     }
     if manifest["contract_id"] == "oclob-native-multifill-v1"
         && (result["atomic_multi_fill"] != true

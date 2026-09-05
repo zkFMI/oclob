@@ -374,6 +374,10 @@ fn provision(root: &Path) -> Result<(), String> {
         0o644,
     )?;
     for (path, key, config) in corporate_journals {
+        oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
+            path.with_file_name("dispatch.enc"),
+            &key,
+        )?;
         oclob_node::corporate_journal::NativeCorporateJournal::initialize(
             path, &key, &config, &public,
         )?;

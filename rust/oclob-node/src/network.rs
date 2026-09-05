@@ -105,6 +105,7 @@ enum NodeRequest {
         certificate: OrderCertificate,
     },
     Status,
+    Health,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -130,6 +131,9 @@ enum NodeResponse {
     },
     Status {
         status: NodeStoreStatus,
+    },
+    Healthy {
+        party: u16,
     },
     Rejected {
         code: String,
@@ -1004,6 +1008,16 @@ impl NodeRpcClient {
         }
     }
 
+    /// Authenticated liveness only; corporate peers do not receive book counts,
+    /// generations, ordering activity or state digests from this endpoint.
+    pub fn health(&self) -> Result<(), NetworkError> {
+        match self.call(NodeRequest::Health)? {
+            NodeResponse::Healthy { party } if party == self.endpoint.party => Ok(()),
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
     fn call(&self, request: NodeRequest) -> Result<NodeResponse, NetworkError> {
         let tcp = TcpStream::connect((self.endpoint.host.as_str(), self.endpoint.port))?;
         tcp.set_read_timeout(Some(self.timeout))?;
@@ -1361,6 +1375,14 @@ fn dispatch_checked(
                 .map_err(|_| NetworkError::State)?;
             Ok(NodeResponse::Status { status })
         }
+        NodeRequest::Health => Ok(NodeResponse::Healthy {
+            party: runtime
+                .store
+                .lock()
+                .map_err(|_| NetworkError::State)?
+                .state
+                .party,
+        }),
     }
 }
 

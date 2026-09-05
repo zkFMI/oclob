@@ -54,6 +54,22 @@ services:
       OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
       OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
       OCLOB_CORPORATE_REQUEST_ID: native-taker-001
+  maker-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker/queue:/corporate:rw
+    environment:
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+    command: [oclob-corporate-worker]
   native-coordinator:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"

@@ -51,6 +51,9 @@ pub struct NativeCorporateJournal {
 }
 
 impl NativeCorporateJournal {
+    pub(crate) fn context_digest(&self) -> [u8; 32] {
+        self.context
+    }
     /// Explicit provisioning only. Missing history on a normal restart must
     /// never become a new empty funding state.
     pub fn initialize(

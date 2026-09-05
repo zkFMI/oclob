@@ -8,7 +8,9 @@
 #![forbid(unsafe_code)]
 
 pub mod corporate;
+pub mod corporate_dispatch;
 pub mod corporate_journal;
+pub mod corporate_submission;
 pub mod native_admission;
 pub mod native_finality;
 pub mod native_lifecycle;

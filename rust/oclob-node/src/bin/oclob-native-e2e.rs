@@ -71,6 +71,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
+                    | "oclob-native-worker-v1"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -83,12 +84,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     coordinator.validate()?;
     let settlement: ClientIdentityConfig = read("/settlement/client.json")?;
     settlement.validate()?;
-    let lifecycle = manifest["contract_id"] == "oclob-native-lifecycle-v1";
+    let lifecycle = matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-lifecycle-v1" | "oclob-native-worker-v1")
+    );
     if let Ok(phase) = std::env::var("OCLOB_NATIVE_LIFECYCLE_PHASE") {
         if !lifecycle {
             return Err("lifecycle execution needs its bound contract".into());
         }
-        return lifecycle_acceptance::run(&phase, &contract_hash);
+        return lifecycle_acceptance::run(
+            &phase,
+            &contract_hash,
+            manifest["contract_id"] == "oclob-native-worker-v1",
+        );
     }
     let cycle = manifest["contract_id"] == "oclob-native-cycle-v1" || lifecycle;
     let next_match = std::env::var("OCLOB_NATIVE_NEXT_MATCH").ok().as_deref() == Some("1");
@@ -158,7 +166,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         == Some("1")
     {
         return if cycle {
-            finalize_cycle_acceptance(&client, &cluster, &contract_hash)
+            finalize_cycle_acceptance(&client, &cluster, &contract_hash, lifecycle)
         } else {
             finalize_wallet_acceptance(&client, &cluster, &contract_hash)
         };
@@ -713,6 +721,7 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
     client: &C,
     cluster: &ClusterPublicConfig,
     contract_hash: &str,
+    continues_lifecycle: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first: Value = read("/handoff/native-match-result.json")?;
     let next: Value = read("/handoff/native-next-match-result.json")?;
@@ -793,10 +802,7 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
     first["next_order_matched"] = json!(true);
     first["next_order_mpc_nodes"] = json!(7);
     first["final_facility_sequences"] = json!([5, 5]);
-    let target = if std::env::var("OCLOB_RESEARCH_CONTRACT")
-        .unwrap_or_default()
-        .ends_with("oclob_native_lifecycle_contract.json")
-    {
+    let target = if continues_lifecycle {
         "/handoff/native-cycle-complete.json"
     } else {
         "/handoff/native-result.json"

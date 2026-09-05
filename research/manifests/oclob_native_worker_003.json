@@ -1,0 +1,47 @@
+{
+  "manifest_id": "oclob-native-worker-repair-003",
+  "contract_id": "oclob-native-worker-v1",
+  "contract_path": "research/oclob_native_worker_contract.json",
+  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Run002 completed corporate outage/crash/restart recovery and both actual settlement rounds, but the cycle finalizer chose a terminal file from a contract filename suffix. For the worker contract it prematurely ended the five-validator observer before cancellation/expiry. The subsequent DNS error was downstream of that observed early exit.",
+  "causal_hypothesis": "Reusing the existing encrypted outbox and exact native journal stages, with a process-lifetime OS lock and authenticated health-only node RPCs, lets a resident dispatcher recover the same reserve and same seven ciphertexts without double application.",
+  "single_intended_change": "Complete the same native worker journey by routing lifecycle continuation and worker verification from the verified contract ID, not filenames. Before first publication of this component also domain-separate dispatch encryption from journal encryption and report retry-exhausted manual-review entries instead of idle, with two deterministic regression tests. No DNS retries, financial re-signing, matching or settlement authority changes.",
+  "baseline": "Rejected002 /tmp/oclob-native.SOEQ3P; whole logSHA2566c033313e18e1d3c880b9b86b08f6263daf57ccd907f97025fd7f5c0d92320c5; observer error: native cancellation/expiry lifecycle is incomplete.98 tests/fmt/Clippy passed separately in code002 logSHA256668d176d6df1160beaad868a832f5e01959c5d460f53566b02019ecd96b5941d.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "completed_dispatches": 1,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "corporate_worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The final worker receipt checks may expose a mismatch after the full cancellation/expiry and node restart; reject incomplete lifecycle evidence rather than publishing the earlier two-round result as completion.",
+  "rejection_rules": [
+    "stale contract hash",
+    "real node outage is bypassed",
+    "either injected process stop not observed after the actual external side effect",
+    "saved financial request or node ciphertexts changed",
+    "resident worker does not finish the original request",
+    "second worker acquires the same live queue",
+    "restarted queue state changes",
+    "worker receipt does not name the maker actually settled",
+    "any R10 final lifecycle gate fails"
+  ],
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

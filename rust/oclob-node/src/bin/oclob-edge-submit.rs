@@ -8,17 +8,15 @@ use oclob_edge::{
     SealedSettlementCapability, MPC_PARTIES,
 };
 use oclob_node::corporate::{
-    build_reserved_delivery, finalize_reservation, prepare_reservation_from_note, verify_finalized,
-    CorporateNativeConfig, PreparedCorporateReserve,
+    prepare_reservation_from_note, CorporateNativeConfig, PreparedCorporateReserve,
 };
 use oclob_node::corporate_journal::{
     NativeCorporateJournal, StoredCorporateDelivery, StoredCorporateIntent,
 };
-use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor, PreparedEdgeDelivery};
+use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor};
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
 };
-use oclob_settlement::pretrade::FinalizedReservation;
 use qomm_zkpi::handles::Identity;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
@@ -372,91 +370,44 @@ fn run_native(
             journal.save_stage(&request_id, "reserve", &pending, &intent)?
         };
     prepared.validate(config)?;
-    if prepared.order_wire != intent.order_wire
-        || prepared.signing_key != intent.signing_key
-        || prepared.eligibility_commitment != intent.eligibility_commitment
-    {
-        return Err("saved reserve belongs to another durable corporate intent".into());
-    }
-    let reserve_digest: [u8; 32] =
-        Sha256::digest(serde_json::to_vec(&prepared.request).map_err(|e| e.to_string())?).into();
-    let completed: Option<EdgeAdmissionReceipt> = journal.stage(&request_id, "receipt")?;
-    let delivery: StoredCorporateDelivery = if let Some(saved) =
-        journal.stage(&request_id, "delivery")?
-    {
-        saved
-    } else {
-        let finalized: FinalizedReservation =
-            if let Some(saved) = journal.stage(&request_id, "admission")? {
-                verify_finalized(config, identity, &prepared, &saved, unix_seconds()?)?;
-                saved
-            } else {
-                let finalized = finalize_reservation(config, identity, &prepared, unix_seconds()?)?;
-                recovery_test_stop("after-reserve-before-journal")?;
-                journal.save_stage(&request_id, "admission", &finalized, &intent)?
-            };
-        // Update private openings only after independently reading canonical acceptance.
-        journal.save_reserved_witness(&prepared)?;
-        let node_keys: [NodeEncryptionKey; MPC_PARTIES] = cluster
-            .nodes
-            .iter()
-            .map(|n| n.share_encryption_key.clone())
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| "cluster must have seven node keys")?;
-        let (bundle, authority) = build_reserved_delivery(
-            config,
-            &prepared,
-            &finalized,
-            &handle,
-            &node_keys,
-            unix_seconds()?,
-        )?;
-        journal.save_stage(
-            &request_id,
-            "delivery",
-            &StoredCorporateDelivery {
-                reserve_digest,
-                delivery: PreparedEdgeDelivery::from_bundle(bundle),
-                authority,
-            },
-            &intent,
-        )?
-    };
-    if delivery.reserve_digest != reserve_digest {
-        return Err("saved ciphertexts name another reserve request".into());
-    }
-    // A crash after publication must never overwrite a different authority.
-    publish_unchanged(authority_handoff, &delivery.authority)?;
-    let reused_receipt = completed.is_some();
-    let receipt = if let Some(receipt) = completed {
-        receipt
-    } else {
-        let tls = client_tls_context(
-            &identity.tls_certificate,
-            &identity.tls_private_key,
-            &identity.tls_ca,
-        )
-        .map_err(|e| e.to_string())?;
-        let distributor = EdgeDistributor::new(cluster.clone(), tls, Duration::from_secs(30))
-            .map_err(|e| e.to_string())?;
-        let receipt = distributor
-            .submit_prepared(&delivery.delivery)
-            .map_err(|e| e.to_string())?;
-        recovery_test_stop("after-node-admission-before-journal")?;
-        journal.save_receipt(&request_id, &receipt, &delivery, cluster, &intent)?
-    };
-    journal.verify_receipt(&receipt, &delivery, cluster, intent.accepted_at)?;
-    publish_unchanged(handoff, &receipt)?;
-    if let Some(source) = instruction
+    let source_note = instruction
         .as_ref()
-        .map(|i| i.source())
+        .map(|input| input.source())
         .transpose()?
-        .flatten()
-    {
-        oclob_node::native_wallet::verify_selected_funding_spent(
-            config, identity, &prepared, source,
-        )?;
+        .flatten();
+    if std::env::var("OCLOB_NATIVE_ENQUEUE").ok().as_deref() == Some("1") {
+        let queue_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
+            .map(PathBuf::from)
+            .ok_or("corporate journal path is missing")?
+            .with_file_name("dispatch.enc");
+        let queue =
+            oclob_node::corporate_dispatch::NativeCorporateDispatch::open(queue_path, &secret)?;
+        let duplicate = queue.enqueue(&journal, config, &request_id, source_note)?;
+        println!(
+            "{}",
+            json!({"status":"queued", "request_id":request_id, "already_present":duplicate})
+        );
+        return Ok(());
+    }
+    let completed = oclob_node::corporate_submission::complete_native_submission(
+        config,
+        identity,
+        cluster,
+        &journal,
+        &request_id,
+        source_note,
+        |point| {
+            recovery_test_stop(match point {
+            oclob_node::corporate_submission::SubmissionCheckpoint::ReserveObservedBeforeJournal => "after-reserve-before-journal",
+            oclob_node::corporate_submission::SubmissionCheckpoint::NodesAcknowledgedBeforeJournal => "after-node-admission-before-journal",
+        })
+        },
+    )?;
+    let receipt = completed.receipt;
+    let reused_receipt = completed.reused_completed_receipt;
+    publish_unchanged(authority_handoff, &completed.authority)?;
+    publish_unchanged(handoff, &receipt)?;
+    if source_note.is_some() {
         publish_unchanged(
             &handoff.with_extension("corporate.json"),
             &json!({
