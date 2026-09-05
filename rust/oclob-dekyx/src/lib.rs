@@ -158,6 +158,8 @@ impl DemoEligibilityIssuer {
             issuer_key_epoch: self.definition.key_epoch,
             subject_kind: SubjectKind::LegalEntity,
             subject_commitment: witness.subject_commitment(),
+            holder_public_key: witness.holder_public_key(),
+            holder_suite: witness.holder_suite(),
             scope_digest: self.scope_digest,
             policy_digest: self.policy_digest,
             qualifications: vec![self.qualification.clone()],
