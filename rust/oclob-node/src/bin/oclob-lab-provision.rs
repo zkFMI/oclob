@@ -415,7 +415,7 @@ fn write_identity(
 }
 
 fn create_ca() -> Result<(PKey<Private>, X509), String> {
-    let key = PKey::generate_ed25519().map_err(err)?;
+    let key = zkfmi_crypto::tls::generate_authentication_key().map_err(err)?;
     let mut name = X509NameBuilder::new().map_err(err)?;
     name.append_entry_by_nid(Nid::COMMONNAME, "OCLOB lab root")
         .map_err(err)?;
@@ -464,7 +464,7 @@ fn issue_leaf(
     dns_names: &[&str],
     server: bool,
 ) -> Result<(PKey<Private>, X509), String> {
-    let key = PKey::generate_ed25519().map_err(err)?;
+    let key = zkfmi_crypto::tls::generate_authentication_key().map_err(err)?;
     let mut name = X509NameBuilder::new().map_err(err)?;
     name.append_entry_by_nid(Nid::COMMONNAME, common_name)
         .map_err(err)?;

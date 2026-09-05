@@ -493,11 +493,14 @@ pub fn server_tls_context(
 ) -> Result<ServerTlsConfig, NetworkError> {
     let private_key = load_owner_private_key(private_key.as_ref())?;
     let mut builder = SslAcceptor::mozilla_modern_v5(SslMethod::tls_server())?;
-    zkfmi_crypto::tls::require_hybrid_key_exchange(&mut builder)?;
+    zkfmi_crypto::tls::require_pqc_transport(
+        &mut builder,
+        SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+    )?;
     builder.set_certificate_chain_file(certificate)?;
     builder.set_private_key(&private_key)?;
     builder.set_ca_file(ca)?;
-    builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+
     builder.check_private_key()?;
     Ok(ServerTlsConfig {
         acceptor: Arc::new(builder.build()),
@@ -511,11 +514,11 @@ pub fn client_tls_context(
 ) -> Result<ClientTlsConfig, NetworkError> {
     let private_key = load_owner_private_key(private_key.as_ref())?;
     let mut builder = SslConnector::builder(SslMethod::tls_client())?;
-    zkfmi_crypto::tls::require_hybrid_key_exchange(&mut builder)?;
+    zkfmi_crypto::tls::require_pqc_transport(&mut builder, SslVerifyMode::PEER)?;
     builder.set_certificate_chain_file(certificate)?;
     builder.set_private_key(&private_key)?;
     builder.set_ca_file(ca)?;
-    builder.set_verify(SslVerifyMode::PEER);
+
     builder.check_private_key()?;
     Ok(ClientTlsConfig {
         connector: Arc::new(builder.build()),
@@ -2107,7 +2110,7 @@ mod tests {
     }
 
     fn make_ca() -> (PKey<Private>, X509) {
-        let key = PKey::generate_ed25519().unwrap();
+        let key = zkfmi_crypto::tls::generate_authentication_key().unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_nid(Nid::COMMONNAME, "OCLOB test CA")
             .unwrap();
@@ -2147,7 +2150,7 @@ mod tests {
         name: &str,
         server: bool,
     ) -> (PKey<Private>, X509) {
-        let key = PKey::generate_ed25519().unwrap();
+        let key = zkfmi_crypto::tls::generate_authentication_key().unwrap();
         let mut subject = X509NameBuilder::new().unwrap();
         subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
         let subject = subject.build();

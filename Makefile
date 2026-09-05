@@ -17,6 +17,9 @@ NATIVE_LIFECYCLE ?= 0
 
 ifeq ($(PQC_INTEGRATION),1)
 remote-test:
+ifeq ($(PQC_NATIVE_REBUILD),1)
+	../zkfmi-crypto/scripts/pqc-native-build.sh
+endif
 	../zkfmi-crypto/scripts/pqc-remote.sh oclob '$(REMOTE_TEST_COMMAND)'
 else
 remote-test:
