@@ -32,7 +32,10 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     let contract_hash = hex::encode(Sha256::digest(&contract));
     if manifest["contract_sha256"] != contract_hash
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
-        || manifest["contract_id"] != "oclob-native-notes-v1"
+        || !matches!(
+            manifest["contract_id"].as_str(),
+            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1")
+        )
     {
         return Err(failure(
             "native-note research contract/manifest preflight failed",

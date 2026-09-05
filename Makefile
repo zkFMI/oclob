@@ -6,6 +6,7 @@ REMOTE_TEST_IMAGE ?= oclob-test:rust-1.97.1-mpspdz-9d809599
 REMOTE_TEST_CARGO_JOBS ?= 16
 REMOTE_TEST_COMMAND ?= cargo test --workspace --release -j $(REMOTE_TEST_CARGO_JOBS)
 REMOTE_TEST_EXPORTS ?=
+NATIVE_RECOVERY ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -181,9 +182,14 @@ remote-integrated-e2e:
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_distributed_avalanche_acceptance.json" artifacts/oclob_distributed_avalanche_acceptance.json
 
 .PHONY: remote-native-e2e
+.PHONY: remote-native-e2e remote-native-recovery-e2e
+remote-native-recovery-e2e:
+	$(MAKE) remote-native-e2e NATIVE_RECOVERY=1
+
 remote-native-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-native-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
+	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
 	@set -eu; \
 	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
@@ -195,6 +201,7 @@ remote-native-e2e:
 	  export OCLOB_RUNTIME_DIR=\"\$$runtime\" OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_UID=10001 OCLOB_GID=\$$(id -g); \
 	  export OCLOB_CLUSTER_IMAGE='oclob-native-cluster:local' OCLOB_AVALANCHE_IMAGE='oclob-native-avalanche:local'; \
 	  export COMPOSE_PROJECT_NAME='oclob-native-$$(date +%s)'; \
+	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_recovery_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_recovery_001.json; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -206,12 +213,24 @@ remote-native-e2e:
 	  \$$compose run --rm native-bootstrap; \
 	  \$$compose up -d --wait --wait-timeout 600 defmi; \
 	  defmi_container=\$$(\$$compose ps -q defmi); [ -n \"\$$defmi_container\" ]; \
+	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then \
+	    stopped=0; \$$compose run --rm -e OCLOB_NATIVE_RECOVERY_TEST_STOP=after-reserve-before-journal maker || stopped=\$$?; \
+	    [ \"\$$stopped\" = 75 ] || { echo 'expected stop after reserve was not observed' >&2; exit 1; }; \
+	    \$$compose stop node-6; \
+	    partial=0; \$$compose run --rm maker || partial=\$$?; \
+	    [ \"\$$partial\" != 0 ] || { echo 'partial delivery unexpectedly succeeded without node-6' >&2; exit 1; }; \
+	    \$$compose up -d --wait --wait-timeout 180 node-6; \
+	    stopped=0; \$$compose run --rm -e OCLOB_NATIVE_RECOVERY_TEST_STOP=after-node-admission-before-journal maker || stopped=\$$?; \
+	    [ \"\$$stopped\" = 75 ] || { echo 'expected stop after node admission was not observed' >&2; exit 1; }; \
+	  fi; \
 	  \$$compose run --rm maker; \
+	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then \$$compose run --rm maker; fi; \
 	  \$$compose run --rm taker; \
 	  \$$compose run --rm native-coordinator; \
 	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
 	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
-	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" artifacts/oclob_native_notes.json; \
+	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; \
+	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 
 release-gate:

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod corporate;
+pub mod corporate_journal;
 pub mod native_admission;
 
 pub mod edge_client;

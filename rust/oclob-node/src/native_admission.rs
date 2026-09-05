@@ -54,6 +54,15 @@ impl AdmissionAuthority {
                     )?)
                     .map_err(err);
                 }
+                // Read canonical state first. Replaying the SAME mandate after
+                // a lost reply must not need the now-spent input notes or old
+                // facility generation. Recovery verifies the complete binding;
+                // it never issues a replacement reserve or new funding proof.
+                if let Ok(finalized) =
+                    reserve.recover_finalized(&self.client, &self.receipt_issuer, now)
+                {
+                    return serde_json::to_value(finalized).map_err(err);
+                }
                 let requirement = self.eligibility.requirement();
                 let verifier = self
                     .eligibility

@@ -43,11 +43,20 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
-    let manifest: Value = read("/research/manifests/oclob_native_notes_001.json")?;
-    let contract = fs::read("/research/oclob_native_notes_contract.json")?;
+    let manifest: Value = read(
+        &std::env::var("OCLOB_RESEARCH_MANIFEST")
+            .unwrap_or_else(|_| "/research/manifests/oclob_native_notes_001.json".into()),
+    )?;
+    let contract = fs::read(
+        std::env::var("OCLOB_RESEARCH_CONTRACT")
+            .unwrap_or_else(|_| "/research/oclob_native_notes_contract.json".into()),
+    )?;
     let contract_hash = hex::encode(Sha256::digest(&contract));
     if manifest["contract_sha256"] != contract_hash
-        || manifest["contract_id"] != "oclob-native-notes-v1"
+        || !matches!(
+            manifest["contract_id"].as_str(),
+            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1")
+        )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
     {
         return Err("native research preflight failed".into());
@@ -188,6 +197,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if maker_head.sequence != 0 || taker_head.sequence != 0 {
         return Err("initial native holds were already consumed".into());
     }
+    let reserve_sequences = [
+        client
+            .credit_facility_snapshot(maker_authority.permit.facility_id)?
+            .facility
+            .sequence,
+        client
+            .credit_facility_snapshot(taker_authority.permit.facility_id)?
+            .facility
+            .sequence,
+    ];
+    if reserve_sequences != [1, 1] {
+        return Err("native fixture contains duplicate or unexpected pretrade reservations".into());
+    }
     let output = execution.receipts[0].public_output_sha256;
     let job = collaborative_job_id(plan.round_id, 0, output)?;
     let mut parties = cluster
@@ -299,6 +321,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "substituted_mpc_output_rejected_by_resident_node": true,
         "trade_price": execution.result.slots[0].trade_price,
         "trade_quantity": execution.result.slots[0].trade_quantity,
+        "pretrade_facility_sequences": reserve_sequences,
         "mpc_output_sha256": hex::encode(output),
         "zkpi_sha256": hex::encode(Sha256::digest(&signed.instruction)),
         "maker_reserve_active": true, "taker_reserve_closed": true, "elapsed_ms": started.elapsed().as_millis()});

@@ -1,0 +1,20 @@
+{
+  "contract_id": "oclob-native-recovery-v1",
+  "objective": "Recover the same corporate order and finalized native reserve after process exits and partial seven-node delivery, then settle through real MPC and five Avalanche validators without additional funding or participant signature.",
+  "base_contract": "oclob-native-notes-v1",
+  "base_contract_sha256": "1e3b46f44422669be0049dd81cab57c768687d174a98a59eb63db98a5d848229",
+  "hard_constraints": [
+    "Persist the intent and exact reserve proof before any reserve RPC.",
+    "After canonical reserve, exit the corporate process before storing its response; resume with the exact saved mandate and proof.",
+    "Stop actual MPC node 6, attempt delivery, observe failure, restart the same node and retry identical saved ciphertexts.",
+    "Exit again after all seven node admissions but before persisting the combined receipt; resume and recover it, then repeat the completed submission.",
+    "Maker and Taker canonical facility sequences must each be 1 before the first fill, proving retries did not create additional reservations in this fixture.",
+    "Complete the exact native MPC/zkPI/DeFMI settlement and retain all five-root and validator restart checks from the base contract.",
+    "No replacement raw-order capability, new reserve, plaintext persistence or post-match participant signature.",
+    "All builds and execution stay on Softbank or Omen."
+  ],
+  "truth_provider": "Real process exit codes and stopped/restarted node containers, participant signed node receipts, and canonical reads from five live Avalanche validators.",
+  "primary_metric": "crash_recovered_native_settlement",
+  "scenario": {"maker": "sell GTC 60 at 100", "taker": "buy IOC 40 at 101", "expected_fill": [100, 40], "expected_pretrade_facility_sequences": [1, 1]},
+  "non_claims": ["Deterministic single-host functional smoke, not independent operators, WAN, economic or performance evidence.", "Process exits after response receipt reproduce an unjournaled response, not packet-level response-loss injection.", "This does not yet prove post-fill wallet reconstruction, expiry release, multiple concurrent funding writers, or disaster recovery against rollback of the complete corporate disk image."]
+}

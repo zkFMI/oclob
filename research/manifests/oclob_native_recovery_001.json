@@ -1,0 +1,44 @@
+{
+  "manifest_id": "oclob-native-recovery-rough-001",
+  "contract_id": "oclob-native-recovery-v1",
+  "contract_path": "research/oclob_native_recovery_contract.json",
+  "contract_sha256": "26b40a7e65f0ad2acb8ade244457c01dd7ee01ff9ca94889370a1d7a0abc4967",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The native corporate CLI generated new orders and proofs on every restart and did not persist reserve responses or encrypted node deliveries.",
+  "causal_hypothesis": "Saving the exact intent, reserve proof, admission and per-node ciphertexts in the existing encrypted crash-atomic corporate outbox, with canonical recovery at the issuer, permits repeat execution of the same request after process and node failures.",
+  "single_intended_change": "Connect durable corporate submission stages and idempotent canonical reservation recovery to the existing native end-to-end path.",
+  "baseline": "Published f150c86 supports one uninterrupted native pretrade/matching/settlement run but not restarted corporate submission.",
+  "evaluation_population": {
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "validators": 5,
+    "operator_hosts": 1,
+    "scenario_count": 1
+  },
+  "primary_metric": "crash_recovered_native_settlement",
+  "point_prediction": {
+    "crash_recovered_native_settlement": 1,
+    "pretrade_facility_sequences": [
+      1,
+      1
+    ],
+    "trade_price": 100,
+    "trade_quantity": 40,
+    "post_match_participant_signatures": 0
+  },
+  "most_likely_prediction_error": "A recovered issuer admission or node receipt may have a new digest/generation, or a restart may regenerate an encrypted delivery rather than reuse its persisted bytes, causing the actual node to reject the retry.",
+  "rejection_rules": [
+    "wrong contract SHA",
+    "expected corporate exits not observed",
+    "delivery succeeds while node 6 is stopped",
+    "any retry creates a second pretrade reserve",
+    "fresh order or ciphertexts sent after ambiguous delivery",
+    "wrong fill or native monetary proof rejection",
+    "five canonical roots disagree",
+    "validator restart loses the root"
+  ],
+  "promotion_rules": [
+    "At most smoke_only; no product, performance, independent-operator or WAN promotion."
+  ],
+  "command": "make remote-native-recovery-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

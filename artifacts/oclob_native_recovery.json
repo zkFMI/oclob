@@ -1,0 +1,47 @@
+{
+  "contract_sha256": "26b40a7e65f0ad2acb8ade244457c01dd7ee01ff9ca94889370a1d7a0abc4967",
+  "independent_operators": false,
+  "manifest_id": "oclob-native-recovery-rough-001",
+  "native": {
+    "canonical_height": 14,
+    "canonical_transaction": "BX8u9a6gNpVXPyPSPFipEjbgYPystp4eP7pyEj34cyH6amE5s",
+    "contract_sha256": "26b40a7e65f0ad2acb8ade244457c01dd7ee01ff9ca94889370a1d7a0abc4967",
+    "elapsed_ms": 10395,
+    "exact_retry_did_not_apply_twice": true,
+    "maker_reserve_active": true,
+    "manifest_id": "oclob-native-recovery-rough-001",
+    "mpc_nodes": 7,
+    "mpc_output_sha256": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
+    "native_after_root": "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "native_note_settlement": true,
+    "post_match_participant_signatures": 0,
+    "pretrade_facility_sequences": [
+      1,
+      1
+    ],
+    "raw_order_capability_opened": false,
+    "substituted_mpc_output_rejected_by_resident_node": true,
+    "taker_reserve_closed": true,
+    "trade_price": 100,
+    "trade_quantity": 40,
+    "verdict": "smoke_only",
+    "zkpi_sha256": "02a21914ee04c2e014398552ec4e5bc6dc6ac5b9ec2e0abb171cce707b90ffe7"
+  },
+  "recovered_validator_roots": [
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52"
+  ],
+  "status": "smoke_only",
+  "validator_restart_recovered": true,
+  "validator_roots": [
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52",
+    "5d3bf3dd9677dd3805733b8cdce241249d4f99ffe8957f6874b213d988753d52"
+  ],
+  "wan_evidence": false
+}

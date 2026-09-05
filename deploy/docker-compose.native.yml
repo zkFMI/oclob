@@ -28,8 +28,8 @@ services:
       - ${OCLOB_SOURCE_DIR}/research:/research:ro
     environment:
       OCLOB_NATIVE_L1_SERVICE: "1"
-      OCLOB_RESEARCH_CONTRACT: /research/oclob_native_notes_contract.json
-      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_native_notes_001.json
+      OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_notes_contract.json}
+      OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_notes_001.json}
       QOMM_AVALANCHE_ARTIFACT: /out/oclob_native_notes.json
     healthcheck:
       test: [CMD, test, -s, /out/native-ready.json]
@@ -38,11 +38,21 @@ services:
       retries: 120
       start_period: 120s
   maker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker/queue:/corporate:rw
     environment:
       OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+      OCLOB_CORPORATE_REQUEST_ID: native-maker-001
   taker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker/queue:/corporate:rw
     environment:
       OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+      OCLOB_CORPORATE_REQUEST_ID: native-taker-001
   native-coordinator:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
@@ -50,6 +60,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    environment:
+      OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_notes_contract.json}
+      OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_notes_001.json}
     volumes:
       - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
       - ${OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro

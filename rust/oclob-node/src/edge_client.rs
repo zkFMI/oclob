@@ -10,8 +10,8 @@ use ed25519_dalek::VerifyingKey;
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment};
 use oclob_edge::{
     reconstruct_settlement_capability_key, EdgeOrderBundle, EdgeOrderManifest,
-    SealedSettlementCapability, SettlementCapabilityKey, VerifiedSettlementCapability, MPC_PARTIES,
-    SETTLEMENT_KEY_THRESHOLD,
+    SealedCapabilityKeyShare, SealedPartyShare, SealedSettlementCapability,
+    SettlementCapabilityKey, VerifiedSettlementCapability, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD,
 };
 use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderVote};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,49 @@ pub struct EdgeDistributor {
     timeout: Duration,
 }
 
+/// Participant-only durable delivery payload. All seven values here are
+/// recipient-encrypted; the raw bundle and its one-order decryption key are
+/// deliberately not serializable. Never send this aggregate to a coordinator.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedEdgeDelivery {
+    pub manifest: EdgeOrderManifest,
+    pub deliveries: [(u16, SealedPartyShare, SealedCapabilityKeyShare); MPC_PARTIES],
+}
+
+impl PreparedEdgeDelivery {
+    pub fn from_bundle(bundle: EdgeOrderBundle) -> Self {
+        Self {
+            manifest: bundle.manifest().clone(),
+            deliveries: bundle.into_deliveries(),
+        }
+    }
+
+    pub fn validate(&self, cluster: &ClusterPublicConfig, now: u64) -> Result<(), EdgeClientError> {
+        cluster.validate()?;
+        self.manifest
+            .verify(now)
+            .map_err(|_| EdgeClientError::Receipt)?;
+        if self.manifest.market_id != cluster.market_id {
+            return Err(EdgeClientError::Configuration);
+        }
+        for (node, (party, share, key)) in cluster.nodes.iter().zip(&self.deliveries) {
+            if *party != node.party
+                || share.party != *party
+                || key.party != *party
+                || share.commitment != self.manifest.commitment
+                || key.order_commitment != self.manifest.commitment
+                || key.capability_commitment != self.manifest.settlement_capability_commitment
+                || share.recipient != node.share_encryption_key.0
+                || key.recipient != node.share_encryption_key.0
+            {
+                return Err(EdgeClientError::Receipt);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl EdgeDistributor {
     pub fn new(
         cluster: ClusterPublicConfig,
@@ -105,9 +148,22 @@ impl EdgeDistributor {
     /// partial fan-out is not admitted: the caller receives a public receipt
     /// only after all seven independently authenticated nodes acknowledge.
     pub fn submit(&self, bundle: EdgeOrderBundle) -> Result<EdgeAdmissionReceipt, EdgeClientError> {
-        let manifest = bundle.manifest().clone();
+        self.submit_prepared(&PreparedEdgeDelivery::from_bundle(bundle))
+    }
+
+    /// Retry the exact ciphertexts after a partial delivery or lost response.
+    /// Generating a fresh bundle here would change the node admission identity.
+    pub fn submit_prepared(
+        &self,
+        prepared: &PreparedEdgeDelivery,
+    ) -> Result<EdgeAdmissionReceipt, EdgeClientError> {
+        prepared.validate(
+            &self.cluster,
+            unix_seconds().ok_or(EdgeClientError::Configuration)?,
+        )?;
+        let manifest = prepared.manifest.clone();
         let cluster = self.cluster.clone();
-        let deliveries = bundle.into_deliveries();
+        let deliveries = prepared.deliveries.clone();
         let handles = deliveries
             .into_iter()
             .zip(self.cluster.nodes.iter().cloned())

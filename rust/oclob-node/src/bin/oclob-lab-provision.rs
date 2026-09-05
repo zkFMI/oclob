@@ -182,6 +182,7 @@ fn provision(root: &Path) -> Result<(), String> {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let (_, issuer) = oclob_dekyx::deterministic_demo_environment(MARKET).map_err(err)?;
     let mut funding = Vec::new();
+    let mut corporate_journals = Vec::new();
     for (directory, seed, label, asset, amount) in [
         (
             &maker_dir,
@@ -223,9 +224,14 @@ fn provision(root: &Path) -> Result<(), String> {
         };
         write_json(
             &directory.join("native.json"),
-            &serde_json::to_value(config).map_err(err)?,
+            &serde_json::to_value(&config).map_err(err)?,
             0o600,
         )?;
+        let mut journal_key = [0; 32];
+        rand::rngs::OsRng.fill_bytes(&mut journal_key);
+        write_private(&directory.join("outbox-key.raw"), &journal_key)?;
+        create_private_dir(directory.join("queue"))?;
+        corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
         let credential = issuer
             .issue_wallet(seed, label.as_bytes(), &mut rand::rngs::OsRng)
             .map_err(err)?;
@@ -335,9 +341,14 @@ fn provision(root: &Path) -> Result<(), String> {
     public.validate().map_err(|error| error.to_string())?;
     write_json(
         &public_dir.join("cluster.json"),
-        &serde_json::to_value(public).map_err(err)?,
+        &serde_json::to_value(&public).map_err(err)?,
         0o644,
     )?;
+    for (path, key, config) in corporate_journals {
+        oclob_node::corporate_journal::NativeCorporateJournal::initialize(
+            path, &key, &config, &public,
+        )?;
+    }
     Ok(())
 }
 

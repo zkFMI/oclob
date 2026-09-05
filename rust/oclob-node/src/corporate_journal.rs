@@ -1,0 +1,650 @@
+//! Corporate-only recovery journal, backed by the pinned encrypted and
+//! crash-atomic CorporateOutbox. Its immutable records are protocol stages,
+//! not substitute settlement receipts. No project-owned encryption core.
+
+use crate::corporate::{CorporateNativeConfig, FacilityWitness, PreparedCorporateReserve};
+use crate::edge_client::{EdgeAdmissionReceipt, PreparedEdgeDelivery};
+use crate::network::ClusterPublicConfig;
+use oclob_edge::SealedReservationAuthority;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use zkpi_defmi_sdk::corporate::CorporateOutbox;
+
+const RECORD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Only the participant's encrypted journal may serialize this value.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredCorporateIntent {
+    pub input_digest: [u8; 32],
+    pub order_wire: Vec<u8>,
+    pub signing_key: [u8; 32],
+    pub eligibility_commitment: [u8; 32],
+    pub accepted_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredCorporateDelivery {
+    pub reserve_digest: [u8; 32],
+    pub delivery: PreparedEdgeDelivery,
+    pub authority: SealedReservationAuthority,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BoundRecord<T> {
+    version: u16,
+    context: [u8; 32],
+    body: T,
+}
+
+/// No Debug/Clone: this object owns an encryption secret. Each insertion is
+/// independently locked and fsynced by CorporateOutbox. Competing writers use
+/// the first persisted record; no writer may replace an in-flight request.
+pub struct NativeCorporateJournal {
+    outbox: CorporateOutbox,
+    context: [u8; 32],
+}
+
+impl NativeCorporateJournal {
+    /// Explicit provisioning only. Missing history on a normal restart must
+    /// never become a new empty funding state.
+    pub fn initialize(
+        path: impl Into<PathBuf>,
+        secret: &[u8; 32],
+        config: &CorporateNativeConfig,
+        cluster: &ClusterPublicConfig,
+    ) -> Result<Self, String> {
+        Self::load(path.into(), secret, config, cluster, true)
+    }
+
+    pub fn open(
+        path: impl Into<PathBuf>,
+        secret: &[u8; 32],
+        config: &CorporateNativeConfig,
+        cluster: &ClusterPublicConfig,
+    ) -> Result<Self, String> {
+        Self::load(path.into(), secret, config, cluster, false)
+    }
+
+    fn load(
+        path: PathBuf,
+        secret: &[u8; 32],
+        config: &CorporateNativeConfig,
+        cluster: &ClusterPublicConfig,
+        initialize: bool,
+    ) -> Result<Self, String> {
+        if *secret == [0; 32] {
+            return Err("corporate journal key is empty".into());
+        }
+        cluster.validate().map_err(err)?;
+        let context: [u8; 32] = Sha256::new()
+            .chain_update(b"OCLOB:NATIVE-JOURNAL-CONTEXT:v1")
+            .chain_update(serde_json::to_vec(config).map_err(err)?)
+            .chain_update(serde_json::to_vec(cluster).map_err(err)?)
+            .finalize()
+            .into();
+        let outbox = CorporateOutbox::new(path, secret, 1024, RECORD_BYTES)?;
+        if initialize {
+            outbox.initialize()?;
+        } else {
+            outbox.summaries()?;
+        }
+        let journal = Self { outbox, context };
+        // A wrong deployment or key is an error, never a new empty wallet.
+        let stored: [u8; 32] = journal.put_first("context", &context, 1, u64::MAX)?;
+        if stored != context {
+            return Err("corporate journal belongs to another deployment".into());
+        }
+        Ok(journal)
+    }
+
+    pub fn input_digest<T: Serialize>(input: &T) -> Result<[u8; 32], String> {
+        Ok(Sha256::new()
+            .chain_update(b"OCLOB:CORPORATE-INPUT:v1")
+            .chain_update(serde_json::to_vec(input).map_err(err)?)
+            .finalize()
+            .into())
+    }
+
+    pub fn intent(&self, id: &str) -> Result<Option<StoredCorporateIntent>, String> {
+        self.get(&record_id("intent", id)?)
+    }
+
+    pub fn save_intent(
+        &self,
+        id: &str,
+        intent: &StoredCorporateIntent,
+    ) -> Result<StoredCorporateIntent, String> {
+        let stored: StoredCorporateIntent = self.put_first(
+            &record_id("intent", id)?,
+            intent,
+            intent.accepted_at,
+            intent.expires_at,
+        )?;
+        if stored.input_digest != intent.input_digest {
+            return Err("corporate request ID was reused for another order instruction".into());
+        }
+        Ok(stored)
+    }
+
+    /// Do not let a later request overtake an ambiguous earlier reservation or
+    /// partial MPC delivery. Expired entries are retained for explicit release.
+    pub fn require_turn(&self, id: &str) -> Result<(), String> {
+        let target = record_id("intent", id)?;
+        let records = self.outbox.summaries()?;
+        let completed: BTreeSet<_> = records
+            .iter()
+            .filter_map(|r| r.request_id.strip_prefix("receipt:"))
+            .collect();
+        if completed.contains(id) {
+            return Ok(());
+        }
+        let oldest = records
+            .iter()
+            .filter(|r| {
+                r.request_id.starts_with("intent:") && !completed.contains(&r.request_id[7..])
+            })
+            .min_by_key(|r| r.sequence);
+        if oldest.is_some_and(|r| r.request_id != target) {
+            return Err("an earlier corporate request must be admitted or reconciled first".into());
+        }
+        Ok(())
+    }
+
+    pub fn stage<T: DeserializeOwned>(&self, id: &str, stage: &str) -> Result<Option<T>, String> {
+        self.get(&record_id(stage, id)?)
+    }
+
+    pub fn save_stage<T: Serialize + DeserializeOwned>(
+        &self,
+        id: &str,
+        stage: &str,
+        body: &T,
+        intent: &StoredCorporateIntent,
+    ) -> Result<T, String> {
+        if !matches!(stage, "reserve" | "admission" | "delivery") {
+            return Err("unknown corporate submission stage".into());
+        }
+        self.put_first(
+            &record_id(stage, id)?,
+            body,
+            intent.accepted_at,
+            intent.expires_at,
+        )
+    }
+
+    pub fn save_receipt(
+        &self,
+        id: &str,
+        receipt: &EdgeAdmissionReceipt,
+        delivery: &StoredCorporateDelivery,
+        cluster: &ClusterPublicConfig,
+        intent: &StoredCorporateIntent,
+    ) -> Result<EdgeAdmissionReceipt, String> {
+        self.verify_receipt(receipt, delivery, cluster, intent.accepted_at)?;
+        let stored = self.put_first(
+            &record_id("receipt", id)?,
+            receipt,
+            intent.accepted_at,
+            intent.expires_at,
+        )?;
+        self.verify_receipt(&stored, delivery, cluster, intent.accepted_at)?;
+        Ok(stored)
+    }
+
+    pub fn save_reserved_witness(&self, prepared: &PreparedCorporateReserve) -> Result<(), String> {
+        let witness = &prepared.facility_after;
+        let id = format!(
+            "funding:{}:{}",
+            hex::encode(witness.facility_id),
+            witness.sequence
+        );
+        let stored: FacilityWitness = self.put_first(&id, witness, 1, u64::MAX)?;
+        if stored.commitments()? != witness.commitments()? {
+            return Err(
+                "two different corporate funding witnesses name the same canonical generation"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn latest_funding(
+        &self,
+        config: &CorporateNativeConfig,
+    ) -> Result<CorporateNativeConfig, String> {
+        let prefix = format!("funding:{}:", hex::encode(config.facility_id));
+        let records = self.outbox.summaries()?;
+        let latest = records
+            .iter()
+            .filter_map(|r| {
+                r.request_id
+                    .strip_prefix(&prefix)
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .map(|sequence| (sequence, r))
+            })
+            .max_by_key(|(sequence, _)| *sequence);
+        let mut next = config.clone();
+        if let Some((sequence, record)) = latest {
+            let witness: FacilityWitness = self
+                .get(&record.request_id)?
+                .ok_or("funding witness disappeared")?;
+            if witness.facility_id != config.facility_id || witness.sequence != sequence {
+                return Err("corporate funding witness index is inconsistent".into());
+            }
+            witness.commitments()?;
+            next.facility_values = witness.values;
+            next.facility_blindings = witness.blindings;
+        }
+        // prepare_reservation compares these openings with fresh canonical
+        // commitments. A newer fill/release generation cannot pass as current.
+        Ok(next)
+    }
+
+    pub fn verify_receipt(
+        &self,
+        receipt: &EdgeAdmissionReceipt,
+        delivery: &StoredCorporateDelivery,
+        cluster: &ClusterPublicConfig,
+        original_time: u64,
+    ) -> Result<(), String> {
+        delivery
+            .delivery
+            .validate(cluster, original_time)
+            .map_err(err)?;
+        receipt.verify(cluster, original_time).map_err(err)?;
+        if receipt.manifest != delivery.delivery.manifest {
+            return Err("stored receipt belongs to another encrypted delivery".into());
+        }
+        for (party, share, key) in &delivery.delivery.deliveries {
+            if receipt.order_share_digests[usize::from(*party)] != share.wire_digest()
+                || receipt.capability_key_share_digests[usize::from(*party)] != key.wire_digest()
+            {
+                return Err("stored receipt does not acknowledge the persisted ciphertexts".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn get<T: DeserializeOwned>(&self, id: &str) -> Result<Option<T>, String> {
+        let Some(summary) = self
+            .outbox
+            .summaries()?
+            .into_iter()
+            .find(|r| r.request_id == id)
+        else {
+            return Ok(None);
+        };
+        let bytes = self.outbox.signed_request(id, summary.request_digest)?;
+        let record: BoundRecord<T> =
+            serde_json::from_slice(&bytes).map_err(|_| "corporate stage record is malformed")?;
+        if record.version != 1 || record.context != self.context {
+            return Err("corporate stage record belongs to another deployment".into());
+        }
+        Ok(Some(record.body))
+    }
+
+    fn put_first<T: Serialize + DeserializeOwned>(
+        &self,
+        id: &str,
+        body: &T,
+        at: u64,
+        expiry: u64,
+    ) -> Result<T, String> {
+        if let Some(stored) = self.get(id)? {
+            return Ok(stored);
+        }
+        let bytes = serde_json::to_vec(&BoundRecord {
+            version: 1,
+            context: self.context,
+            body,
+        })
+        .map_err(err)?;
+        let result = self.outbox.enqueue_first_seen(id, &bytes, at, expiry);
+        // Another process may have won with different random proof/encryption
+        // bytes. Adopt its immutable record, never send our losing candidate.
+        if let Some(stored) = self.get(id)? {
+            return Ok(stored);
+        }
+        result?;
+        Err("corporate stage was not durable after insertion".into())
+    }
+}
+
+fn record_id(stage: &str, id: &str) -> Result<String, String> {
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        || !matches!(
+            stage,
+            "intent" | "reserve" | "admission" | "delivery" | "receipt"
+        )
+    {
+        return Err("corporate request ID or stage is invalid".into());
+    }
+    Ok(format!("{stage}:{id}"))
+}
+
+fn err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::ClusterNodePublic;
+    use curve25519_dalek::scalar::Scalar;
+    use ed25519_dalek::SigningKey;
+    use oclob_core::{SecretOrder, Side, TimeInForce};
+    use oclob_edge::{EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey, MPC_PARTIES};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    struct Files {
+        root: PathBuf,
+    }
+    impl Files {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "oclob-corporate-journal-{}-{:016x}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            fs::create_dir(&root).unwrap();
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            Self { root }
+        }
+        fn path(&self) -> PathBuf {
+            self.root.join("journal.enc")
+        }
+    }
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fixture() -> (CorporateNativeConfig, ClusterPublicConfig) {
+        let config = CorporateNativeConfig {
+            host: "unit-defmi".into(),
+            port: 9443,
+            server_name: "unit-defmi".into(),
+            venue_id: [1; 32],
+            defmi_id: [2; 32],
+            issuer_public: SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes(),
+            facility_id: [4; 32],
+            asset_id: [5; 32],
+            facility_values: [120, 0, 0],
+            facility_blindings: [Scalar::from(9u64).to_bytes(), [0; 32], [0; 32]],
+            wallet_spend_secret: Scalar::from(10u64).to_bytes(),
+            identity_seed: [11; 32],
+        };
+        let cluster = ClusterPublicConfig {
+            version: 3,
+            market_id: "CORPORATE-UNIT".into(),
+            program: "oclob_match_v1".into(),
+            settlement_release_threshold: 3,
+            nodes: (0..7)
+                .map(|i| ClusterNodePublic {
+                    party: i,
+                    host: format!("unit-node-{i}"),
+                    rpc_port: 7443,
+                    proof_port: 8443,
+                    server_name: format!("unit-node-{i}"),
+                    tls_certificate_sha256: [i as u8 + 1; 32],
+                    share_encryption_key: NodeDecryptionKey::generate()
+                        .unwrap()
+                        .public_key()
+                        .unwrap(),
+                    receipt_verifying_key: SigningKey::from_bytes(&[i as u8 + 51; 32])
+                        .verifying_key()
+                        .to_bytes(),
+                })
+                .collect(),
+        };
+        (config, cluster)
+    }
+
+    fn intent(seed: u8) -> StoredCorporateIntent {
+        let order = SecretOrder::new_with_dekyx_nullifier(
+            "CORPORATE-UNIT",
+            Side::Sell,
+            100,
+            60,
+            TimeInForce::GoodTilCancelled,
+            1000,
+            [12; 32],
+            [13; 32],
+            [seed; 32],
+            [seed + 1; 32],
+        )
+        .unwrap();
+        StoredCorporateIntent {
+            input_digest: [14; 32],
+            order_wire: order.to_secret_wire(),
+            signing_key: [seed; 32],
+            eligibility_commitment: [15; 32],
+            accepted_at: 100,
+            expires_at: 1000,
+        }
+    }
+
+    #[test]
+    fn journal_reopens_exact_intent_without_plaintext_or_new_randomness() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let original = intent(21);
+        let saved = journal.save_intent("client-001", &original).unwrap();
+        let candidate = intent(22);
+        let reused = journal.save_intent("client-001", &candidate).unwrap();
+        assert_eq!(reused.order_wire, saved.order_wire);
+        assert_eq!(reused.signing_key, original.signing_key);
+        let bytes = fs::read(files.path()).unwrap();
+        assert!(bytes.starts_with(b"QOMMOUT1"));
+        let clear = serde_json::to_vec(&original).unwrap();
+        assert!(!bytes.windows(clear.len()).any(|window| window == clear));
+        assert!(!bytes
+            .windows(b"CORPORATE-UNIT".len())
+            .any(|w| w == b"CORPORATE-UNIT"));
+        assert_eq!(
+            fs::metadata(files.path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        assert_eq!(
+            reopened.intent("client-001").unwrap().unwrap().order_wire,
+            original.order_wire
+        );
+    }
+
+    #[test]
+    fn journal_rejects_wrong_key_context_and_changed_instruction_without_resetting() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        journal.save_intent("client-001", &intent(21)).unwrap();
+        let before = fs::read(files.path()).unwrap();
+        assert!(NativeCorporateJournal::open(files.path(), &[20; 32], &config, &cluster).is_err());
+        let mut changed = config.clone();
+        changed.defmi_id[0] ^= 1;
+        assert!(NativeCorporateJournal::open(files.path(), &[19; 32], &changed, &cluster).is_err());
+        let mut other = intent(22);
+        other.input_digest[0] ^= 1;
+        assert!(journal.save_intent("client-001", &other).is_err());
+        assert!(journal.save_intent("../another-wallet", &other).is_err());
+        assert_eq!(fs::read(files.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn corrupted_journal_is_not_reinitialized() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        journal.save_intent("client-001", &intent(21)).unwrap();
+        drop(journal);
+        let mut raw = fs::read(files.path()).unwrap();
+        let at = raw.len() - 1;
+        raw[at] ^= 1;
+        fs::write(files.path(), &raw).unwrap();
+        assert!(NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).is_err());
+        assert_eq!(fs::read(files.path()).unwrap(), raw);
+    }
+
+    #[test]
+    fn concurrent_preparers_adopt_one_immutable_intent() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let barrier = Arc::new(Barrier::new(4));
+        let workers = (0..4)
+            .map(|n| {
+                let (config, cluster, path, barrier) = (
+                    config.clone(),
+                    cluster.clone(),
+                    files.path(),
+                    Arc::clone(&barrier),
+                );
+                thread::spawn(move || {
+                    let journal =
+                        NativeCorporateJournal::open(path, &[19; 32], &config, &cluster).unwrap();
+                    barrier.wait();
+                    let saved = journal
+                        .save_intent("concurrent-001", &intent(21 + n))
+                        .unwrap();
+                    (saved.order_wire, saved.signing_key)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = workers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(results.iter().all(|r| r == &results[0]));
+    }
+
+    #[test]
+    fn ambiguous_earlier_request_blocks_overtaking_and_cannot_be_marked_complete_by_generic_stage()
+    {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let first = intent(21);
+        journal.save_intent("first", &first).unwrap();
+        journal.save_intent("second", &intent(22)).unwrap();
+        assert!(journal.require_turn("first").is_ok());
+        assert!(journal.require_turn("second").is_err());
+        assert!(journal
+            .save_stage("first", "receipt", &true, &first)
+            .is_err());
+        assert!(journal.require_turn("second").is_err());
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        assert!(reopened.require_turn("second").is_err());
+    }
+
+    #[test]
+    fn funding_witness_survives_restart_and_invalid_scalars_fail_closed() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let witness = FacilityWitness {
+            facility_id: config.facility_id,
+            sequence: 1,
+            values: [60, 60, 0],
+            blindings: [
+                Scalar::from(7u64).to_bytes(),
+                Scalar::from(2u64).to_bytes(),
+                [0; 32],
+            ],
+        };
+        journal
+            .put_first::<FacilityWitness>(
+                &format!("funding:{}:1", hex::encode(config.facility_id)),
+                &witness,
+                1,
+                u64::MAX,
+            )
+            .unwrap();
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let restored = reopened.latest_funding(&config).unwrap();
+        assert_eq!(restored.facility_values, witness.values);
+        assert_eq!(restored.facility_blindings, witness.blindings);
+        let mut invalid = witness;
+        invalid.blindings[0] = [255; 32];
+        assert!(invalid.commitments().is_err());
+    }
+
+    #[test]
+    fn saved_delivery_preserves_exact_ciphertexts_and_rejects_wrong_node_binding() {
+        let (_config, cluster) = fixture();
+        let order = SecretOrder::from_secret_wire(&intent(21).order_wire).unwrap();
+        let keys: [NodeEncryptionKey; MPC_PARTIES] = cluster
+            .nodes
+            .iter()
+            .map(|n| n.share_encryption_key.clone())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let bundle = EdgeOrderBundle::create(
+            &order,
+            [16; 32],
+            [17; 32],
+            &SigningKey::from_bytes(&[21; 32]),
+            &keys,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let prepared = PreparedEdgeDelivery::from_bundle(bundle);
+        let encoded = serde_json::to_vec(&prepared).unwrap();
+        let mut restored: PreparedEdgeDelivery = serde_json::from_slice(&encoded).unwrap();
+        restored.validate(&cluster, 100).unwrap();
+        for ((_, old, old_key), (_, new, new_key)) in
+            prepared.deliveries.iter().zip(&restored.deliveries)
+        {
+            assert_eq!(old.wire_digest(), new.wire_digest());
+            assert_eq!(old_key.wire_digest(), new_key.wire_digest());
+        }
+        restored.deliveries[0].1.recipient = cluster.nodes[1].share_encryption_key.0;
+        assert!(restored.validate(&cluster, 100).is_err());
+        restored = serde_json::from_slice(&encoded).unwrap();
+        restored.deliveries[0].0 = 7;
+        assert!(restored.validate(&cluster, 100).is_err());
+    }
+
+    #[test]
+    fn a_missing_initialized_journal_never_becomes_an_empty_wallet() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        assert!(NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).is_err());
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        journal.save_intent("client-001", &intent(21)).unwrap();
+        assert!(
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).is_err()
+        );
+        drop(journal);
+        fs::remove_file(files.path()).unwrap();
+        assert!(NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).is_err());
+        assert!(!files.path().exists());
+    }
+}
