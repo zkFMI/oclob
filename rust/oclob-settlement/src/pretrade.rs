@@ -19,6 +19,7 @@ use qomm_defmi::facility::{
 use qomm_defmi::note_chain::NoteOutput;
 use qomm_defmi::notes::{decode_spend_proof, encode_spend_proof, NoteLedger, Wallet};
 use qomm_zk::pedersen::Pedersen;
+use rand::seq::SliceRandom;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -152,6 +153,58 @@ pub struct CorporateFunding<'a> {
     pub reserve_blinding: Scalar,
 }
 
+/// Choose same-asset, unlocked candidates without a fixed first decoy. The
+/// public order depends only on note IDs, never on the hidden source position.
+/// Small pools and externally known decoys still limit practical anonymity.
+pub fn select_funding_ring<R: RngCore + CryptoRng>(
+    notes: &[NoteOutput],
+    source_index: usize,
+    rng: &mut R,
+) -> Result<Vec<usize>, String> {
+    let source = notes
+        .get(source_index)
+        .filter(|note| note.lock_id == ZERO)
+        .ok_or("selected funding note is missing or locked")?;
+    let candidates = notes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, note)| {
+            (index != source_index && note.asset_id == source.asset_id && note.lock_id == ZERO)
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err("funding pool has fewer than two same-asset unlocked notes".into());
+    }
+    let mut size = 2;
+    while size < 64 && size * 2 <= candidates.len() + 1 {
+        size *= 2;
+    }
+    let mut ring = candidates
+        .choose_multiple(rng, size - 1)
+        .copied()
+        .collect::<Vec<_>>();
+    ring.push(source_index);
+    canonical_funding_ring(notes, &ring)
+}
+
+fn canonical_funding_ring(notes: &[NoteOutput], ring: &[usize]) -> Result<Vec<usize>, String> {
+    let mut candidates = ring
+        .iter()
+        .map(|&index| {
+            notes
+                .get(index)
+                .map(|note| (note.note_id, index))
+                .ok_or("ring index is outside canonical notes")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    candidates.sort_unstable_by_key(|(id, _)| *id);
+    if candidates.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err("funding ring repeats a canonical note".into());
+    }
+    Ok(candidates.into_iter().map(|(_, index)| index).collect())
+}
+
 impl PrivateReserveRequest {
     /// Build proofs from the participant's actual canonical notes. DeKYX
     /// evidence is produced after the mandate was signed, avoiding a circular
@@ -206,8 +259,11 @@ impl PrivateReserveRequest {
                 "corporate funding does not match the canonical facility or signed mandate".into(),
             );
         }
+        // Normalize even caller-supplied source-first rings before constructing
+        // both the public request and its proof. Do not reorder after proving.
+        let ring = canonical_funding_ring(funding.canonical_notes, funding.ring)?;
         let mut ring_ids = Vec::new();
-        for &index in funding.ring {
+        for &index in &ring {
             let output = funding
                 .canonical_notes
                 .get(index)
@@ -282,7 +338,7 @@ impl PrivateReserveRequest {
             .checked_sub(funding.reserve_value)
             .ok_or("reservation exceeds the selected funding note")?;
         let spend = funding.ledger.build_spend_constrained_with_blindings(
-            funding.ring,
+            &ring,
             funding.source_index,
             &opening,
             &key.g,
@@ -292,7 +348,7 @@ impl PrivateReserveRequest {
                 (funding.wallet.address, change),
             ],
             &[funding.reserve_blinding, Scalar::random(&mut *rng)],
-            &[true; 2],
+            &vec![true; ring.len()],
             &request.mandate.spend_context()?,
             rng,
         )?;

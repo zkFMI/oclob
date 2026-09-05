@@ -2,7 +2,7 @@
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::SigningKey;
 use oclob_dekyx::deterministic_demo_environment;
-use oclob_settlement::pretrade::{CorporateFunding, PrivateReserveRequest};
+use oclob_settlement::pretrade::{select_funding_ring, CorporateFunding, PrivateReserveRequest};
 use qomm_defmi::application_reservation::ApplicationReserveMandate;
 use qomm_defmi::application_reservation::ApplicationReserveScope;
 use qomm_defmi::avalanche::CanonicalCreditFacility;
@@ -10,11 +10,22 @@ use qomm_defmi::facility::{CreditFacilitySnapshot, CreditFacilityStatus};
 use qomm_defmi::note_chain::NoteOutput;
 use qomm_defmi::notes::{decode_spend_proof, NoteLedger, Wallet};
 use qomm_zk::pedersen::Pedersen;
-use rand::rngs::OsRng;
+use rand::rngs::{OsRng, StdRng};
+use rand::SeedableRng;
+use std::collections::BTreeSet;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::order_authorization_commitment;
 
 fn request(reserve: u64, source_index: usize, cap: u64) -> Result<PrivateReserveRequest, String> {
+    request_with_pool(reserve, source_index, cap, 2)
+}
+
+fn request_with_pool(
+    reserve: u64,
+    source_index: usize,
+    cap: u64,
+    pool_size: usize,
+) -> Result<PrivateReserveRequest, String> {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let commit = |v, b| key.commit_u64(v, &Scalar::from(b)).compress().to_bytes();
     let wallet = Wallet::new(&mut OsRng);
@@ -26,6 +37,16 @@ fn request(reserve: u64, source_index: usize, cap: u64) -> Result<PrivateReserve
             value,
             key.commit_u64(value, &Scalar::from(9_u64)),
             &Scalar::from(9_u64),
+            &mut OsRng,
+        ));
+    }
+    for _ in 2..pool_size {
+        let blind = Scalar::random(&mut OsRng);
+        ledger.add(ledger.build_note(
+            &decoy.address,
+            25,
+            key.commit_u64(25, &blind),
+            &blind,
             &mut OsRng,
         ));
     }
@@ -92,7 +113,11 @@ fn request(reserve: u64, source_index: usize, cap: u64) -> Result<PrivateReserve
             sequence: 0,
         },
     };
-    PrivateReserveRequest::build(
+    // Deliberately send reverse public-ID order to exercise normalization in
+    // the actual proof builder, irrespective of which source the caller owns.
+    let mut ring = (0..pool_size).collect::<Vec<_>>();
+    ring.sort_unstable_by_key(|&index| std::cmp::Reverse(notes[index].note_id));
+    let request = PrivateReserveRequest::build(
         mandate,
         [4; 32],
         [5; 32],
@@ -102,7 +127,7 @@ fn request(reserve: u64, source_index: usize, cap: u64) -> Result<PrivateReserve
             wallet: &wallet,
             ledger: &ledger,
             canonical_notes: &notes,
-            ring: &[1, 0],
+            ring: &ring,
             source_index,
             facility: &facility,
             facility_values: [cap, 0, 0],
@@ -112,7 +137,23 @@ fn request(reserve: u64, source_index: usize, cap: u64) -> Result<PrivateReserve
         },
         100,
         &mut OsRng,
-    )
+    )?;
+    // Reconstruct the verifier's exact input order from the public request;
+    // successful proof generation alone must not mask an order mismatch.
+    let verifier_ring = request
+        .ring
+        .iter()
+        .map(|id| notes.iter().position(|note| note.note_id == *id).unwrap())
+        .collect::<Vec<_>>();
+    ledger
+        .check_spend(
+            &verifier_ring,
+            &decode_spend_proof(&request.spend_proof)?,
+            &request.mandate.spend_context()?,
+            &mut OsRng,
+        )
+        .map_err(err)?;
+    Ok(request)
 }
 
 #[test]
@@ -160,6 +201,94 @@ fn corporate_pretrade_rejects_foreign_note_and_both_kinds_of_overdraw() {
         .err()
         .unwrap()
         .contains("exceeds the selected"));
+}
+
+#[test]
+fn corporate_pretrade_canonicalizes_public_ring_before_proving() {
+    let request = request(40, 1, 200).unwrap();
+    assert!(request.ring.windows(2).all(|pair| pair[0] < pair[1]));
+    decode_spend_proof(&request.spend_proof).unwrap();
+}
+
+#[test]
+fn corporate_pretrade_proves_and_verifies_larger_candidate_rings() {
+    for size in [4, 8] {
+        let request = request_with_pool(40, 1, 200, size).unwrap();
+        assert_eq!(request.ring.len(), size);
+        assert!(request.ring.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+}
+
+fn note_pool(size: usize) -> Vec<NoteOutput> {
+    let key = Pedersen::new(b"qomm:defmi:v1");
+    let mut rng = StdRng::seed_from_u64(2906);
+    let wallet = Wallet::new(&mut rng);
+    let ledger = NoteLedger::new(key.clone(), 32);
+    (0..size)
+        .map(|_| {
+            let blind = Scalar::random(&mut rng);
+            let note = ledger.build_note(
+                &wallet.address,
+                100,
+                key.commit_u64(100, &blind),
+                &blind,
+                &mut rng,
+            );
+            NoteOutput::from_note(&note, [7; 32], [0; 32]).unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn funding_ring_public_order_does_not_mark_the_real_source() {
+    let notes = note_pool(2);
+    let first = select_funding_ring(&notes, 0, &mut StdRng::seed_from_u64(0)).unwrap();
+    let second = select_funding_ring(&notes, 1, &mut StdRng::seed_from_u64(1)).unwrap();
+    assert_eq!(first, second);
+    assert!(notes[first[0]].note_id < notes[first[1]].note_id);
+}
+
+#[test]
+fn funding_ring_samples_alternatives_instead_of_a_fixed_first_decoy() {
+    let notes = note_pool(5);
+    for source in 0..notes.len() {
+        let mut seen = BTreeSet::new();
+        let mut alternatives = BTreeSet::new();
+        for seed in 0..64 {
+            let ring =
+                select_funding_ring(&notes, source, &mut StdRng::seed_from_u64(seed)).unwrap();
+            assert_eq!(ring.len(), 4);
+            assert!(ring.contains(&source));
+            assert!(ring
+                .windows(2)
+                .all(|pair| notes[pair[0]].note_id < notes[pair[1]].note_id));
+            alternatives.extend(ring.iter().copied().filter(|&i| i != source));
+            seen.insert(ring);
+        }
+        // Deterministic coverage assertions, not a statistical anonymity claim.
+        assert!(seen.len() > 1);
+        assert_eq!(alternatives.len(), 4);
+    }
+}
+
+#[test]
+fn funding_ring_bounds_and_filters_candidates() {
+    let mut notes = note_pool(70);
+    let mut rng = StdRng::seed_from_u64(1);
+    assert_eq!(select_funding_ring(&notes, 69, &mut rng).unwrap().len(), 64);
+    for note in &mut notes[..10] {
+        note.lock_id = [1; 32];
+    }
+    for note in &mut notes[10..20] {
+        note.asset_id = [8; 32];
+    }
+    let ring = select_funding_ring(&notes, 69, &mut rng).unwrap();
+    assert_eq!(ring.len(), 32);
+    assert!(ring.contains(&69));
+    assert!(ring.iter().all(|&index| index >= 20));
+    assert!(select_funding_ring(&notes, 0, &mut rng).is_err());
+    assert!(select_funding_ring(&notes, 70, &mut rng).is_err());
+    assert!(select_funding_ring(&notes[69..], 0, &mut rng).is_err());
 }
 
 fn err(error: impl std::fmt::Display) -> String {

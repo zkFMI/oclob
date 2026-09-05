@@ -6,7 +6,8 @@ use oclob_core::SecretOrder;
 use oclob_dekyx::DemoEligibilityWallet;
 use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey, SealedReservationAuthority, MPC_PARTIES};
 use oclob_settlement::pretrade::{
-    CorporateFunding, FinalizedReservation, PrivateAdmissionClient, PrivateReserveRequest,
+    select_funding_ring, CorporateFunding, FinalizedReservation, PrivateAdmissionClient,
+    PrivateReserveRequest,
 };
 use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
@@ -130,7 +131,7 @@ impl PreparedCorporateReserve {
     }
 }
 
-fn private_client(
+pub(crate) fn private_client(
     config: &CorporateNativeConfig,
     identity: &crate::network::ClientIdentityConfig,
 ) -> Result<PrivateAdmissionClient, String> {
@@ -187,6 +188,33 @@ pub fn prepare_reservation(
     signer: &SigningKey,
     now: u64,
 ) -> Result<PreparedCorporateReserve, String> {
+    prepare_reservation_from_note(
+        config,
+        identity,
+        eligibility,
+        order,
+        handle,
+        eligibility_commitment,
+        signer,
+        now,
+        None,
+    )
+}
+
+/// An explicitly selected recovered note must be used, never silently replaced
+/// by another funding input if it is missing, spent or too small.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_reservation_from_note(
+    config: &CorporateNativeConfig,
+    identity: &crate::network::ClientIdentityConfig,
+    eligibility: &DemoEligibilityWallet,
+    order: &SecretOrder,
+    handle: &Handle,
+    eligibility_commitment: [u8; 32],
+    signer: &SigningKey,
+    now: u64,
+    source_note: Option<[u8; 32]>,
+) -> Result<PreparedCorporateReserve, String> {
     let private = private_client(config, identity)?;
     let scope: ApplicationReserveScope =
         serde_json::from_value(private.call("scope", serde_json::json!({}))?).map_err(err)?;
@@ -215,19 +243,29 @@ pub fn prepare_reservation(
         return Err("canonical funding changed; rebuild the same request before submission".into());
     }
     let wallet = Wallet::from_parts(handle.secret, scalar(config.wallet_spend_secret)?);
-    let source = ledger
-        .scan(&wallet, &key)
-        .into_iter()
-        .find(|(index, opening)| {
-            notes[*index].lock_id == [0; 32] && opening.value >= order.reservation_limit()
-        })
-        .map(|(index, _)| index)
-        .ok_or("corporate wallet has no sufficient unlocked funding note")?;
-    let decoy = notes
-        .iter()
-        .enumerate()
-        .find_map(|(index, note)| (index != source && note.lock_id == [0; 32]).then_some(index))
-        .ok_or("funding pool has fewer than two unlocked notes")?;
+    let mut source = None;
+    for (index, opening) in ledger.scan(&wallet, &key) {
+        if notes[index].lock_id != [0; 32]
+            || opening.value < order.reservation_limit()
+            || source_note.is_some_and(|id| id != notes[index].note_id)
+        {
+            continue;
+        }
+        let serial = qomm_defmi::notes::note_nullifier(&opening.serial)
+            .compress()
+            .to_bytes();
+        let spent = bridge.note_serial(serial)?;
+        if spent.state_root != root {
+            return Err("funding state changed during note selection".into());
+        }
+        if !spent.spent {
+            source = Some(index);
+            break;
+        }
+    }
+    let source =
+        source.ok_or("corporate wallet has no sufficient selected unspent funding note")?;
+    let ring = select_funding_ring(&notes, source, &mut rand::rngs::OsRng)?;
     let enrollment = eligibility
         .present(
             random(),
@@ -282,7 +320,7 @@ pub fn prepare_reservation(
             wallet: &wallet,
             ledger: &ledger,
             canonical_notes: &notes,
-            ring: &[source, decoy],
+            ring: &ring,
             source_index: source,
             facility: &facility,
             facility_values: config.facility_values,

@@ -28,6 +28,7 @@ services:
       - ${OCLOB_SOURCE_DIR}/research:/research:ro
     environment:
       OCLOB_NATIVE_L1_SERVICE: "1"
+      OCLOB_NATIVE_WALLET: ${OCLOB_NATIVE_WALLET:-0}
       OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_notes_contract.json}
       OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_notes_001.json}
       QOMM_AVALANCHE_ARTIFACT: /out/oclob_native_notes.json
@@ -61,6 +62,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     environment:
+      OCLOB_NATIVE_WALLET: ${OCLOB_NATIVE_WALLET:-0}
       OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_notes_contract.json}
       OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_notes_001.json}
     volumes:

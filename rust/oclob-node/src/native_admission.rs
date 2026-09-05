@@ -124,11 +124,14 @@ impl AdmissionAuthority {
                         | "defmivm.txStatus"
                         | "defmivm.network"
                 );
-                let write = matches!(role, PeerRole::Coordinator | PeerRole::Settlement)
-                    && matches!(
-                        method,
-                        "defmivm.issueApplicationNoteFill" | "defmivm.issueApplicationNoteRelease"
-                    );
+                let write = (role == PeerRole::Participant
+                    && method == "defmivm.issueNoteClaimRedemption")
+                    || matches!(role, PeerRole::Coordinator | PeerRole::Settlement)
+                        && matches!(
+                            method,
+                            "defmivm.issueApplicationNoteFill"
+                                | "defmivm.issueApplicationNoteRelease"
+                        );
                 if !read && !write {
                     return Err("chain method is not authorized at the private ingress".into());
                 }

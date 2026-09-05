@@ -10,6 +10,7 @@
 pub mod corporate;
 pub mod corporate_journal;
 pub mod native_admission;
+pub mod native_wallet;
 
 pub mod edge_client;
 pub mod executor;

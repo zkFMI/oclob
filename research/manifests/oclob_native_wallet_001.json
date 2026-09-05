@@ -1,0 +1,51 @@
+{
+  "manifest_id": "oclob-native-wallet-rough-001",
+  "contract_id": "oclob-native-wallet-v1",
+  "contract_path": "research/oclob_native_wallet_contract.json",
+  "contract_sha256": "94b1b10c1bc2c9db3336a48cb43556cf428e6ee827af693727346380c0ac4273",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The prior native corporate path could restart submission but could not redeem post-fill claims or rebuild the later private facility generation for another actual order.",
+  "causal_hypothesis": "VM-verified recipient redemption plus corporate canonical claim/remainder recovery and a persisted facility witness will let the next actual native reserve spend the exact refunded cash note without revealing its destination wallet address or replacing it with initial funds.",
+  "single_intended_change": "Connect post-fill native wallet/claim/facility recovery and exact recovered-input selection to the established real settlement route.",
+  "baseline": "OCLOB cb372ee3408e8c64ed0a0373bfaa1ecfb1249867 with DeFMI e28a2e7; uninterrupted or crash-recovered first trade only.",
+  "dependency_candidate": "DeFMI 1cf7eef6346f0cf31c933b1449c5e75ec567d4ac (431 remote tests; actual integration not yet accepted)",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "recovered_note_funded_next_order",
+  "point_prediction": {
+    "recovered_note_funded_next_order": 1,
+    "redeemed_claims": 3,
+    "private_facility_generations_after_recovery": [
+      2,
+      2
+    ],
+    "facility_generations_after_new_reserve": [
+      2,
+      3
+    ],
+    "first_fill_price": 100,
+    "first_fill_quantity": 40,
+    "next_order_quantity": 1,
+    "next_order_price": 40,
+    "next_order_matched": false
+  },
+  "most_likely_prediction_error": "The remainder blinding normalization or canonical RPC transport may not agree with corporate recovery, preventing the next real reserve proof from spending the redeemed refund.",
+  "rejection_rules": [
+    "contract hash mismatch",
+    "recipient ownership replaced by governance approval",
+    "private witness differs from canonical commitments or generation",
+    "claim redeemed twice on repeat",
+    "the selected recovered cash refund is not the actual consumed proof input",
+    "second order not admitted by seven nodes",
+    "five roots disagree or fail restart recovery"
+  ],
+  "promotion_rules": [
+    "At most smoke_only. The second order is only funded/admitted, never claimed matched/settled. No WAN/performance/product promotion."
+  ],
+  "command": "make remote-native-wallet-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

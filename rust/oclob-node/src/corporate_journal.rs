@@ -198,20 +198,60 @@ impl NativeCorporateJournal {
     }
 
     pub fn save_reserved_witness(&self, prepared: &PreparedCorporateReserve) -> Result<(), String> {
-        let witness = &prepared.facility_after;
+        self.save_funding_witness(&prepared.facility_after)
+    }
+
+    pub fn save_funding_witness(&self, witness: &FacilityWitness) -> Result<(), String> {
+        let commitments = witness.commitments()?;
         let id = format!(
             "funding:{}:{}",
             hex::encode(witness.facility_id),
             witness.sequence
         );
         let stored: FacilityWitness = self.put_first(&id, witness, 1, u64::MAX)?;
-        if stored.commitments()? != witness.commitments()? {
+        if stored.facility_id != witness.facility_id
+            || stored.sequence != witness.sequence
+            || stored.commitments()? != commitments
+        {
             return Err(
                 "two different corporate funding witnesses name the same canonical generation"
                     .into(),
             );
         }
         Ok(())
+    }
+
+    pub fn reservations(&self) -> Result<Vec<PreparedCorporateReserve>, String> {
+        let mut records = self.outbox.summaries()?;
+        records.sort_by_key(|r| r.sequence);
+        records
+            .into_iter()
+            .filter(|r| r.request_id.starts_with("reserve:"))
+            .map(|r| {
+                self.get(&r.request_id)?
+                    .ok_or("saved reserve disappeared".into())
+            })
+            .collect()
+    }
+
+    pub fn claim_redemption(
+        &self,
+        claim: [u8; 32],
+    ) -> Result<Option<qomm_defmi::claim_redemption::NoteClaimRedemption>, String> {
+        self.get(&format!("redemption:{}", hex::encode(claim)))
+    }
+
+    pub fn save_claim_redemption(
+        &self,
+        value: &qomm_defmi::claim_redemption::NoteClaimRedemption,
+    ) -> Result<qomm_defmi::claim_redemption::NoteClaimRedemption, String> {
+        value.signing_message()?;
+        self.put_first(
+            &format!("redemption:{}", hex::encode(value.claim_id)),
+            value,
+            1,
+            u64::MAX,
+        )
     }
 
     pub fn latest_funding(
@@ -592,6 +632,100 @@ mod tests {
         let mut invalid = witness;
         invalid.blindings[0] = [255; 32];
         assert!(invalid.commitments().is_err());
+    }
+
+    #[test]
+    fn recovered_funding_is_immutable_and_invalid_input_cannot_poison_its_generation() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let witness = FacilityWitness {
+            facility_id: config.facility_id,
+            sequence: 2,
+            values: [80, 0, 40],
+            blindings: [
+                Scalar::from(8u64).to_bytes(),
+                [0; 32],
+                Scalar::ONE.to_bytes(),
+            ],
+        };
+        let before = fs::read(files.path()).unwrap();
+        let mut invalid = witness.clone();
+        invalid.blindings[0] = [255; 32];
+        assert!(journal.save_funding_witness(&invalid).is_err());
+        assert_eq!(fs::read(files.path()).unwrap(), before);
+        journal.save_funding_witness(&witness).unwrap();
+        let canonical_bytes = fs::read(files.path()).unwrap();
+        journal.save_funding_witness(&witness).unwrap();
+        assert_eq!(fs::read(files.path()).unwrap(), canonical_bytes);
+        let mut conflict = witness.clone();
+        conflict.values[0] -= 1;
+        assert!(journal.save_funding_witness(&conflict).is_err());
+        assert_eq!(fs::read(files.path()).unwrap(), canonical_bytes);
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let funding = reopened.latest_funding(&config).unwrap();
+        assert_eq!(funding.facility_values, witness.values);
+        assert_eq!(funding.facility_blindings, witness.blindings);
+    }
+
+    #[test]
+    fn claim_request_recovery_preserves_first_destination_and_signature_bytes() {
+        use qomm_defmi::claim_redemption::NoteClaimRedemption;
+        use qomm_defmi::note_chain::NoteOutput;
+        use qomm_defmi::notes::{NoteLedger, Wallet};
+        use qomm_zk::pedersen::Pedersen;
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let key = Pedersen::new(b"qomm:defmi:v1");
+        let ledger = NoteLedger::new(key.clone(), 32);
+        let wallet = Wallet::new(&mut rand::rngs::OsRng);
+        let build_output = || {
+            let note = ledger.build_note(
+                &wallet.address,
+                40,
+                key.commit_u64(40, &Scalar::ONE),
+                &Scalar::ONE,
+                &mut rand::rngs::OsRng,
+            );
+            NoteOutput::from_note(&note, config.asset_id, [0; 32]).unwrap()
+        };
+        // This unit tests durable bytes only; VM ownership verification is
+        // covered by the real-signature DeFMI tests and live acceptance.
+        let original = NoteClaimRedemption {
+            domain: "unit-chain".into(),
+            before_root: [41; 32],
+            operation_id: [42; 32],
+            claim_id: [43; 32],
+            output: build_output(),
+            recipient_signature: vec![44; 64],
+        };
+        let stored = journal.save_claim_redemption(&original).unwrap();
+        assert_eq!(stored, original);
+        let before = fs::read(files.path()).unwrap();
+        let mut another = original.clone();
+        another.output = build_output();
+        another.recipient_signature = vec![45; 64];
+        assert_eq!(journal.save_claim_redemption(&another).unwrap(), original);
+        assert_eq!(fs::read(files.path()).unwrap(), before);
+        let mut malformed = original.clone();
+        malformed.claim_id = [0; 32];
+        assert!(journal.save_claim_redemption(&malformed).is_err());
+        assert_eq!(fs::read(files.path()).unwrap(), before);
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        assert_eq!(
+            reopened
+                .claim_redemption(original.claim_id)
+                .unwrap()
+                .unwrap(),
+            original
+        );
     }
 
     #[test]

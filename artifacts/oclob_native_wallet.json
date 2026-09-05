@@ -1,0 +1,54 @@
+{
+  "contract_sha256": "94b1b10c1bc2c9db3336a48cb43556cf428e6ee827af693727346380c0ac4273",
+  "independent_operators": false,
+  "manifest_id": "oclob-native-wallet-rough-003",
+  "native": {
+    "canonical_height": 14,
+    "canonical_transaction": "iDhhLbgegzifFpGtLekSAeDoXy2iMic6h6vpTyTioFBwT3nAe",
+    "contract_sha256": "94b1b10c1bc2c9db3336a48cb43556cf428e6ee827af693727346380c0ac4273",
+    "elapsed_ms": 10436,
+    "exact_retry_did_not_apply_twice": true,
+    "maker_reserve_active": true,
+    "manifest_id": "oclob-native-wallet-rough-003",
+    "mpc_nodes": 7,
+    "mpc_output_sha256": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
+    "native_after_root": "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "native_note_settlement": true,
+    "native_settlement_root": "719fd8f5ebfff1048df0eaf1ec07730c5e2c6b4552bbf3f9e03dc43c909e6767",
+    "next_order_commitment": "7742c1b0b108703008cde363b16ab12007c420194571bae6342ecaa2b93f1492",
+    "next_order_matched": false,
+    "next_order_mpc_nodes": 7,
+    "post_match_participant_signatures": 0,
+    "pretrade_facility_sequences": [
+      1,
+      1
+    ],
+    "private_facility_witnesses_recovered": 2,
+    "raw_order_capability_opened": false,
+    "recipient_claims_redeemed": 3,
+    "recovered_note_funded_next_order": true,
+    "substituted_mpc_output_rejected_by_resident_node": true,
+    "taker_reserve_closed": true,
+    "trade_price": 100,
+    "trade_quantity": 40,
+    "verdict": "smoke_only",
+    "zkpi_sha256": "5a3837017af5f63a036fe54441e02dbc86fac0df6814a26a003a5fc1212ed5c3"
+  },
+  "recovered_validator_roots": [
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90"
+  ],
+  "status": "smoke_only",
+  "validator_restart_recovered": true,
+  "validator_roots": [
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90",
+    "d1e428528a2ec52979c55fefa5338bd87e22b1759c6929320708747230f48c90"
+  ],
+  "wan_evidence": false
+}

@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-wallet-rough-002",
+  "contract_id": "oclob-native-wallet-v1",
+  "contract_path": "research/oclob_native_wallet_contract.json",
+  "contract_sha256": "94b1b10c1bc2c9db3336a48cb43556cf428e6ee827af693727346380c0ac4273",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The first wallet run completed the honest functional path on DeFMI 1cf7eef, but subsequent real-verifier regressions exposed unsafe note membership, linkable nullifiers and nonzero residual acceptance. That run is not acceptance of the corrected proof scheme.",
+  "causal_hypothesis": "The repaired, versioned note proof and canonical nullifier adapter preserve the exact-refund wallet path while verifying the corrected ownership, value, destination and conservation relations in every validator.",
+  "single_intended_change": "Replace the native-note dependency and wallet nullifier adapter with DeFMI 153fe67, retaining the first run's order, recovery and exact-refund scenario.",
+  "baseline": "oclob-native-wallet-rough-001: honest functional smoke passed on DeFMI 1cf7eef; later security regressions rejected its proof scheme. The immutable first manifest and ledger remain historical evidence only.",
+  "dependency_candidate": "DeFMI 153fe671e523ec573a6c6261f341423a49371f5d: 607 remote release tests and all-target Clippy passed, including seven note regressions. Pinned upstream Triptych remains experimental and independently unaudited here.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "recovered_note_funded_next_order",
+  "point_prediction": {
+    "recovered_note_funded_next_order": 1,
+    "redeemed_claims": 3,
+    "private_facility_generations_after_recovery": [2, 2],
+    "facility_generations_after_new_reserve": [2, 3],
+    "first_fill_price": 100,
+    "first_fill_quantity": 40,
+    "next_order_quantity": 1,
+    "next_order_price": 40,
+    "next_order_matched": false
+  },
+  "most_likely_prediction_error": "A legacy serial calculation or old note-wire assumption in a corporate or validator path will prevent the corrected reserve from spending the exact refund.",
+  "rejection_rules": [
+    "contract hash mismatch",
+    "legacy note proof or nullifier used by the candidate",
+    "recipient ownership replaced by governance approval",
+    "private witness differs from canonical commitments or generation",
+    "claim redeemed twice on repeat",
+    "the selected recovered cash refund is not the actual consumed proof input",
+    "second order not admitted by seven nodes",
+    "five roots disagree or fail restart recovery"
+  ],
+  "promotion_rules": [
+    "At most smoke_only. The second order is funded/admitted, not matched/settled. A functional run is not a cryptographic audit, WAN result, performance result, migration acceptance or product promotion."
+  ],
+  "command": "make remote-native-wallet-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

@@ -8,7 +8,7 @@ use oclob_edge::{
     SealedSettlementCapability, MPC_PARTIES,
 };
 use oclob_node::corporate::{
-    build_reserved_delivery, finalize_reservation, prepare_reservation, verify_finalized,
+    build_reserved_delivery, finalize_reservation, prepare_reservation_from_note, verify_finalized,
     CorporateNativeConfig, PreparedCorporateReserve,
 };
 use oclob_node::corporate_journal::{
@@ -38,6 +38,32 @@ const VENUE_DOMAIN: &[u8] = b"defmi:oclob:v1";
 enum Scenario {
     Maker,
     Taker,
+}
+
+/// Private corporate input. This file is never sent to the coordinator.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct NativeOrderInstruction {
+    side: Side,
+    limit_price: u64,
+    quantity: u64,
+    time_in_force: TimeInForce,
+    valid_for_seconds: u64,
+    source_note: Option<String>,
+}
+
+impl NativeOrderInstruction {
+    fn source(&self) -> Result<Option<[u8; 32]>, String> {
+        self.source_note
+            .as_ref()
+            .map(|s| {
+                hex::decode(s)
+                    .map_err(|_| "funding note must be hexadecimal".to_string())?
+                    .try_into()
+                    .map_err(|_| "funding note must contain 32 bytes".into())
+            })
+            .transpose()
+    }
 }
 
 fn main() {
@@ -193,14 +219,51 @@ fn run_native(
     let secret = load_secret_32(PathBuf::from(journal_key)).map_err(|e| e.to_string())?;
     let journal =
         NativeCorporateJournal::open(PathBuf::from(journal_path), &secret, config, cluster)?;
-    let input_digest = NativeCorporateJournal::input_digest(&(
-        "oclob-demo-order-v1",
-        &cluster.market_id,
-        match scenario {
-            Scenario::Maker => "sell-60-at-100-gtc",
-            Scenario::Taker => "buy-40-at-101-ioc",
-        },
-    ))?;
+    if std::env::var("OCLOB_NATIVE_RECOVER_WALLET").ok().as_deref() == Some("1") {
+        return recover_native_wallet(config, identity, &journal, handoff, scenario);
+    }
+    let instruction: Option<NativeOrderInstruction> =
+        std::env::var_os("OCLOB_CORPORATE_ORDER_FILE")
+            .map(|p| {
+                let p = PathBuf::from(p);
+                if fs::symlink_metadata(&p)
+                    .map_err(|e| e.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o077
+                    != 0
+                {
+                    return Err("corporate order file must be owner-only".into());
+                }
+                read_json(&p)
+            })
+            .transpose()?;
+    if let Some(input) = &instruction {
+        let asset = match input.side {
+            Side::Buy => oclob_settlement::canonical_cash_asset_id(),
+            Side::Sell => oclob_settlement::canonical_securities_asset_id(&cluster.market_id),
+        };
+        if asset != config.asset_id || !(10..=3600).contains(&input.valid_for_seconds) {
+            return Err("order asset or validity is outside the corporate configuration".into());
+        }
+        input.source()?;
+    }
+    let input_digest = if let Some(input) = &instruction {
+        NativeCorporateJournal::input_digest(&(
+            "oclob-corporate-order-v1",
+            &cluster.market_id,
+            input,
+        ))?
+    } else {
+        NativeCorporateJournal::input_digest(&(
+            "oclob-demo-order-v1",
+            &cluster.market_id,
+            match scenario {
+                Scenario::Maker => "sell-60-at-100-gtc",
+                Scenario::Taker => "buy-40-at-101-ioc",
+            },
+        ))?
+    };
     let handle = Identity::from_seed(config.identity_seed).handle(VENUE_DOMAIN);
     let (_, issuer) =
         deterministic_demo_environment(&cluster.market_id).map_err(|e| e.to_string())?;
@@ -214,12 +277,30 @@ fn run_native(
     let intent = if let Some(intent) = journal.intent(&request_id)? {
         intent
     } else {
-        let order = demo_order(
-            &cluster.market_id,
-            scenario,
-            handle.point.compress().to_bytes(),
-            wallet.subject_nullifier(),
-        )?;
+        let order = if let Some(input) = &instruction {
+            SecretOrder::new_with_dekyx_nullifier(
+                &cluster.market_id,
+                input.side,
+                input.limit_price,
+                input.quantity,
+                input.time_in_force,
+                unix_seconds()?
+                    .checked_add(input.valid_for_seconds)
+                    .ok_or("order expiry overflow")?,
+                handle.point.compress().to_bytes(),
+                wallet.subject_nullifier(),
+                random_digest(),
+                random_digest(),
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            demo_order(
+                &cluster.market_id,
+                scenario,
+                handle.point.compress().to_bytes(),
+                wallet.subject_nullifier(),
+            )?
+        };
         let intent = StoredCorporateIntent {
             input_digest,
             order_wire: order.to_secret_wire(),
@@ -240,7 +321,7 @@ fn run_native(
             saved
         } else {
             let funding = journal.latest_funding(config)?;
-            let pending = prepare_reservation(
+            let pending = prepare_reservation_from_note(
                 &funding,
                 identity,
                 &wallet,
@@ -249,6 +330,11 @@ fn run_native(
                 intent.eligibility_commitment,
                 &SigningKey::from_bytes(&intent.signing_key),
                 unix_seconds()?,
+                instruction
+                    .as_ref()
+                    .map(|i| i.source())
+                    .transpose()?
+                    .flatten(),
             )?;
             journal.save_stage(&request_id, "reserve", &pending, &intent)?
         };
@@ -329,12 +415,90 @@ fn run_native(
     };
     journal.verify_receipt(&receipt, &delivery, cluster, intent.accepted_at)?;
     publish_unchanged(handoff, &receipt)?;
+    if let Some(source) = instruction
+        .as_ref()
+        .map(|i| i.source())
+        .transpose()?
+        .flatten()
+    {
+        oclob_node::native_wallet::verify_selected_funding_spent(
+            config, identity, &prepared, source,
+        )?;
+        publish_unchanged(
+            &handoff.with_extension("corporate.json"),
+            &json!({
+                "order_commitment": receipt.commitment().hex(),
+                "selected_funding_note_spent_verified": true,
+                "canonical_reserve_verified": true,
+                "facility_sequence": prepared.facility_after.sequence,
+            }),
+        )?;
+    }
     println!(
         "{}",
         json!({"status": "pretrade_reserved_and_admitted", "nodes": MPC_PARTIES,
         "order_commitment": receipt.commitment().hex(), "native_pretrade": true, "durable_corporate_journal": true,
         "reused_completed_receipt": reused_receipt})
     );
+    Ok(())
+}
+
+fn recover_native_wallet(
+    config: &CorporateNativeConfig,
+    identity: &ClientIdentityConfig,
+    journal: &NativeCorporateJournal,
+    handoff: &Path,
+    scenario: Scenario,
+) -> Result<(), String> {
+    let recovered = oclob_node::native_wallet::recover_wallet(config, identity, journal)?;
+    // Fixed financial assertions and next-order construction are explicitly
+    // confined to the opt-in lab acceptance, not the reusable recovery API.
+    if std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        println!(
+            "{}",
+            json!({"status": "wallet_recovered", "notes": recovered.notes.len(),
+            "facility_sequence": recovered.facility.sequence})
+        );
+        return Ok(());
+    }
+    let expected = match scenario {
+        Scenario::Maker => [60, 20, 40],
+        Scenario::Taker => [6000, 0, 4000],
+    };
+    let expected_notes = match scenario {
+        Scenario::Maker => 1,
+        Scenario::Taker => 2,
+    };
+    if recovered.facility.values != expected
+        || recovered.facility.sequence != 2
+        || recovered.notes.len() != expected_notes
+    {
+        return Err("lab wallet recovery differs from the executed native fill".into());
+    }
+    if matches!(scenario, Scenario::Taker) {
+        let note = recovered
+            .own_asset_refund
+            .ok_or("actual cash refund note was not recovered")?;
+        let instruction = NativeOrderInstruction {
+            side: Side::Buy,
+            limit_price: 40,
+            quantity: 1,
+            time_in_force: TimeInForce::GoodTilCancelled,
+            valid_for_seconds: 600,
+            source_note: Some(hex::encode(note)),
+        };
+        publish_unchanged(Path::new("/corporate/reuse-order.json"), &instruction)?;
+    }
+    let report = json!({"wallet_recovered": true, "notes": recovered.notes.len(),
+        "facility_sequence": recovered.facility.sequence, "facility_id": hex::encode(config.facility_id),
+        "expected_private_balances_verified": true, "after_root": hex::encode(recovered.after_root),
+        "canonical_notes": recovered.notes.iter().map(|n| hex::encode(n.note_id)).collect::<Vec<_>>()});
+    publish_unchanged(&handoff.with_extension("wallet.json"), &report)?;
+    println!("{}", report);
     Ok(())
 }
 

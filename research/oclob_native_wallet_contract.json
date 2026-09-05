@@ -1,0 +1,23 @@
+{
+  "contract_id": "oclob-native-wallet-v1",
+  "objective": "After real native seven-node MPC/five-validator settlement, recover both corporate wallets and private facility witnesses, then fund and admit a further actual OCLOB order using the exact newly redeemed cash-refund note.",
+  "base_contract": "oclob-native-notes-v1",
+  "base_contract_sha256": "1e3b46f44422669be0049dd81cab57c768687d174a98a59eb63db98a5d848229",
+  "primary_metric": "recovered_note_funded_next_order",
+  "hard_constraints": [
+    "First trade uses actual corporate pretrade, seven resident malicious-shamir nodes, exact collaborative zkPI, and full native monetary verification in five live Avalanche validators.",
+    "Only recipient corporate processes decrypt claim openings and choose destination wallet notes. Every VM verifies the full recipient signature; governance cannot bypass it for native claims.",
+    "Maker redeems one cash delivery and Taker redeems a securities delivery and a cash refund; both verify post-fill private facility commitments and generation 2 against canonical state.",
+    "Exact claim signatures and outputs are saved before their RPC; a repeated corporate recovery must not mint more notes.",
+    "A new Taker buy GTC 1 at 40 must use the actual redeemed 40 cash refund, never another convenient funding note. The corporate process compares the actual spend proof serial to that selected note and reads its canonical spent status.",
+    "The new native reserve advances the Taker facility to generation 3 and all seven nodes return signed admissions; the new order is not matched in this acceptance.",
+    "All five final roots must agree and survive a real validator restart. No extra signature is needed to settle the original trade; later recipient ownership signatures cannot undo settlement.",
+    "All builds, tests and Docker execution remain on Softbank or Omen."
+  ],
+  "truth_provider": "Actual corporate opening/serial checks and exact native reserve proofs; signed node admissions; canonical notes, spent serials, facility generations and roots from live validators.",
+  "non_claims": [
+    "One host and one original fill, not independent operators/WAN or performance/economic evidence.",
+    "The second order is funded and admitted, not matched/settled in this scenario.",
+    "No automatic stale-parent rebasing, full-disk rollback recovery, arbitrary concurrent external facility writers, Byzantine encrypted-opening recovery or UI acceptance."
+  ]
+}

@@ -55,7 +55,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if manifest["contract_sha256"] != contract_hash
         || !matches!(
             manifest["contract_id"].as_str(),
-            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1")
+            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1" | "oclob-native-wallet-v1")
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
     {
@@ -107,6 +107,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let issuer_bytes: [u8; 32] = read("/public/native-issuer.json")?;
     let issuer = VerifyingKey::from_bytes(&issuer_bytes)?;
     let client = private.chain()?;
+    if std::env::var("OCLOB_NATIVE_WALLET_FINALIZE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return finalize_wallet_acceptance(&client, &cluster, &contract_hash);
+    }
     let readonly = QuorumAuthorizer::new(
         BTreeMap::from([("read-only".into(), issuer)]),
         1,
@@ -325,6 +332,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "mpc_output_sha256": hex::encode(output),
         "zkpi_sha256": hex::encode(Sha256::digest(&signed.instruction)),
         "maker_reserve_active": true, "taker_reserve_closed": true, "elapsed_ms": started.elapsed().as_millis()});
+    let target = if std::env::var("OCLOB_NATIVE_WALLET").ok().as_deref() == Some("1") {
+        "/handoff/native-match-result.json"
+    } else {
+        "/handoff/native-result.json"
+    };
+    publish_result(&result, target)?;
+    println!("{}", result);
+    Ok(())
+}
+
+fn publish_result(result: &Value, target: &str) -> Result<(), Box<dyn std::error::Error>> {
     let pending = format!("/handoff/.native-result-{}.json", std::process::id());
     let mut file = fs::OpenOptions::new()
         .create_new(true)
@@ -335,8 +353,76 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     file.sync_all()?;
     // The observer must never see a partially written receipt. A hard link
     // publishes atomically and refuses to replace a previous final result.
-    fs::hard_link(&pending, "/handoff/native-result.json")?;
+    fs::hard_link(&pending, target)?;
     fs::remove_file(&pending)?;
+    Ok(())
+}
+
+fn finalize_wallet_acceptance<C: AvalancheClient>(
+    client: &C,
+    cluster: &ClusterPublicConfig,
+    contract_hash: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut result: Value = read("/handoff/native-match-result.json")?;
+    if result["contract_sha256"] != contract_hash || result["native_note_settlement"] != true {
+        return Err("wallet acceptance lacks its exact preceding settlement".into());
+    }
+    let maker: Value = read("/handoff/maker.wallet.json")?;
+    let taker: Value = read("/handoff/taker.wallet.json")?;
+    for (report, count) in [(&maker, 1), (&taker, 2)] {
+        if report["wallet_recovered"] != true
+            || report["expected_private_balances_verified"] != true
+            || report["notes"] != count
+            || report["facility_sequence"] != 2
+        {
+            return Err("corporate recovery report did not verify its actual wallet".into());
+        }
+        let notes = report["canonical_notes"]
+            .as_array()
+            .ok_or("recovered canonical notes absent")?;
+        if notes.len() != count as usize {
+            return Err("wallet note count differs".into());
+        }
+        for note in notes {
+            let id: [u8; 32] = hex::decode(note.as_str().ok_or("invalid recovered note ID")?)?
+                .try_into()
+                .map_err(|_| "recovered note ID has wrong length")?;
+            let canonical = client.note_snapshot(id)?;
+            if canonical.output.note_id != id || canonical.output.lock_id != [0; 32] {
+                return Err("recovered note is not the actual unlocked canonical output".into());
+            }
+        }
+    }
+    let reuse: EdgeAdmissionReceipt = read("/handoff/reuse-taker.json")?;
+    reuse.verify(cluster, now()?)?;
+    let source: Value = read("/handoff/reuse-taker.corporate.json")?;
+    if !reuse.manifest.uses_pretrade_reservation()
+        || source["order_commitment"] != reuse.commitment().hex()
+        || source["selected_funding_note_spent_verified"] != true
+        || source["canonical_reserve_verified"] != true
+        || source["facility_sequence"] != 3
+    {
+        return Err("new order did not prove consumption of its selected recovered note".into());
+    }
+    for (report, sequence) in [(&maker, 2), (&taker, 3)] {
+        let id: [u8; 32] =
+            hex::decode(report["facility_id"].as_str().ok_or("facility ID absent")?)?
+                .try_into()
+                .map_err(|_| "facility ID has wrong length")?;
+        if client.credit_facility_snapshot(id)?.facility.sequence != sequence {
+            return Err("canonical facility did not advance through wallet reuse".into());
+        }
+    }
+    result["native_settlement_root"] = result["native_after_root"].clone();
+    result["native_after_root"] = json!(hex::encode(client.state_root()?));
+    result["recipient_claims_redeemed"] = json!(3);
+    result["private_facility_witnesses_recovered"] = json!(2);
+    result["recovered_note_funded_next_order"] = json!(true);
+    result["next_order_mpc_nodes"] = json!(7);
+    result["next_order_commitment"] = json!(reuse.commitment().hex());
+    result["next_order_matched"] = json!(false);
+    result["verdict"] = json!("smoke_only");
+    publish_result(&result, "/handoff/native-result.json")?;
     println!("{}", result);
     Ok(())
 }

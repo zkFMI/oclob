@@ -34,7 +34,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
         || !matches!(
             manifest["contract_id"].as_str(),
-            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1")
+            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1" | "oclob-native-wallet-v1")
         )
     {
         return Err(failure(
