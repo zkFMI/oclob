@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
@@ -23,13 +25,15 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
+use zkpi_defmi_sdk::application::oclob_manifest_v1;
+use zkpi_defmi_sdk::reservation::ReservationPermit;
 
 pub const MPC_PARTIES: usize = 7;
 pub const MAX_CORRUPT_PARTIES: usize = 2;
 pub const MATCH_FIELD_COUNT: usize = 6;
 pub const SETTLEMENT_FIELD_COUNT: usize = 2;
 pub const VSS_COEFFICIENTS: usize = MAX_CORRUPT_PARTIES + 1;
-pub const SEALED_SHARE_CLEAR_BYTES: usize = 4_096;
+pub const SEALED_SHARE_CLEAR_BYTES: usize = 8_192;
 pub const SETTLEMENT_KEY_THRESHOLD: usize = MAX_CORRUPT_PARTIES + 1;
 pub const SETTLEMENT_KEY_COEFFICIENTS: usize = SETTLEMENT_KEY_THRESHOLD;
 pub const SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES: usize = 1_024;
@@ -48,7 +52,8 @@ const CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE
 const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CLEAR:v1";
 const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v1";
 const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
-const VERSION: u16 = 3;
+const PREAUTHORIZED_SETTLEMENT_DOMAIN: &[u8] = b"OCLOB:PREAUTHORIZED-SETTLEMENT:v1";
+const VERSION: u16 = 4;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -60,6 +65,14 @@ pub struct EdgeOrderManifest {
     pub commitment: OrderCommitment,
     pub retention_deadline: u64,
     pub eligibility_commitment: Digest32,
+    /// Commitment of the participant's salted private order, made before the
+    /// VSS manifest is assembled. A DeFMI reservation permit names this value.
+    #[serde(default)]
+    pub source_order_commitment: Digest32,
+    /// Digest of a DeFMI-signed permit delivered only inside each encrypted
+    /// node share. Zero identifies the legacy post-match capability path.
+    #[serde(default)]
+    pub reservation_permit_digest: Digest32,
     pub settlement_capability_commitment: Digest32,
     #[serde(default)]
     pub settlement_key_commitments: [[u8; 32]; SETTLEMENT_KEY_COEFFICIENTS],
@@ -81,8 +94,16 @@ impl EdgeOrderManifest {
             || self.market_id.len() > 64
             || self.retention_deadline < now
             || self.eligibility_commitment == [0; 32]
+            || self.source_order_commitment == [0; 32]
             || self.settlement_capability_commitment == [0; 32]
             || self.commitment != self.derived_commitment()
+        {
+            return Err(EdgeError::Manifest);
+        }
+        if self.reservation_permit_digest != [0; 32]
+            && (!self.settlement_proof_enabled
+                || self.settlement_capability_commitment
+                    != preauthorized_settlement_commitment(self.reservation_permit_digest))
         {
             return Err(EdgeError::Manifest);
         }
@@ -144,6 +165,8 @@ impl EdgeOrderManifest {
         body.extend_from_slice(self.market_id.as_bytes());
         body.extend_from_slice(&self.retention_deadline.to_be_bytes());
         body.extend_from_slice(&self.eligibility_commitment);
+        body.extend_from_slice(&self.source_order_commitment);
+        body.extend_from_slice(&self.reservation_permit_digest);
         body.extend_from_slice(&self.settlement_capability_commitment);
         for commitment in &self.settlement_key_commitments {
             body.extend_from_slice(commitment);
@@ -162,6 +185,10 @@ impl EdgeOrderManifest {
         body.extend_from_slice(&self.signer);
         body
     }
+
+    pub fn uses_pretrade_reservation(&self) -> bool {
+        self.reservation_permit_digest != [0; 32]
+    }
 }
 
 /// One node's VSS evaluation. Serialization exists only for the encrypted
@@ -177,6 +204,10 @@ pub struct PartyOrderShare {
     settlement_value_shares: [[u8; 32]; SETTLEMENT_FIELD_COUNT],
     #[serde(default)]
     settlement_blinding_shares: [[u8; 32]; SETTLEMENT_FIELD_COUNT],
+    /// Signed DeFMI authority is encrypted separately to each node. It binds
+    /// the VSS constant terms without revealing the side to the coordinator.
+    #[serde(default)]
+    reservation_permit: String,
     signer: Digest32,
     signature: Vec<u8>,
 }
@@ -225,6 +256,42 @@ impl PartyOrderShare {
     pub fn settlement_blinding_share_decimals(&self) -> [String; SETTLEMENT_FIELD_COUNT] {
         self.settlement_blinding_shares
             .map(scalar_le_bytes_to_decimal)
+    }
+
+    /// Verify the DeFMI reservation authority against the public VSS constant
+    /// terms. This method is intended for the node that decrypted this share;
+    /// callers must not return the permit to the public coordinator.
+    pub fn verified_reservation_permit(
+        &self,
+        manifest: &EdgeOrderManifest,
+        expected_defmi: Digest32,
+        trusted_signer: &VerifyingKey,
+        now: u64,
+    ) -> Result<ReservationPermit, EdgeError> {
+        if !manifest.uses_pretrade_reservation() || self.reservation_permit.is_empty() {
+            return Err(EdgeError::ReservationPermit);
+        }
+        let wire = BASE64
+            .decode(&self.reservation_permit)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        let permit = ReservationPermit::decode(&wire).map_err(|_| EdgeError::ReservationPermit)?;
+        let application = oclob_manifest_v1()
+            .digest()
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        permit
+            .verify(application, expected_defmi, trusted_signer, now)
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        if permit.digest().map_err(|_| EdgeError::ReservationPermit)?
+            != manifest.reservation_permit_digest
+            || permit.order_commitment != manifest.source_order_commitment
+            || permit.participant_handle != manifest.settlement_field_commitments[0][0]
+            || permit.amount_commitment != manifest.settlement_field_commitments[1][0]
+            || permit.side_commitment != manifest.field_commitments[0][0]
+            || permit.valid_until < manifest.retention_deadline
+        {
+            return Err(EdgeError::ReservationPermit);
+        }
+        Ok(permit)
     }
 
     pub fn verify(
@@ -315,6 +382,8 @@ impl PartyOrderShare {
         for value in &self.settlement_blinding_shares {
             body.extend_from_slice(value);
         }
+        body.extend_from_slice(&(self.reservation_permit.len() as u32).to_be_bytes());
+        body.extend_from_slice(self.reservation_permit.as_bytes());
         body.extend_from_slice(&self.signer);
         body
     }
@@ -770,6 +839,14 @@ pub struct EdgeOrderBundle {
     constant_blindings: [[u8; 32]; MATCH_FIELD_COUNT],
 }
 
+struct PreauthorizedReservation<'a> {
+    permit: &'a ReservationPermit,
+    trusted_signer: &'a VerifyingKey,
+    side_blinding: Scalar,
+    reserve_blinding: Scalar,
+    now: u64,
+}
+
 impl EdgeOrderBundle {
     #[allow(clippy::too_many_arguments)]
     pub fn create<R: RngCore + CryptoRng>(
@@ -782,6 +859,7 @@ impl EdgeOrderBundle {
     ) -> Result<Self, EdgeError> {
         Self::create_inner(
             order,
+            None,
             None,
             eligibility_commitment,
             settlement_capability_commitment,
@@ -807,8 +885,46 @@ impl EdgeOrderBundle {
         Self::create_inner(
             order,
             Some(handle),
+            None,
             eligibility_commitment,
             settlement_capability_commitment,
+            signer,
+            node_keys,
+            rng,
+        )
+    }
+
+    /// Build an order that is already authorized by a canonical DeFMI note
+    /// reservation. The participant signs only before admission. Matching can
+    /// later consume this permit and the MPC-produced zkPI without opening a
+    /// post-match settlement capability or asking the participant to sign.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_reservation_permit<R: RngCore + CryptoRng>(
+        order: &SecretOrder,
+        handle: &Handle,
+        eligibility_commitment: Digest32,
+        permit: &ReservationPermit,
+        trusted_signer: &VerifyingKey,
+        side_blinding: Scalar,
+        reserve_blinding: Scalar,
+        signer: &SigningKey,
+        node_keys: &[NodeEncryptionKey; MPC_PARTIES],
+        now: u64,
+        rng: &mut R,
+    ) -> Result<Self, EdgeError> {
+        let permit_digest = permit.digest().map_err(|_| EdgeError::ReservationPermit)?;
+        Self::create_inner(
+            order,
+            Some(handle),
+            Some(PreauthorizedReservation {
+                permit,
+                trusted_signer,
+                side_blinding,
+                reserve_blinding,
+                now,
+            }),
+            eligibility_commitment,
+            preauthorized_settlement_commitment(permit_digest),
             signer,
             node_keys,
             rng,
@@ -819,6 +935,7 @@ impl EdgeOrderBundle {
     fn create_inner<R: RngCore + CryptoRng>(
         order: &SecretOrder,
         handle: Option<&Handle>,
+        preauthorized: Option<PreauthorizedReservation<'_>>,
         eligibility_commitment: Digest32,
         settlement_capability_commitment: Digest32,
         signer: &SigningKey,
@@ -831,6 +948,7 @@ impl EdgeOrderBundle {
             || handle.is_some_and(|handle| {
                 handle.point.compress().to_bytes() != order.participant_handle()
             })
+            || (preauthorized.is_some() && handle.is_none())
             || handle.is_some()
                 && (order.limit_price() > u64::from(u32::MAX)
                     || order.quantity() > u64::from(u32::MAX)
@@ -838,6 +956,47 @@ impl EdgeOrderBundle {
         {
             return Err(EdgeError::Input);
         }
+        let application = oclob_manifest_v1()
+            .digest()
+            .map_err(|_| EdgeError::ReservationPermit)?;
+        let reservation_permit = preauthorized
+            .as_ref()
+            .map(|value| {
+                value
+                    .permit
+                    .verify(
+                        application,
+                        value.permit.defmi_id,
+                        value.trusted_signer,
+                        value.now,
+                    )
+                    .map_err(|_| EdgeError::ReservationPermit)?;
+                if value.permit.order_commitment != order.commitment().0
+                    || value.permit.participant_handle != order.participant_handle()
+                    || value.permit.valid_until < order.expires_at()
+                    || value.side_blinding == Scalar::ZERO
+                    || value.reserve_blinding == Scalar::ZERO
+                {
+                    return Err(EdgeError::ReservationPermit);
+                }
+                value
+                    .permit
+                    .encode()
+                    .map_err(|_| EdgeError::ReservationPermit)
+            })
+            .transpose()?
+            .map(|wire| BASE64.encode(wire))
+            .unwrap_or_default();
+        let reservation_permit_digest = preauthorized
+            .as_ref()
+            .map(|value| {
+                value
+                    .permit
+                    .digest()
+                    .map_err(|_| EdgeError::ReservationPermit)
+            })
+            .transpose()?
+            .unwrap_or([0; 32]);
         let values = order_values(order);
         let commitment_key = vss_key();
         let mut field_commitments = [[[0_u8; 32]; VSS_COEFFICIENTS]; MATCH_FIELD_COUNT];
@@ -850,8 +1009,12 @@ impl EdgeOrderBundle {
                 Scalar::random(&mut *rng),
                 Scalar::random(&mut *rng),
             ];
+            let constant_blinding = preauthorized
+                .as_ref()
+                .filter(|_| field == 0)
+                .map_or_else(|| Scalar::random(&mut *rng), |value| value.side_blinding);
             let blinding_coefficients = [
-                Scalar::random(&mut *rng),
+                constant_blinding,
                 Scalar::random(&mut *rng),
                 Scalar::random(&mut *rng),
             ];
@@ -889,7 +1052,10 @@ impl EdgeOrderBundle {
                     [Scalar::ZERO; VSS_COEFFICIENTS]
                 } else {
                     [
-                        Scalar::random(&mut *rng),
+                        preauthorized.as_ref().map_or_else(
+                            || Scalar::random(&mut *rng),
+                            |value| value.reserve_blinding,
+                        ),
                         Scalar::random(&mut *rng),
                         Scalar::random(&mut *rng),
                     ]
@@ -909,6 +1075,14 @@ impl EdgeOrderBundle {
                     settlement_blinding_evaluations[party][field] =
                         evaluate(&blinding_coefficients, x);
                 }
+            }
+        }
+        if let Some(value) = preauthorized.as_ref() {
+            if value.permit.side_commitment != field_commitments[0][0]
+                || value.permit.participant_handle != settlement_field_commitments[0][0]
+                || value.permit.amount_commitment != settlement_field_commitments[1][0]
+            {
+                return Err(EdgeError::ReservationPermit);
             }
         }
         let settlement_key_scalar = random_nonzero_scalar(rng);
@@ -935,6 +1109,8 @@ impl EdgeOrderBundle {
             commitment: OrderCommitment([0; 32]),
             retention_deadline: order.expires_at(),
             eligibility_commitment,
+            source_order_commitment: order.commitment().0,
+            reservation_permit_digest,
             settlement_capability_commitment,
             settlement_key_commitments,
             field_commitments,
@@ -964,6 +1140,7 @@ impl EdgeOrderBundle {
                     .map(|value| value.to_bytes()),
                 settlement_blinding_shares: settlement_blinding_evaluations[party]
                     .map(|value| value.to_bytes()),
+                reservation_permit: reservation_permit.clone(),
                 signer: signer_public,
                 signature: Vec::new(),
             };
@@ -1023,6 +1200,7 @@ impl EdgeOrderBundle {
             || eligibility_evidence.is_empty()
             || eligibility_evidence.len() > SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES / 2
             || signer.verifying_key().to_bytes() != self.manifest.signer
+            || self.manifest.uses_pretrade_reservation()
             || eligibility_commitment != self.manifest.eligibility_commitment
             || settlement_capability_commitment(order, &self.manifest.signer)
                 != self.manifest.settlement_capability_commitment
@@ -1086,6 +1264,14 @@ pub fn settlement_capability_commitment(order: &SecretOrder, signer: &Digest32) 
         .chain_update((wire.len() as u64).to_be_bytes())
         .chain_update(wire)
         .chain_update(signer)
+        .finalize()
+        .into()
+}
+
+fn preauthorized_settlement_commitment(permit_digest: Digest32) -> Digest32 {
+    Sha256::new()
+        .chain_update(PREAUTHORIZED_SETTLEMENT_DOMAIN)
+        .chain_update(permit_digest)
         .finalize()
         .into()
 }
@@ -1664,6 +1850,8 @@ pub enum EdgeError {
     CapabilityKeyShare,
     #[error("at least three distinct valid capability-key shares are required")]
     CapabilityKeyThreshold,
+    #[error("DeFMI reservation permit is invalid or not bound to the MPC shares")]
+    ReservationPermit,
     #[error("edge-order wire failure: {0}")]
     Wire(String),
     #[error("edge-order cryptography failure: {0}")]
@@ -1674,6 +1862,8 @@ pub enum EdgeError {
 mod tests {
     use super::*;
     use oclob_core::Side;
+    use qomm_zkpi::handles::Identity;
+    use zkpi_defmi_sdk::reservation::ReservationRole;
 
     fn sample_order() -> SecretOrder {
         SecretOrder::new(
@@ -1897,5 +2087,182 @@ mod tests {
         assert_eq!(scalar_le_bytes_to_decimal(one), "1");
         let scalar = Scalar::from(101_u64);
         assert_eq!(scalar_le_bytes_to_decimal(scalar.to_bytes()), "101");
+    }
+
+    #[test]
+    fn pretrade_permit_binds_hidden_side_handle_and_reserve_without_later_capability() {
+        let (private, public) = node_keys();
+        let participant = Identity::from_seed([41; 32]).handle(b"defmi:oclob:v1");
+        let order = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            40,
+            TimeInForce::ImmediateOrCancel,
+            2_000_000_000,
+            participant.point.compress().to_bytes(),
+            [42; 32],
+            [43; 32],
+        )
+        .unwrap();
+        let permit_signer = SigningKey::from_bytes(&[44; 32]);
+        let order_signer = SigningKey::from_bytes(&[45; 32]);
+        let side_blinding = Scalar::from(46_u64);
+        let reserve_blinding = Scalar::from(47_u64);
+        let key = vss_key();
+        let permit = ReservationPermit {
+            version: 1,
+            role: ReservationRole::Taker,
+            application_binding: oclob_manifest_v1().digest().unwrap(),
+            venue_id: [48; 32],
+            defmi_id: [49; 32],
+            canonical_state_root: [50; 32],
+            accepted_height: 7,
+            order_commitment: order.commitment().0,
+            participant_handle: order.participant_handle(),
+            reservation_id: [51; 32],
+            facility_id: [52; 32],
+            asset_id: [53; 32],
+            amount_commitment: key
+                .commit(&Scalar::from(order.reservation_limit()), &reserve_blinding)
+                .compress()
+                .to_bytes(),
+            side_commitment: key
+                .commit(
+                    &Scalar::from(u64::from(order.side().wire())),
+                    &side_blinding,
+                )
+                .compress()
+                .to_bytes(),
+            authority_digest: [54; 32],
+            reserve_receipt_digest: [55; 32],
+            reservation_sequence: 3,
+            valid_until: 2_000_000_001,
+            signer_public: permit_signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(&permit_signer)
+        .unwrap();
+        let bundle = EdgeOrderBundle::create_with_reservation_permit(
+            &order,
+            &participant,
+            [56; 32],
+            &permit,
+            &permit_signer.verifying_key(),
+            side_blinding,
+            reserve_blinding,
+            &order_signer,
+            &public,
+            1_900_000_000,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        assert!(bundle.manifest().uses_pretrade_reservation());
+        assert_eq!(
+            bundle.manifest().reservation_permit_digest,
+            permit.digest().unwrap()
+        );
+        let manifest_json = serde_json::to_string(bundle.manifest()).unwrap();
+        assert!(!manifest_json.contains("buy"));
+        assert!(!manifest_json.contains("sell"));
+        assert!(bundle
+            .seal_settlement_capability(
+                &order,
+                [56; 32],
+                b"must-not-be-used",
+                &order_signer,
+                &mut rand::rngs::OsRng,
+            )
+            .is_err());
+        let manifest = bundle.manifest().clone();
+        for (party, sealed, _) in bundle.into_deliveries() {
+            let share = sealed
+                .open(
+                    &private[usize::from(party)],
+                    &manifest,
+                    party,
+                    1_900_000_000,
+                )
+                .unwrap();
+            let verified = share
+                .verified_reservation_permit(
+                    &manifest,
+                    [49; 32],
+                    &permit_signer.verifying_key(),
+                    1_900_000_000,
+                )
+                .unwrap();
+            assert_eq!(verified.reservation_id, [51; 32]);
+        }
+    }
+
+    #[test]
+    fn pretrade_permit_rejects_a_different_reserve_opening() {
+        let (_, public) = node_keys();
+        let participant = Identity::from_seed([61; 32]).handle(b"defmi:oclob:v1");
+        let order = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Sell,
+            100,
+            20,
+            TimeInForce::GoodTilCancelled,
+            2_000_000_000,
+            participant.point.compress().to_bytes(),
+            [62; 32],
+            [63; 32],
+        )
+        .unwrap();
+        let permit_signer = SigningKey::from_bytes(&[64; 32]);
+        let key = vss_key();
+        let permit = ReservationPermit {
+            version: 1,
+            role: ReservationRole::Maker,
+            application_binding: oclob_manifest_v1().digest().unwrap(),
+            venue_id: [65; 32],
+            defmi_id: [66; 32],
+            canonical_state_root: [67; 32],
+            accepted_height: 8,
+            order_commitment: order.commitment().0,
+            participant_handle: order.participant_handle(),
+            reservation_id: [68; 32],
+            facility_id: [69; 32],
+            asset_id: [70; 32],
+            amount_commitment: key
+                .commit(
+                    &Scalar::from(order.reservation_limit()),
+                    &Scalar::from(71_u64),
+                )
+                .compress()
+                .to_bytes(),
+            side_commitment: key
+                .commit(
+                    &Scalar::from(u64::from(order.side().wire())),
+                    &Scalar::from(72_u64),
+                )
+                .compress()
+                .to_bytes(),
+            authority_digest: [73; 32],
+            reserve_receipt_digest: [74; 32],
+            reservation_sequence: 1,
+            valid_until: 2_000_000_001,
+            signer_public: permit_signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(&permit_signer)
+        .unwrap();
+        assert!(EdgeOrderBundle::create_with_reservation_permit(
+            &order,
+            &participant,
+            [75; 32],
+            &permit,
+            &permit_signer.verifying_key(),
+            Scalar::from(72_u64),
+            Scalar::from(99_u64),
+            &SigningKey::from_bytes(&[76; 32]),
+            &public,
+            1_900_000_000,
+            &mut rand::rngs::OsRng,
+        )
+        .is_err());
     }
 }

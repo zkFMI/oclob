@@ -46,6 +46,7 @@ struct Config {
     proof_listen: SocketAddr,
     proof_state_file: PathBuf,
     proof_state_passphrase: PathBuf,
+    trusted_defmi_id: String,
     trusted_defmi_receipt_public: String,
 }
 
@@ -84,7 +85,19 @@ fn run() -> Result<(), String> {
     let ordering_keys = cluster
         .ordering_verifying_keys()
         .map_err(|error| error.to_string())?;
-    let store = NodeShareStore::open(&config.share_store, config.party, share_key)
+    let mut store = NodeShareStore::open(&config.share_store, config.party, share_key)
+        .map_err(|error| error.to_string())?;
+    let trusted_defmi_id = parse_hex_32(&config.trusted_defmi_id, "trusted DeFMI id")?;
+    let trusted_defmi_receipt_public = parse_hex_32(
+        &config.trusted_defmi_receipt_public,
+        "trusted DeFMI receipt public key",
+    )?;
+    store
+        .pin_reservation_trust(
+            trusted_defmi_id,
+            ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
+                .map_err(|_| "trusted DeFMI receipt public key is malformed")?,
+        )
         .map_err(|error| error.to_string())?;
     let executor = PartyExecutor::open(
         config.party,
@@ -138,10 +151,7 @@ fn run() -> Result<(), String> {
         complete_quote_proof: false,
         quote_eligibility_bits: 34,
         quote_span_bits: 32,
-        trusted_defmi_receipt_public: Some(parse_hex_32(
-            &config.trusted_defmi_receipt_public,
-            "trusted DeFMI receipt public key",
-        )?),
+        trusted_defmi_receipt_public: Some(trusted_defmi_receipt_public),
         allow_health_signing: false,
     })?;
     let proof_server = ProofRpcServer::start(

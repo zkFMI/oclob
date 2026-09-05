@@ -30,7 +30,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-pub const REQUEST_RECORD_BYTES: usize = 32 * 1024;
+pub const REQUEST_RECORD_BYTES: usize = 64 * 1024;
 pub const RESPONSE_RECORD_BYTES: usize = 16 * 1024;
 const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ1";
 const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS1";

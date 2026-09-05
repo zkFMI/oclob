@@ -23,3 +23,6 @@ qomm-mpc.workspace = true
 qomm-transport.workspace = true
 
 [dev-dependencies]
+curve25519-dalek.workspace = true
+qomm-zk.workspace = true
+zkpi-defmi-sdk.workspace = true

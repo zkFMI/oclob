@@ -12,6 +12,7 @@ pub mod executor;
 pub mod network;
 pub mod proof_network;
 
+use ed25519_dalek::VerifyingKey;
 use oclob_core::{Digest32, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_edge::{
     CapabilityKeyShare, EdgeOrderManifest, NodeDecryptionKey, SealedCapabilityKeyShare,
@@ -30,7 +31,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 5;
+const STORE_VERSION: u16 = 6;
+const LEGACY_STORE_VERSION_V5: u16 = 5;
 const LEGACY_STORE_VERSION_V4: u16 = 4;
 const LEGACY_STORE_VERSION_V3: u16 = 3;
 const LEGACY_STORE_VERSION_V2: u16 = 2;
@@ -198,6 +200,13 @@ pub struct NodeShareStore {
     key: NodeDecryptionKey,
     state: StoreState,
     private_state_root: Option<PathBuf>,
+    reservation_trust: Option<ReservationTrust>,
+}
+
+#[derive(Clone)]
+struct ReservationTrust {
+    defmi_id: Digest32,
+    signer: VerifyingKey,
 }
 
 impl NodeShareStore {
@@ -222,11 +231,37 @@ impl NodeShareStore {
             key,
             state,
             private_state_root: None,
+            reservation_trust: None,
         };
         if !existed || migrated {
             store.persist()?;
         }
         Ok(store)
+    }
+
+    /// Pin the one DeFMI deployment and receipt signer whose confidential
+    /// reservation permits this MPC node accepts. The binding is runtime
+    /// configuration and must be supplied again after restart; it is never
+    /// learned from participant-controlled order bytes.
+    pub fn pin_reservation_trust(
+        &mut self,
+        defmi_id: Digest32,
+        signer: VerifyingKey,
+    ) -> Result<(), NodeError> {
+        if defmi_id == [0; 32] {
+            return Err(NodeError::Admission(
+                "trusted DeFMI reservation identity is zero".into(),
+            ));
+        }
+        if self.reservation_trust.as_ref().is_some_and(|existing| {
+            existing.defmi_id != defmi_id || existing.signer.to_bytes() != signer.to_bytes()
+        }) {
+            return Err(NodeError::Admission(
+                "DeFMI reservation trust cannot change during one node generation".into(),
+            ));
+        }
+        self.reservation_trust = Some(ReservationTrust { defmi_id, signer });
+        Ok(())
     }
 
     pub fn status(&self) -> Result<NodeStoreStatus, NodeError> {
@@ -265,9 +300,26 @@ impl NodeShareStore {
         sealed_capability_key_share: SealedCapabilityKeyShare,
         now: u64,
     ) -> Result<IngestOutcome, NodeError> {
-        sealed
+        let opened = sealed
             .open(&self.key, &manifest, self.state.party, now)
             .map_err(|error| NodeError::Admission(error.to_string()))?;
+        if manifest.uses_pretrade_reservation() {
+            let trust = self.reservation_trust.as_ref().ok_or_else(|| {
+                NodeError::Admission("node has no pinned DeFMI reservation trust".into())
+            })?;
+            opened
+                .verified_reservation_permit(&manifest, trust.defmi_id, &trust.signer, now)
+                .map_err(|error| NodeError::Admission(error.to_string()))?;
+            if self.state.records.values().any(|record| {
+                record.manifest.commitment != manifest.commitment
+                    && record.manifest.reservation_permit_digest
+                        == manifest.reservation_permit_digest
+            }) {
+                return Err(NodeError::Admission(
+                    "one DeFMI reservation permit cannot authorize two orders".into(),
+                ));
+            }
+        }
         sealed_capability_key_share
             .open(&self.key, &manifest, self.state.party, now)
             .map_err(|error| NodeError::Admission(error.to_string()))?;
@@ -1014,6 +1066,24 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                 .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
             false,
         ),
+        LEGACY_STORE_VERSION_V5 => {
+            let mut legacy: StoreState = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy v5 node store payload is invalid".into()))?;
+            if legacy.version != LEGACY_STORE_VERSION_V5 || !legacy.records.is_empty() {
+                return Err(NodeError::State(
+                    "legacy v5 node store must drain active orders before protocol upgrade".into(),
+                ));
+            }
+            legacy.completed_rounds.clear();
+            legacy.ordering_sequence = 0;
+            legacy.ordering_head = [0; 32];
+            legacy.ordering_votes.clear();
+            legacy.ordered_commitments.clear();
+            legacy.private_heads.clear();
+            legacy.finalized_private_rounds.clear();
+            legacy.version = STORE_VERSION;
+            (legacy, true)
+        }
         LEGACY_STORE_VERSION_V4 => {
             let mut legacy: StoreState = serde_json::from_value(value)
                 .map_err(|_| NodeError::State("legacy v4 node store payload is invalid".into()))?;
@@ -1242,10 +1312,15 @@ pub enum NodeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use curve25519_dalek::scalar::Scalar;
     use ed25519_dalek::SigningKey;
     use oclob_core::{MpcBatchResult, MpcSlotResult, SecretOrder, Side, TimeInForce};
     use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
     use oclob_ordering::OrderingCommittee;
+    use qomm_zk::pedersen::Pedersen;
+    use qomm_zkpi::handles::Identity;
+    use zkpi_defmi_sdk::application::oclob_manifest_v1;
+    use zkpi_defmi_sdk::reservation::{ReservationPermit, ReservationRole};
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1346,6 +1421,121 @@ mod tests {
         let reopened =
             NodeShareStore::open(&path, 0, NodeDecryptionKey::from_raw(key_raw).unwrap()).unwrap();
         assert_eq!(reopened.status().unwrap().record_count, 1);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn node_requires_pinned_defmi_permit_and_rejects_reservation_reuse() {
+        let (private, public) = keyset();
+        let participant = Identity::from_seed([81; 32]).handle(b"defmi:oclob:v1");
+        let order = SecretOrder::new(
+            "JGB10Y-JPY",
+            Side::Buy,
+            101,
+            40,
+            TimeInForce::ImmediateOrCancel,
+            2_000_000_000,
+            participant.point.compress().to_bytes(),
+            [82; 32],
+            [83; 32],
+        )
+        .unwrap();
+        let defmi_id = [84; 32];
+        let permit_signer = SigningKey::from_bytes(&[85; 32]);
+        let side_blinding = Scalar::from(86_u64);
+        let reserve_blinding = Scalar::from(87_u64);
+        let key = Pedersen::new(b"qomm:defmi:v1");
+        let permit = ReservationPermit {
+            version: 1,
+            role: ReservationRole::Taker,
+            application_binding: oclob_manifest_v1().digest().unwrap(),
+            venue_id: [88; 32],
+            defmi_id,
+            canonical_state_root: [89; 32],
+            accepted_height: 11,
+            order_commitment: order.commitment().0,
+            participant_handle: order.participant_handle(),
+            reservation_id: [90; 32],
+            facility_id: [91; 32],
+            asset_id: [92; 32],
+            amount_commitment: key
+                .commit(&Scalar::from(order.reservation_limit()), &reserve_blinding)
+                .compress()
+                .to_bytes(),
+            side_commitment: key
+                .commit(
+                    &Scalar::from(u64::from(order.side().wire())),
+                    &side_blinding,
+                )
+                .compress()
+                .to_bytes(),
+            authority_digest: [93; 32],
+            reserve_receipt_digest: [94; 32],
+            reservation_sequence: 4,
+            valid_until: 2_000_000_001,
+            signer_public: permit_signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(&permit_signer)
+        .unwrap();
+        let make_bundle = |signer: &SigningKey| {
+            EdgeOrderBundle::create_with_reservation_permit(
+                &order,
+                &participant,
+                [95; 32],
+                &permit,
+                &permit_signer.verifying_key(),
+                side_blinding,
+                reserve_blinding,
+                signer,
+                &public,
+                1_900_000_000,
+                &mut rand::rngs::OsRng,
+            )
+            .unwrap()
+        };
+        let first = make_bundle(&SigningKey::from_bytes(&[96; 32]));
+        let second = make_bundle(&SigningKey::from_bytes(&[97; 32]));
+        let first_manifest = first.manifest().clone();
+        let second_manifest = second.manifest().clone();
+        assert_ne!(first_manifest.commitment, second_manifest.commitment);
+        let first_delivery = first.into_deliveries();
+        let second_delivery = second.into_deliveries();
+
+        let untrusted_path = temp_path("permit-untrusted");
+        let mut untrusted = NodeShareStore::open(&untrusted_path, 0, private[0].clone()).unwrap();
+        assert!(untrusted
+            .ingest(
+                first_manifest.clone(),
+                first_delivery[0].1.clone(),
+                first_delivery[0].2.clone(),
+                1_900_000_000,
+            )
+            .is_err());
+
+        let path = temp_path("permit-reuse");
+        let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
+        store
+            .pin_reservation_trust(defmi_id, permit_signer.verifying_key())
+            .unwrap();
+        store
+            .ingest(
+                first_manifest,
+                first_delivery[0].1.clone(),
+                first_delivery[0].2.clone(),
+                1_900_000_000,
+            )
+            .unwrap();
+        assert!(store
+            .ingest(
+                second_manifest,
+                second_delivery[0].1.clone(),
+                second_delivery[0].2.clone(),
+                1_900_000_000,
+            )
+            .is_err());
+        assert_eq!(store.status().unwrap().record_count, 1);
+        let _ = fs::remove_dir_all(untrusted_path.parent().unwrap());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
