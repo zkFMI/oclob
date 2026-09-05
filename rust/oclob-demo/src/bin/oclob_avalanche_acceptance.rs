@@ -27,7 +27,8 @@ use oclob_settlement::collaborative::{
     collaborative_job_id, load_fill, prove_fill, setup_frost, CollaborativeFillProof,
     CollaborativeFillRequest,
 };
-use oclob_settlement::{canonical_securities_asset_id, CanonicalAdmissionBatch, SettlementEngine};
+use oclob_settlement::CollaborativeCanonicalAdmissionBatch;
+use oclob_settlement::{canonical_securities_asset_id, SettlementEngine};
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
 use qomm_defmi::facility::{DefmiFacility, QuorumAuthorizer};
 use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides};
@@ -73,6 +74,14 @@ struct IntegratedPaths {
     settlement_identity: PathBuf,
     research_contract: PathBuf,
     research_manifest: PathBuf,
+}
+
+struct VerifiedCollaborativeSettlement {
+    proof: CollaborativeFillProof,
+    report: Value,
+    zkpi_digest: [u8; 32],
+    instruction_nullifier: [u8; 32],
+    package_digest: [u8; 32],
 }
 
 fn main() {
@@ -220,12 +229,37 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
 
     let transition_committee =
         OrderingCommittee::deterministic_for_demo().map_err(|error| failure(error.to_string()))?;
+    let proof_tls = proof_tls_context(
+        &coordinator_identity.tls_certificate,
+        &coordinator_identity.tls_private_key,
+        &coordinator_identity.tls_ca,
+    )
+    .map_err(failure)?;
+    let mut bootstrap_proof_parties = cluster
+        .nodes
+        .iter()
+        .map(|node| {
+            ProofPartyTlsClient::new(
+                node.host.clone(),
+                node.proof_port,
+                proof_tls.clone(),
+                node.server_name.clone(),
+                Duration::from_secs(120),
+            )
+        })
+        .collect::<Vec<_>>();
+    let frost_session = tagged_digest(b"OCLOB:COLLABORATIVE-FROST:v1", MARKET.as_bytes());
+    let collaborative_frost_public =
+        setup_frost(&mut bootstrap_proof_parties, frost_session).map_err(failure)?;
     let mut settlement = SettlementEngine::new_with_transition_committee(
         &mut rand::rngs::OsRng,
         &transition_committee.verifying_keys(),
         transition_committee.policy(),
     )
     .map_err(|error| failure(error.to_string()))?;
+    settlement
+        .pin_collaborative_settlement_committee(collaborative_frost_public.clone())
+        .map_err(|error| failure(error.to_string()))?;
     let (authorizer, approval_keys) = committee(&options.chain_id)?;
     let receipt_key = SigningKey::from_bytes(&digest(b"oclob-integrated-receipt-key-v1"));
     let facility =
@@ -308,8 +342,12 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             maker_eligibility.subject_nullifier,
         )
         .map_err(|error| failure(error.to_string()))?;
+    let maker_reserve_commitment = manifest_point(
+        maker_receipt.manifest.settlement_field_commitments[1][0],
+        "Maker reserve",
+    )?;
     let maker_reservation = maker_candidate
-        .reserve_order(&maker)
+        .reserve_order_with_commitment(&maker, maker_reserve_commitment)
         .map_err(|error| failure(error.to_string()))?;
     let maker_prepared = settlement
         .prepare_canonical_reservation(
@@ -443,7 +481,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         private_after_maker,
         public_after_maker,
     )?;
-    let collaborative_settlement = verify_collaborative_fill(
+    let mut collaborative_settlement = verify_collaborative_fill(
         &cluster,
         &coordinator_identity,
         &maker_receipt,
@@ -451,6 +489,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         &taker_certificate,
         &taker_plan,
         &taker_execution,
+        collaborative_frost_public,
         now,
     )?;
     let taker_base_snapshot = settlement.state_snapshot();
@@ -461,14 +500,99 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             taker_eligibility.subject_nullifier,
         )
         .map_err(|error| failure(error.to_string()))?;
+    let taker_reserve_commitment = manifest_point(
+        taker_receipt.manifest.settlement_field_commitments[1][0],
+        "Taker reserve",
+    )?;
     let taker_reservation = taker_candidate
-        .reserve_order(&taker)
+        .reserve_order_with_commitment(&taker, taker_reserve_commitment)
         .map_err(|error| failure(error.to_string()))?;
+
+    if maker_reserve_commitment == taker_reserve_commitment {
+        return Err(failure(
+            "Maker and Taker reserve commitments unexpectedly coincide",
+        ));
+    }
+    let mut wrong_reservation_candidate = settlement.clone();
+    wrong_reservation_candidate
+        .bind_eligible_participant(
+            taker.order().participant_handle(),
+            taker_eligibility.subject_nullifier,
+        )
+        .map_err(|error| failure(error.to_string()))?;
+    let wrong_reservation = wrong_reservation_candidate
+        .reserve_order_with_commitment(&taker, maker_reserve_commitment)
+        .map_err(|error| failure(error.to_string()))?;
+    let reservation_commitment_mismatch_rejected = settlement
+        .prepare_canonical_admission_batch_collaborative(CollaborativeCanonicalAdmissionBatch {
+            reserved_candidate: wrong_reservation_candidate,
+            reservation_receipt: &wrong_reservation,
+            fills: &fills,
+            proofs: std::slice::from_ref(&collaborative_settlement.proof),
+            round_id: taker_plan.round_id,
+            transition: &taker_transition,
+            certificate: &taker_certificate,
+            arriving: &taker,
+            arriving_remaining: taker_execution.result.arriving_remaining,
+            now,
+        })
+        .is_err();
+
+    let original_market_proof_digest = collaborative_settlement.proof.market_proof_digest;
+    collaborative_settlement.proof.market_proof_digest[0] ^= 1;
+    let tampered_output_binding_rejected = settlement
+        .prepare_canonical_admission_batch_collaborative(CollaborativeCanonicalAdmissionBatch {
+            reserved_candidate: taker_candidate.clone(),
+            reservation_receipt: &taker_reservation,
+            fills: &fills,
+            proofs: std::slice::from_ref(&collaborative_settlement.proof),
+            round_id: taker_plan.round_id,
+            transition: &taker_transition,
+            certificate: &taker_certificate,
+            arriving: &taker,
+            arriving_remaining: taker_execution.result.arriving_remaining,
+            now,
+        })
+        .is_err();
+    collaborative_settlement.proof.market_proof_digest = original_market_proof_digest;
+
+    let (_, unpinned_public) =
+        qomm_zkpi::distributed_key_generation(7, 3, &mut rand::rngs::OsRng).map_err(failure)?;
+    let pinned_proof_public = std::mem::replace(
+        &mut collaborative_settlement.proof.frost_public,
+        unpinned_public,
+    );
+    let unpinned_proof_key_rejected = settlement
+        .prepare_canonical_admission_batch_collaborative(CollaborativeCanonicalAdmissionBatch {
+            reserved_candidate: taker_candidate.clone(),
+            reservation_receipt: &taker_reservation,
+            fills: &fills,
+            proofs: std::slice::from_ref(&collaborative_settlement.proof),
+            round_id: taker_plan.round_id,
+            transition: &taker_transition,
+            certificate: &taker_certificate,
+            arriving: &taker,
+            arriving_remaining: taker_execution.result.arriving_remaining,
+            now,
+        })
+        .is_err();
+    collaborative_settlement.proof.frost_public = pinned_proof_public;
+    if !reservation_commitment_mismatch_rejected
+        || !tampered_output_binding_rejected
+        || !unpinned_proof_key_rejected
+    {
+        return Err(failure(
+            "canonical admission accepted tampered MPC settlement authority",
+        ));
+    }
+
     let taker_prepared = settlement
-        .prepare_canonical_admission_batch(CanonicalAdmissionBatch {
+        .prepare_canonical_admission_batch_collaborative(CollaborativeCanonicalAdmissionBatch {
             reserved_candidate: taker_candidate,
             reservation_receipt: &taker_reservation,
             fills: &fills,
+            proofs: std::slice::from_ref(&collaborative_settlement.proof),
+            round_id: taker_plan.round_id,
             transition: &taker_transition,
             certificate: &taker_certificate,
             arriving: &taker,
@@ -507,6 +631,19 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             return Err(failure("crossing taker produced no DvP"));
         }
     };
+    let canonical_member = settlement_receipt
+        .members
+        .first()
+        .filter(|_| settlement_receipt.members.len() == 1)
+        .ok_or_else(|| failure("canonical settlement did not contain exactly one MPC fill"))?;
+    if canonical_member.zkpi_digest != collaborative_settlement.zkpi_digest
+        || canonical_member.instruction_nullifier != collaborative_settlement.instruction_nullifier
+        || canonical_member.package_digest != collaborative_settlement.package_digest
+    {
+        return Err(failure(
+            "canonical DeFMI accepted evidence other than the MPC collaborative proof",
+        ));
+    }
     let taker_private_state_receipts = finalize_agreed_private_state(
         &cluster,
         &settlement_tls,
@@ -565,7 +702,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     }
 
     Ok(json!({
-        "schema": "oclob.distributed-avalanche-acceptance/v3",
+        "schema": "oclob.distributed-avalanche-acceptance/v4",
         "verdict": "accepted",
         "research": research,
         "environment": "seven MPC containers plus five AvalancheGo validators on one host",
@@ -638,12 +775,16 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
             "threshold_amount_range": settlement_receipt.amount_range_is_threshold,
             "threshold_price_range": settlement_receipt.price_range_is_threshold,
             "taker_reservation_finalized_with_dvp": settlement_receipt.arriving_reservation_zkpi_digest.is_some(),
+            "canonical_member_matches_collaborative_proof": true,
+            "reservation_commitment_mismatch_rejected": reservation_commitment_mismatch_rejected,
+            "tampered_output_binding_rejected": tampered_output_binding_rejected,
+            "unpinned_proof_key_rejected": unpinned_proof_key_rejected,
             "replay_rejected": replay_rejected,
             "receipt_chain_verified": true,
             "validator_roots_before_restart": roots_before_restart,
             "validator_roots_after_restart": roots_after_restart,
         },
-        "collaborative_settlement": collaborative_settlement,
+        "collaborative_settlement": collaborative_settlement.report,
         "restart": {
             "node": options.restart_node,
             "elapsed_ms": restart_ms,
@@ -656,7 +797,8 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         "elapsed_ms": started.elapsed().as_secs_f64() * 1_000.0,
         "non_claims": [
             "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-            "The collaborative zkPI and DvP proof is independently verified in this run, while the current clear-balance compatibility projection still opens one-order settlement capabilities to update its legacy in-memory reservation view.",
+            "The arriving settlement capability is still opened after durable MPC execution to authorize its atomic pre-trade reservation; the DvP zkPI, proofs, nullifier and canonical account changes come directly from the pinned MPC proof committee without local reproving.",
+            "The OCLOB settlement application verifies the full collaborative proof before the DeFMI boundary; the current Avalanche VM verifies committee approval over proof digests and account deltas rather than deserializing that proof.",
             "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
             "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
             "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -673,8 +815,9 @@ fn verify_collaborative_fill(
     taker_certificate: &OrderCertificate,
     taker_plan: &RoundPlan,
     taker_execution: &AgreedRoundExecution,
+    frost_public: qomm_zkpi::frost::keys::PublicKeyPackage,
     now: u64,
-) -> RunResult<Value> {
+) -> RunResult<VerifiedCollaborativeSettlement> {
     if !maker_receipt.manifest.settlement_proof_enabled
         || !taker_receipt.manifest.settlement_proof_enabled
         || taker_execution.receipts.len() != cluster.nodes.len()
@@ -702,8 +845,6 @@ fn verify_collaborative_fill(
             )
         })
         .collect::<Vec<_>>();
-    let frost_session = tagged_digest(b"OCLOB:COLLABORATIVE-FROST:v1", MARKET.as_bytes());
-    let frost_public = setup_frost(&mut parties, frost_session).map_err(failure)?;
     let output_digest = taker_execution.receipts[0].public_output_sha256;
     let job_id = collaborative_job_id(taker_plan.round_id, 0, output_digest).map_err(failure)?;
     // Every proof node independently checks this value against the owner-only
@@ -784,7 +925,7 @@ fn verify_collaborative_fill(
             .map_err(|_| failure("FROST public package could not be encoded"))?,
     )
     .into();
-    Ok(json!({
+    let report = json!({
         "proof_job_id": hex::encode(proof.job_id),
         "market_proof_digest": hex::encode(market_proof_digest),
         "zkpi_digest": hex::encode(instruction_digest),
@@ -799,7 +940,16 @@ fn verify_collaborative_fill(
         "limit_proof_verified": true,
         "dvp_product_and_remainders_verified": true,
         "recipient_scoped_openings_verified": true,
-    }))
+        "canonical_dvp_input": true,
+        "locally_reproved_for_canonical_settlement": false,
+    });
+    Ok(VerifiedCollaborativeSettlement {
+        proof,
+        report,
+        zkpi_digest: instruction_digest,
+        instruction_nullifier: package.instruction.nullifier(),
+        package_digest: package.digest(),
+    })
 }
 
 fn verify_collaborative_statements(
@@ -865,13 +1015,13 @@ fn validate_integrated_research_binding(
         .and_then(Value::as_str)
         .ok_or_else(|| failure("integrated research manifest has no contract digest"))?;
     let actual_sha: [u8; 32] = Sha256::digest(&contract_bytes).into();
-    if contract_id != "oclob-collaborative-settlement-v1"
+    if contract_id != "oclob-collaborative-canonical-settlement-v1"
         || manifest_contract != Some(contract_id)
         || expected_sha != hex::encode(actual_sha)
         || manifest.get("stage").and_then(Value::as_str)
             != Some("RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC")
         || manifest.get("primary_metric").and_then(Value::as_str)
-            != Some("collaborative_zkpi_dvp_proof_from_node_local_persistence")
+            != Some("canonical_member_exactly_equals_collaborative_mpc_proof")
     {
         return Err(failure(
             "integrated research contract and manifest are not the approved pair",
@@ -882,7 +1032,7 @@ fn validate_integrated_research_binding(
         "contract_sha256": expected_sha,
         "manifest_id": manifest_id,
         "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
-        "primary_metric": "collaborative_zkpi_dvp_proof_from_node_local_persistence",
+        "primary_metric": "canonical_member_exactly_equals_collaborative_mpc_proof",
         "observed_value": 1
     }))
 }

@@ -1,0 +1,63 @@
+{
+  "contract_id": "oclob-collaborative-canonical-settlement-v1",
+  "objective": "Use the seven-node MPC committee's verifier-complete zkPI and threshold DvP package as the authoritative input to the canonical DeFMI account transition, without locally reconstructing or reproving the matched amount, price, reserve, balance, or blinding.",
+  "implementation_language": "Rust",
+  "official_upstream_exception": "MP-SPDZ compile.py is permitted only as the official compiler invoked through the Rust compiler adapter.",
+  "market": {
+    "market_id": "JGB10Y-JPY",
+    "resting_order": "sell GTC 60 lots at 100",
+    "arriving_order": "buy IOC 40 lots at 101",
+    "expected_fill": "40 lots at 100",
+    "expected_post_trade_portfolios": {
+      "maker": "9960 securities, 100004000 cash, 20 securities reserved",
+      "taker": "10040 securities, 99996000 cash, zero cash reserved"
+    }
+  },
+  "topology": {
+    "participant_processes": 2,
+    "mpc_nodes": 7,
+    "max_corrupt_mpc_nodes": 2,
+    "proof_signing_quorum": 3,
+    "ordering_quorum": 5,
+    "avalanche_validators": 5,
+    "operator_hosts_in_this_gate": 1,
+    "evm_used": false
+  },
+  "canonical_authority": {
+    "committee_key": "The collaborative FROST public package is pinned in SettlementEngine before genesis and cannot be supplied or rotated by a fill.",
+    "reservation_prestate": "Each order reservation root commits to the exact participant-edge VSS reserve commitment later consumed by its MPC proof.",
+    "matching_binding": "The proof job binds round, fixed fill slot, and the same signed MP-SPDZ public-output digest carried by the transition proof.",
+    "proof_verification": "The OCLOB settlement verifier re-verifies threshold zkPI ranges and FROST authorization, Taker price limit, amount-times-price, order-reserve remainders, Maker pool remainder, traded asset, handles, and recipient-scoped openings before preparing a DeFMI command.",
+    "account_update": "Canonical securities and cash account commitments are updated algebraically from the verified amount and cash commitments. The coordinator supplies no scalar witness or account opening, and the DeFMI order commits to the resulting proof digests and exact account deltas.",
+    "exact_evidence": "The zkPI digest, instruction nullifier, and threshold DvP package digest placed in the canonical batch must equal the MPC collaborative proof exactly."
+  },
+  "acceptance": {
+    "required": [
+      "the official MP-SPDZ compiler accepts the exact Rust-generated circuit",
+      "all seven proof nodes load their own signed 616-wire fill slice",
+      "the OCLOB settlement verifier rejects a proof authorized under any key other than its genesis-pinned MPC committee key",
+      "the canonical reservation pre-state equals the Maker and Taker VSS reserve commitments used by the proof",
+      "the canonical batch member's zkPI digest, nullifier, and DvP package digest equal the collaborative proof",
+      "the canonical account and reservation roots advance only after every public proof check succeeds",
+      "the Maker and Taker portfolios equal the predeclared post-trade values",
+      "five Avalanche validators finalize one root, replay is rejected, and a restarted validator recovers that root"
+    ],
+    "reject_if": [
+      "the contract digest differs from the preregistered manifest",
+      "any scalar amount, price, reserve, balance, or blinding is reconstructed to build the canonical DvP package",
+      "the proof key, round, slot, MPC output, asset, handles, reservation commitments, or opening recipients differ",
+      "the canonical member contains a locally generated replacement zkPI, nullifier, or DvP package",
+      "portfolio conservation, reservation capacity, replay protection, validator agreement, receipt verification, or restart recovery fails",
+      "the artifact claims independent operators, WAN evidence, HSM custody, or a fully private pre-trade reservation proof",
+      "the artifact claims that each Avalanche validator independently verifies the full collaborative proof"
+    ]
+  },
+  "non_claims": [
+    "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
+    "The arriving settlement capability is still threshold-opened after durable MPC execution for the atomic pre-trade reservation; this gate removes local reproving only from the DvP settlement portion.",
+    "The OCLOB settlement application verifies the full collaborative proof before the DeFMI boundary; the current Avalanche VM verifies committee approval over proof digests and account deltas rather than deserializing the full proof.",
+    "Canonical DeFMI state still uses commitment accounts and a reservation root rather than account-free product notes.",
+    "Transition, approval, and laboratory identities are not HSM-backed operator custody.",
+    "One functional scenario is not throughput, adversarial-load, or economic-effect evidence."
+  ]
+}

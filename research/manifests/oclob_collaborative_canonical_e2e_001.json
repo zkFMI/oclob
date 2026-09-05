@@ -1,0 +1,53 @@
+{
+  "manifest_id": "oclob-collaborative-canonical-rough-001",
+  "contract_id": "oclob-collaborative-canonical-settlement-v1",
+  "contract_path": "research/oclob_collaborative_canonical_contract.json",
+  "contract_sha256": "de52184c85d7f8ef8ced70a437e8b842d949fe999492c15d28b005e6ac5b2b53",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The seven proof parties can generate a valid zkPI and threshold DvP package, but the prior canonical path discarded it and locally generated a different package from opened order and balance witnesses.",
+  "causal_hypothesis": "If DeFMI pins the proof committee key and reservation commitments before matching, it can verify the collaborative package against the signed matching output and apply its commitments directly to canonical accounts without any local witness or replacement proof.",
+  "single_intended_change": "Store the participant-edge reserve commitment in canonical reservation state, pin the collaborative FROST key at genesis, re-verify the complete collaborative package during canonical preparation, update account commitments from that package, and assert exact zkPI, nullifier, and package-digest identity after Avalanche acceptance.",
+  "baseline": {
+    "manifest": "research/manifests/oclob_collaborative_settlement_e2e_001.json",
+    "verdict": "accepted",
+    "limitation": "The collaborative package was independently verified but not used as the canonical account-transition input."
+  },
+  "evaluation_population": {
+    "markets": 1,
+    "participant_processes": 2,
+    "orders": 2,
+    "matched_fill_slots": 1,
+    "mpc_nodes": 7,
+    "proof_parties": 7,
+    "proof_signing_quorum": 3,
+    "avalanche_validators": 5,
+    "validator_restarts": 1
+  },
+  "primary_metric": "canonical_member_exactly_equals_collaborative_mpc_proof",
+  "point_prediction": {
+    "canonical_member_exactly_equals_collaborative_mpc_proof": 1,
+    "expected_trade_price": 100,
+    "expected_trade_quantity": 40,
+    "expected_maker_securities": 9960,
+    "expected_taker_cash": 99996000
+  },
+  "most_likely_prediction_error": "The MPC proof is defined over order-reservation commitments while canonical accounts hold full-balance commitments, so a verifier that incorrectly treats those as the same pre-state will reject or apply the wrong remainder.",
+  "rejection_rules": [
+    "contract SHA-256 differs",
+    "the exact circuit does not compile with official MP-SPDZ compile.py",
+    "the proof committee key is not pinned before genesis",
+    "a reservation root omits or changes the edge VSS reserve commitment",
+    "the collaborative proof fails any zkPI, limit, product, remainder, asset, handle, opening, round, slot, or output binding",
+    "the accepted canonical member differs in zkPI digest, nullifier, or DvP package digest",
+    "post-trade portfolio or reservation values differ from the prediction",
+    "Avalanche finality, replay rejection, root agreement, receipt chain, or restart recovery fails"
+  ],
+  "promotion_rules": [
+    "the participant-edge, seven-node matching and proof, canonical proof re-verification, commitment update, Avalanche finality, replay rejection, and restart flow succeeds",
+    "all rejection rules remain false",
+    "the artifact records this exact contract digest and manifest identifier",
+    "remote formatting, warnings-denied Clippy, release tests, frontend build, and official circuit compilation remain green",
+    "the observed result is appended once to the repository experiment ledger"
+  ],
+  "command": "make remote-integrated-e2e REMOTE_TEST_HOST=softbank-l40s"
+}

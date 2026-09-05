@@ -189,8 +189,8 @@ services:
       OCLOB_MAKER_CAPABILITY: /handoff/maker-capability.json
       OCLOB_TAKER_CAPABILITY: /handoff/taker-capability.json
       OCLOB_SETTLEMENT_IDENTITY: /settlement/client.json
-      OCLOB_RESEARCH_CONTRACT: /research/oclob_collaborative_settlement_contract.json
-      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_collaborative_settlement_e2e_001.json
+      OCLOB_RESEARCH_CONTRACT: /research/oclob_collaborative_canonical_contract.json
+      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_collaborative_canonical_e2e_001.json
       QOMM_AVALANCHE_ARTIFACT: /out/oclob_distributed_avalanche_acceptance.json
 
 networks:

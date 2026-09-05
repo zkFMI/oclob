@@ -1,52 +1,58 @@
 {
   "canonical_settlement": {
-    "bootstrap_root": "61377259be0b705d9765125f9b21ff20eb1a3c6f27d5c3682711ce9f4372dffc",
+    "bootstrap_root": "b675d8918cd758cb9ff9ffa31174b4bae4a3b274c65c57df2ddd59b9637c8499",
+    "canonical_member_matches_collaborative_proof": true,
     "maker_reservation_height": 9,
-    "maker_reservation_transaction_id": "6HaGtWHDjbLkqfUYbHHJyWkNRY5snk31nKHLFCHKVNoebg297",
-    "maker_reservation_zkpi": "15731f1cff0064fd1e5fda64708ec2f9dd280ee468d2d3d40b30f052d30d85d3",
+    "maker_reservation_transaction_id": "2abriehZjWfVpt1VLuGMHVaiPTJkXbQbSiWmXqvzHNt7gv1qnm",
+    "maker_reservation_zkpi": "4e1f1a09c260702e81634cd0e2206f070d4c24dbf7ca0a678832905a3d27fcd6",
     "receipt_chain_verified": true,
     "replay_rejected": true,
-    "state_root": "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
+    "reservation_commitment_mismatch_rejected": true,
+    "state_root": "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
     "taker_dvp_height": 10,
-    "taker_dvp_transaction_id": "2S34d3F41hnvMtsPKQ34ruH96VqcZxtKNYNX6nCiWyVXDyuhi1",
+    "taker_dvp_transaction_id": "3YZR5TTNG65WhrkfemJN2QVhW3Lsgt336Vv61aEMmrLhJAUz3",
     "taker_reservation_finalized_with_dvp": true,
+    "tampered_output_binding_rejected": true,
     "threshold_amount_range": true,
     "threshold_price_range": true,
+    "unpinned_proof_key_rejected": true,
     "validator_roots_after_restart": [
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45"
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d"
     ],
     "validator_roots_before_restart": [
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45",
-      "233736296a67cb4df9995f70c095e72d1600457714b711dbac472463c4a21f45"
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d",
+      "e4e38c911db6fac39c4d0be4b62b9b9de61529b2de129f61526f43ed5314975d"
     ]
   },
-  "chain_id": "Bo3o4DzB7z1q9FMxpnAsenhoZr5PkSYQVBw7iZZ4wwzzEof6A",
+  "chain_id": "BNas7V7p9xTGSeyu1CU4emV2aq7W7BVuAGcu2nJeGwtMPLfSK",
   "collaborative_settlement": {
+    "canonical_dvp_input": true,
     "central_order_reconstruction_for_proof": false,
-    "dvp_package_digest": "c4215b82ce16c16a6486bb14d5e9c7d9cc52fd8db4771cad7543c8b75322352f",
+    "dvp_package_digest": "9a9c178a21c92ada08b0a7664002269bd075cce08146123453bc6f32af2da771",
     "dvp_product_and_remainders_verified": true,
-    "frost_public_package_sha256": "2f403310d089fc13374bca1a0ab9b001dfce06963ecc524c71636d1b2712e66b",
-    "instruction_nullifier": "c12b0ad7e8d421a1a6c46cb8d3f760fd46c7020207227aeea46d947dff1996c4",
+    "frost_public_package_sha256": "13cc13e7281ffea76113720c9be7db328705528a1f3f15df1a6718dddad621a5",
+    "instruction_nullifier": "98a9cc7ff6700b2f25cc474bd8e2c071d63e443c2e8a749456d4fce0a1e7a339",
     "limit_proof_verified": true,
+    "locally_reproved_for_canonical_settlement": false,
     "market_proof_digest": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
-    "proof_job_id": "c3f5ef43141ce51bed6fbb2cccb7a49b76d0cf7235d01f45b7ded836ab034b4b",
+    "proof_job_id": "8dfd5165bad653063d6edd98db6e6870cf0c9489da19aa80e4bd03e3d687a2d7",
     "proof_parties": 7,
     "recipient_scoped_openings_verified": true,
     "signing_quorum": 3,
     "threshold_amount_range": true,
     "threshold_price_range": true,
-    "zkpi_digest": "c28d591021b1c19bf37d6bd9497e1b105a28da639288fa3638ed89d146de9d56"
+    "zkpi_digest": "c7d76ecba6f9c908d18afef2781bd78ddecbcd8665a7b1d3935c0c142e441fd7"
   },
   "distributed_matching": {
     "all_outputs_agreed": true,
-    "artifact_sha256": "d8749053afcdfce44ae6aef84b32f41464c0bf6f36494440db31b1b73f99880b",
+    "artifact_sha256": "b77f7a7ecf2e45f7a7e3eaa90d82570da7667e433aa538bf5b48e6fc19dfcf04",
     "distinct_maker_private_state_digests": 7,
     "distinct_taker_private_state_digests": 7,
     "maker_remainder": 20,
@@ -72,7 +78,7 @@
     "taker_sequence": 2,
     "taker_votes": 7
   },
-  "elapsed_ms": 16293.998423000001,
+  "elapsed_ms": 17995.413883,
   "environment": "seven MPC containers plus five AvalancheGo validators on one host",
   "evm_used": false,
   "external_binaries": {
@@ -93,13 +99,14 @@
     "521319db58f6bfced1198c186828bda021dcf35141f804d19a0b792ed4028f60"
   ],
   "network": {
-    "chainID": "Bo3o4DzB7z1q9FMxpnAsenhoZr5PkSYQVBw7iZZ4wwzzEof6A",
+    "chainID": "BNas7V7p9xTGSeyu1CU4emV2aq7W7BVuAGcu2nJeGwtMPLfSK",
     "networkID": 1337,
     "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
   },
   "non_claims": [
     "Seven MPC containers and five AvalancheGo validators on one host are not independent-operator or WAN evidence.",
-    "The collaborative zkPI and DvP proof is independently verified in this run, while the current clear-balance compatibility projection still opens one-order settlement capabilities to update its legacy in-memory reservation view.",
+    "The arriving settlement capability is still opened after durable MPC execution to authorize its atomic pre-trade reservation; the DvP zkPI, proofs, nullifier and canonical account changes come directly from the pinned MPC proof committee without local reproving.",
+    "The OCLOB settlement application verifies the full collaborative proof before the DeFMI boundary; the current Avalanche VM verifies committee approval over proof digests and account deltas rather than deserializing that proof.",
     "Transition and DeFMI approval keys are deterministic laboratory keys, not HSM-backed operator custody.",
     "Canonical DeFMI state uses commitment accounts and a reservation root rather than account-free product notes.",
     "One functional scenario is not throughput, security-attack or economic-effect evidence."
@@ -141,19 +148,19 @@
     "taker_signed_admission_receipts": 7
   },
   "research": {
-    "contract_id": "oclob-collaborative-settlement-v1",
-    "contract_sha256": "b0531ef6b9bc63f5912e71e49b58e6b5ee1297fcb5cc045fd4f442a4660b7d3b",
-    "manifest_id": "oclob-collaborative-settlement-rough-001",
+    "contract_id": "oclob-collaborative-canonical-settlement-v1",
+    "contract_sha256": "de52184c85d7f8ef8ced70a437e8b842d949fe999492c15d28b005e6ac5b2b53",
+    "manifest_id": "oclob-collaborative-canonical-rough-001",
     "observed_value": 1,
-    "primary_metric": "collaborative_zkpi_dvp_proof_from_node_local_persistence",
+    "primary_metric": "canonical_member_exactly_equals_collaborative_mpc_proof",
     "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
   },
   "restart": {
-    "elapsed_ms": 665.165534,
+    "elapsed_ms": 644.8787169999999,
     "node": "node3",
     "root_recovered": true
   },
-  "schema": "oclob.distributed-avalanche-acceptance/v3",
+  "schema": "oclob.distributed-avalanche-acceptance/v4",
   "topology": {
     "avalanche_validators": 5,
     "independent_operators_claimed": false,

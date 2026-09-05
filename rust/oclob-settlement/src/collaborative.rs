@@ -9,6 +9,7 @@ use base64::Engine;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
+use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides, ThresholdDvpPackage};
 use qomm_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
 use qomm_proofs::price_limit::{
     from_threshold as threshold_price_limit, threshold_context as price_limit_context,
@@ -39,6 +40,7 @@ use qomm_transport::limit_wire::{
 use qomm_transport::product_proof_coordinator::prove_standing_pool_remainder;
 use qomm_transport::proof_client::ProofPartyRpc;
 use qomm_transport::proof_codec::encode_threshold_range;
+use qomm_transport::standing_pool::STANDING_POOL_REMAINDER_CONTEXT;
 use qomm_transport::zkpi_issuer::{
     assemble_ranges, build_partial_instruction, make_challenge as make_zkpi_challenge,
     relation_statements_from_evaluations as zkpi_relation_statements,
@@ -79,6 +81,11 @@ pub struct CollaborativeFillRequest {
 
 pub struct CollaborativeFillProof {
     pub job_id: [u8; 32],
+    pub market_proof_digest: [u8; 32],
+    pub limit_direction: PriceLimitDirection,
+    pub limit_commitment: RistrettoPoint,
+    pub limit_context: [u8; 32],
+    pub asset_id: [u8; 32],
     pub instruction: Instruction,
     pub frost_public: frost::keys::PublicKeyPackage,
     pub maker_handle: RistrettoPoint,
@@ -94,6 +101,164 @@ pub struct CollaborativeFillProof {
     pub cash_delivery_opening: OpeningEnvelope,
     pub cash_refund_opening: OpeningEnvelope,
     pub asset_blinding: Scalar,
+}
+
+/// Canonical public facts against which the OCLOB settlement adapter
+/// re-verifies one MPC-produced fill before constructing a DeFMI command.
+/// Reserve commitments come from the already-finalized pre-trade reservation
+/// ledger; neither a balance opening nor an order opening appears at this
+/// boundary.
+pub struct CollaborativeSettlementContext<'a> {
+    pub expected_job_id: [u8; 32],
+    pub market_proof_digest: [u8; 32],
+    pub maker_handle: RistrettoPoint,
+    pub taker_handle: RistrettoPoint,
+    pub maker_reserve: RistrettoPoint,
+    pub taker_reserve: RistrettoPoint,
+    pub asset_id: [u8; 32],
+    pub frost_public: &'a frost::keys::PublicKeyPackage,
+    pub now: u64,
+}
+
+impl CollaborativeFillProof {
+    /// Re-run every public verification needed for canonical settlement and
+    /// return the verifier-complete threshold DvP package. The returned value
+    /// can update commitments directly; it contains no scalar amount, price,
+    /// reserve, balance, or blinding opening.
+    pub fn verify_for_settlement(
+        &self,
+        key: &Pedersen,
+        context: CollaborativeSettlementContext<'_>,
+    ) -> Result<ThresholdDvpPackage, String> {
+        if self.job_id != context.expected_job_id
+            || self.instruction.nonce != self.job_id
+            || self.market_proof_digest != context.market_proof_digest
+            || self.asset_id != context.asset_id
+            || self.maker_handle != context.maker_handle
+            || self.instruction.deadline < context.now
+        {
+            return Err("collaborative fill is not bound to this canonical transition".into());
+        }
+        let quote_digest = match self.instruction.quote_binding {
+            QuoteBinding::ProofDigest(value) => value,
+            QuoteBinding::LegacyPackedKey(_) => {
+                return Err("canonical settlement refuses a legacy quote key".into())
+            }
+        };
+        if quote_digest != context.market_proof_digest {
+            return Err("zkPI names another MPC public output".into());
+        }
+        let expected_handles = match self.limit_direction {
+            PriceLimitDirection::MaximumBuyPrice => (context.taker_handle, context.maker_handle),
+            PriceLimitDirection::MinimumSellPrice => (context.maker_handle, context.taker_handle),
+        };
+        if (self.instruction.payer_handle, self.instruction.payee_handle) != expected_handles {
+            return Err("zkPI payer and payee do not match the reserved Maker and Taker".into());
+        }
+        let expected_asset = key.commit(&asset_scalar(&context.asset_id), &self.asset_blinding);
+        if self.instruction.asset_commitment != expected_asset
+            || !self.instruction.ranges.is_threshold()
+        {
+            return Err("zkPI asset or range evidence is not the canonical threshold form".into());
+        }
+        let supplied_key = self
+            .frost_public
+            .serialize()
+            .map_err(|_| "collaborative FROST public package is not serializable")?;
+        let pinned_key = context
+            .frost_public
+            .serialize()
+            .map_err(|_| "pinned FROST public package is not serializable")?;
+        if supplied_key != pinned_key {
+            return Err("zkPI was authorized by an unpinned MPC settlement committee".into());
+        }
+        let bounds = Bounds {
+            amount_bits: AMOUNT_BITS,
+            price_bits: PRICE_BITS,
+            max_horizon: 3_600,
+        };
+        Venue::new(key.clone(), &bounds, context.frost_public.clone())
+            .require_threshold_ranges()
+            .verify(&self.instruction, context.now)
+            .map_err(str::to_string)?;
+        threshold_price_limit(
+            key,
+            &self.instruction.price_commitment,
+            &self.limit_commitment,
+            self.limit_direction,
+            PRICE_BITS,
+            &self.limit_context,
+            self.price_limit_proof.clone(),
+        )?;
+
+        let (securities_reserve, cash_reserve, expected_maker_remainder) =
+            match self.limit_direction {
+                PriceLimitDirection::MaximumBuyPrice => (
+                    context.maker_reserve,
+                    context.taker_reserve,
+                    self.securities_remainder,
+                ),
+                PriceLimitDirection::MinimumSellPrice => (
+                    context.taker_reserve,
+                    context.maker_reserve,
+                    self.cash_remainder,
+                ),
+            };
+        let package = build_threshold_package_from_proofs(
+            key,
+            self.instruction.clone(),
+            Sides::of(&self.instruction),
+            securities_reserve,
+            cash_reserve,
+            self.cash_commitment,
+            self.dvp_proofs.clone(),
+            AMOUNT_BITS,
+        )?;
+        if package.securities_remainder != self.securities_remainder
+            || package.cash_remainder != self.cash_remainder
+            || self.maker_pool_remainder != expected_maker_remainder
+            || !verify_threshold_range(
+                key,
+                &self.maker_pool_remainder,
+                &self.maker_pool_remainder_proof,
+                STANDING_POOL_REMAINDER_CONTEXT,
+            )
+        {
+            return Err("MPC reserve remainder differs from the canonical reservation".into());
+        }
+        for (leg, envelope, recipient) in [
+            (
+                "securities_delivery",
+                &self.securities_delivery_opening,
+                self.instruction.payer_handle,
+            ),
+            (
+                "securities_refund",
+                &self.securities_refund_opening,
+                self.instruction.payee_handle,
+            ),
+            (
+                "cash_delivery",
+                &self.cash_delivery_opening,
+                self.instruction.payee_handle,
+            ),
+            (
+                "cash_refund",
+                &self.cash_refund_opening,
+                self.instruction.payer_handle,
+            ),
+        ] {
+            envelope.validate()?;
+            if envelope.context != opening_context(&self.job_id, leg)?
+                || envelope.recipient_view != recipient
+            {
+                return Err(format!(
+                    "{leg} opening envelope is not bound to its proof job and recipient"
+                ));
+            }
+        }
+        Ok(package)
+    }
 }
 
 /// Stable one-use proof identifier for one public OCLOB fill slot.
@@ -251,6 +416,11 @@ pub fn prove_fill<T: ProofPartyRpc>(
 
     Ok(CollaborativeFillProof {
         job_id: request.job_id,
+        market_proof_digest: request.market_proof_digest,
+        limit_direction: request.limit_direction,
+        limit_commitment: request.limit_commitment,
+        limit_context: request.limit_context,
+        asset_id: request.asset_id,
         instruction,
         frost_public,
         maker_handle,
