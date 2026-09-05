@@ -1,0 +1,40 @@
+{
+  "manifest_id": "oclob-native-finality-regression-002",
+  "contract_id": "oclob-native-finality-v1",
+  "contract_path": "research/oclob_native_finality_contract.json",
+  "contract_sha256": "5d34ded71c410881047d8872027a0dfa72698ab36645d532b3c35a608600da54",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Verify the existing original single-fill wallet/finality journey after the native atomic-batch dependency and node integration.",
+  "causal_hypothesis": "Binding each node's signed execution to a full signed fill and its own configured canonical read will reject fabricated or substituted finality without preventing real settlement and corporate reuse.",
+  "single_intended_change": "Run the unchanged original monetary journey with the new batch-capable settlement dependency and full local matched-slot enforcement.",
+  "baseline": "OCLOB fe7e77d91d4bf589c1419fb8cd5c5b3da2c32cd5 original single-fill finality/wallet passed.",
+  "dependency_candidate": "DeFMI 33d0c97380c28c665d20d624d351fac559ef1ada; native two-fill live run already passed; pinned cryptographic primitives unchanged.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "node_observed_canonical_finality",
+  "point_prediction": {
+    "node_observed_canonical_finality": 7,
+    "recovered_note_funded_next_order": true,
+    "first_fill_quantity": 40,
+    "first_fill_price": 100,
+    "next_order_matched": false
+  },
+  "most_likely_prediction_error": "Node certificate read permissions or retrospective proof validity may stop one observer despite successful original settlement. A false early advance would reject the candidate immediately.",
+  "rejection_rules": [
+    "contract hash mismatch",
+    "any node advances on an unobserved assertion",
+    "altered signed fill accepted against canonical transaction",
+    "repeated observation changes state",
+    "fewer than seven exact observations",
+    "wallet reuse or five roots/restart regress"
+  ],
+  "promotion_rules": [
+    "At most smoke_only; independent read-service trust, one original fill, no native multi-fill/WAN/product promotion."
+  ],
+  "command": "make remote-native-finality-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

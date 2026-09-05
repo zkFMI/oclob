@@ -308,6 +308,7 @@ impl Fixture {
             openings: envelopes,
             committee_public: public.serialize().unwrap(),
             signature: vec![],
+            batch: None,
         };
         Self {
             request: NativeFillAuthorizationRequest {
@@ -338,10 +339,20 @@ impl Fixture {
         request: &NativeFillAuthorizationRequest,
         execution: &NativeFillExecution,
     ) -> Result<ApplicationStatementAuthorization, String> {
+        self.verify_with_slots(request, execution, &[0])
+    }
+
+    fn verify_with_slots(
+        &self,
+        request: &NativeFillAuthorizationRequest,
+        execution: &NativeFillExecution,
+        matched_slots: &[usize],
+    ) -> Result<ApplicationStatementAuthorization, String> {
         NativeFillVerifier {
             request,
             execution,
             trust: &self.trust,
+            matched_slots,
             now: NOW,
         }
         .verify(CompletedApplicationProof {
@@ -444,4 +455,47 @@ fn native_signing_rejects_changed_execution_authority_heads_openings_and_proofs(
             "accepted mutation {mutation}"
         );
     }
+}
+
+#[test]
+fn local_full_execution_refuses_an_extracted_or_reordered_signing_request() {
+    let f = Fixture::new();
+    let slots = [0, 2, 7];
+    let mut request = f.request.clone();
+    request.fill.batch = native_batch_binding(
+        &request.fill.scope,
+        request.fill.before_root,
+        request.round_id,
+        request.fill.mpc_result_digest,
+        &slots,
+        0,
+    )
+    .unwrap();
+    assert!(f.verify_with_slots(&request, &f.execution, &slots).is_ok());
+    assert!(f
+        .verify_with_slots(&f.request, &f.execution, &slots)
+        .is_err());
+    for subset in [&[0][..], &[0, 7]] {
+        let mut extracted = request.clone();
+        extracted.fill.batch = native_batch_binding(
+            &request.fill.scope,
+            request.fill.before_root,
+            request.round_id,
+            request.fill.mpc_result_digest,
+            subset,
+            0,
+        )
+        .unwrap();
+        assert!(f
+            .verify_with_slots(&extracted, &f.execution, &slots)
+            .is_err());
+    }
+    let mut reordered = request.clone();
+    reordered.fill.batch.as_mut().unwrap().index = 1;
+    assert!(f
+        .verify_with_slots(&reordered, &f.execution, &slots)
+        .is_err());
+    let mut stale = request;
+    stale.fill.before_root[0] ^= 1;
+    assert!(f.verify_with_slots(&stale, &f.execution, &slots).is_err());
 }

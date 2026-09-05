@@ -130,6 +130,7 @@ impl AdmissionAuthority {
                         && matches!(
                             method,
                             "defmivm.issueApplicationNoteFill"
+                                | "defmivm.issueApplicationNoteFillBatch"
                                 | "defmivm.issueApplicationNoteRelease"
                         );
                 if !read && !write {

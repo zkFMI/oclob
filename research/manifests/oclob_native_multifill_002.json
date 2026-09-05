@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-multifill-final-002",
+  "contract_id": "oclob-native-multifill-v1",
+  "contract_path": "research/oclob_native_multifill_contract.json",
+  "contract_sha256": "91f3066907739f0093da110afd3a4ac874313893f6bc8cfb6dcaa95640b805c8",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Final source verification after the successful rough two-fill run and the independent single-fill wallet regression.",
+  "causal_hypothesis": "Signed ordered membership verified against each node's own completed round, with cumulative heads and one atomic VM transaction, settles both fills without extraction or partial private-head advancement.",
+  "single_intended_change": "Predeclared replication of the successful protocol and monetary scenario; emit the exact primary metric name in the final machine-readable receipt.",
+  "baseline": "First whole candidate produced 2 fills in one canonical transaction, 14 node observations, facilities 4/3 and five roots/restart. Artifact SHA256 5489fca5cc7729e9ed5042abc478817f996024dc410b0ab20f1e8e29cc44140a.",
+  "dependency_candidate": "DeFMI 33d0c97380c28c665d20d624d351fac559ef1ada; 319 release tests and all-target Clippy passed on Softbank.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "maker_legal_entities": 1,
+    "resting_orders": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "atomically_settled_fills",
+  "point_prediction": {
+    "atomically_settled_fills": 2,
+    "canonical_transactions": 1,
+    "node_observed_canonical_finality": 14,
+    "posttrade_facility_sequences": [
+      4,
+      3
+    ]
+  },
+  "most_likely_prediction_error": "The shared taker remainder or the corporate funding change path may not carry its exact commitment/receipt into the second fill, causing fail-closed rejection before atomic settlement.",
+  "rejection_rules": [
+    "stale contract hash",
+    "extracted member can be signed or settled",
+    "wrong fill price or quantity",
+    "fewer than fourteen observations",
+    "partial observation advances any node",
+    "duplicate settlement on retry",
+    "five roots or restart disagree"
+  ],
+  "promotion_rules": [
+    "smoke_only after all hard constraints; no performance, independent operator or product promotion"
+  ],
+  "command": "make remote-native-multifill-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
+  "replication_of": "oclob-native-multifill-rough-001"
+}

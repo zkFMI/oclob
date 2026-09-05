@@ -1,0 +1,75 @@
+{
+  "contract_sha256": "91f3066907739f0093da110afd3a4ac874313893f6bc8cfb6dcaa95640b805c8",
+  "independent_operators": false,
+  "manifest_id": "oclob-native-multifill-final-002",
+  "native": {
+    "atomic_multi_fill": true,
+    "atomically_settled_fills": 2,
+    "batch_extraction_rejected": true,
+    "canonical_height": 15,
+    "canonical_observation_retry_unchanged": true,
+    "canonical_transaction": "Dy2aHX9b8nHpfm5vsGWLh8UGtTp7S9CtjwXP4QLAiJbxkRD3s",
+    "contract_sha256": "91f3066907739f0093da110afd3a4ac874313893f6bc8cfb6dcaa95640b805c8",
+    "elapsed_ms": 49015,
+    "exact_retry_did_not_apply_twice": true,
+    "fill_count": 2,
+    "fills": [
+      {
+        "matched": true,
+        "trade_price": 100,
+        "trade_quantity": 60
+      },
+      {
+        "matched": true,
+        "trade_price": 101,
+        "trade_quantity": 30
+      }
+    ],
+    "maker_reserve_active": true,
+    "manifest_id": "oclob-native-multifill-final-002",
+    "mpc_nodes": 7,
+    "mpc_output_sha256": "1f10f3dab561bdb33e2419c00d04ee5fecca368aa4b97719975e25ce85249baa",
+    "native_after_root": "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "native_note_settlement": true,
+    "node_observed_canonical_finality": 14,
+    "observed_finality_height_substitution_rejected_by_all_nodes": true,
+    "partial_observation_did_not_advance": true,
+    "post_match_participant_signatures": 0,
+    "posttrade_facility_sequences": [
+      4,
+      3
+    ],
+    "pretrade_facility_sequences": [
+      2,
+      1
+    ],
+    "private_finalization_retry_unchanged": true,
+    "raw_order_capability_opened": false,
+    "same_maker_legal_entity": true,
+    "substituted_canonical_fill_rejected_by_all_nodes": true,
+    "substituted_mpc_output_rejected_by_resident_node": true,
+    "taker_reserve_closed": true,
+    "trade_price": 100,
+    "trade_quantity": 60,
+    "unsettled_and_unobserved_finality_rejected_by_all_nodes": true,
+    "verdict": "smoke_only",
+    "zkpi_sha256": "0c2be43891a3b540fa878ab17459853b403c8ac032271105aa1cddb5b761c8dc"
+  },
+  "recovered_validator_roots": [
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c"
+  ],
+  "status": "smoke_only",
+  "validator_restart_recovered": true,
+  "validator_roots": [
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c",
+    "cb824704bf73bb3422bffb1585904211b64f4671056f7342bbe1934585cb603c"
+  ],
+  "wan_evidence": false
+}

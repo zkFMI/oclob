@@ -19,11 +19,12 @@ use oclob_settlement::collaborative::{
     collaborative_job_id, load_fill, prove_fill, CollaborativeFillRequest,
 };
 use oclob_settlement::native::{
-    certify_native_fill, prepare_native_fill, NativeFillAuthorizationRequest,
-    NativeReservationAuthority,
+    certify_native_fill, native_batch_binding, prepare_native_fill, project_pending_native_head,
+    NativeFillAuthorizationRequest, NativeReservationAuthority,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
 use qomm_defmi::application_reservation::ApplicationReserveScope;
+use qomm_defmi::application_settlement::ApplicationNoteFillBatch;
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
 use qomm_defmi::facility::QuorumAuthorizer;
 use qomm_proofs::price_limit::PriceLimitDirection;
@@ -64,6 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-recovery-v1"
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
+                    | "oclob-native-multifill-v1"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -78,6 +80,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     settlement.validate()?;
     let maker: EdgeAdmissionReceipt = read("/handoff/maker.json")?;
     let taker: EdgeAdmissionReceipt = read("/handoff/taker.json")?;
+    let multifill = manifest["contract_id"] == "oclob-native-multifill-v1";
+    let mut makers = vec![maker.clone()];
+    if multifill {
+        makers.push(read("/handoff/maker2.json")?);
+    }
+    for receipt in &makers {
+        receipt.verify(&cluster, now()?)?;
+    }
     maker.verify(&cluster, now()?)?;
     taker.verify(&cluster, now()?)?;
     if !maker.manifest.uses_pretrade_reservation() || !taker.manifest.uses_pretrade_reservation() {
@@ -152,17 +162,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     // A no-fill admission leaves the source shares unchanged. Do not invent a
     // canonical trade receipt just to copy unchanged shares into private state.
+    let mut previous_certificate = maker_certificate.clone();
+    if multifill {
+        previous_certificate = collect_order_certificate(
+            &cluster,
+            &tls,
+            Some(&maker_certificate),
+            makers[1].commitment(),
+            makers[1].manifest.retention_deadline,
+            Duration::from_secs(30),
+        )?;
+        let second_plan = RoundPlan::sign(
+            previous_certificate.clone(),
+            vec![maker.commitment()],
+            now()?,
+            now()? + 300,
+            &key,
+        )?;
+        let second_execution =
+            execute_agreed_round(&cluster, &tls, &second_plan, Duration::from_secs(300))?;
+        if second_execution
+            .result
+            .slots
+            .iter()
+            .any(|fill| fill.matched)
+        {
+            return Err("second resting sell unexpectedly matched".into());
+        }
+    }
     let taker_certificate = collect_order_certificate(
         &cluster,
         &tls,
-        Some(&maker_certificate),
+        Some(&previous_certificate),
         taker.commitment(),
         taker.manifest.retention_deadline,
         Duration::from_secs(30),
     )?;
     let plan = RoundPlan::sign(
         taker_certificate.clone(),
-        vec![maker.commitment()],
+        makers.iter().map(|receipt| receipt.commitment()).collect(),
         now()?,
         now()? + 300,
         &key,
@@ -174,12 +212,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|fill| fill.matched)
         .count()
-        != 1
+        != makers.len()
         || execution.result.slots[0].trade_price != 100
-        || execution.result.slots[0].trade_quantity != 40
+        || execution.result.slots[0].trade_quantity != if multifill { 60 } else { 40 }
+        || (multifill
+            && (execution.result.slots[1].trade_price != 101
+                || execution.result.slots[1].trade_quantity != 30))
         || execution.result.arriving_remaining != 0
     {
-        return Err("native scenario did not produce exactly one fill".into());
+        return Err("native scenario did not produce the exact expected fills".into());
     }
     let open = |receipt: &EdgeAdmissionReceipt,
                 path|
@@ -204,11 +245,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         Ok(NativeReservationAuthority::from(&authority))
     };
-    let maker_authority = open(&maker, "/handoff/maker-capability.json")?;
+    let mut maker_authorities = vec![open(&maker, "/handoff/maker-capability.json")?];
+    if multifill {
+        maker_authorities.push(open(&makers[1], "/handoff/maker2-capability.json")?);
+    }
+    let maker_authority = &maker_authorities[0];
     let taker_authority = open(&taker, "/handoff/taker-capability.json")?;
     let maker_head =
         client.application_reservation_snapshot(maker_authority.permit.reservation_id)?;
-    let taker_head =
+    let mut taker_head =
         client.application_reservation_snapshot(taker_authority.permit.reservation_id)?;
     if maker_head.sequence != 0 || taker_head.sequence != 0 {
         return Err("initial native holds were already consumed".into());
@@ -223,11 +268,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .facility
             .sequence,
     ];
-    if reserve_sequences != [1, 1] {
+    if reserve_sequences != [makers.len() as u64, 1] {
         return Err("native fixture contains duplicate or unexpected pretrade reservations".into());
     }
     let output = execution.receipts[0].public_output_sha256;
-    let job = collaborative_job_id(plan.round_id, 0, output)?;
     let mut parties = cluster
         .nodes
         .iter()
@@ -241,68 +285,111 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
         })
         .collect::<Vec<_>>();
-    load_fill(&mut parties, plan.round_id, 0, job, output)?;
-    let proof = prove_fill(
-        &mut parties,
-        public,
-        CollaborativeFillRequest {
-            job_id: job,
-            market_proof_digest: output,
-            limit_direction: PriceLimitDirection::MaximumBuyPrice,
-            limit_commitment: point(taker.manifest.field_commitments[1][0])?,
-            limit_context: Sha256::new()
-                .chain_update(b"OCLOB:SIGNED-TAKER-LIMIT:v1")
-                .chain_update(taker.commitment().0)
-                .chain_update(taker_certificate.digest())
-                .chain_update(output)
-                .finalize()
-                .into(),
-            taker_handle: point(taker_authority.permit.participant_handle)?,
-            asset_id: maker_authority.permit.asset_id,
-            deadline: maker
-                .manifest
-                .retention_deadline
-                .min(taker.manifest.retention_deadline),
-            now: now()?,
-        },
-    )?;
-    for (index, party) in parties.iter_mut().enumerate() {
-        party.call(
-            if [0, 3, 6].contains(&index) {
-                "complete"
-            } else {
-                "complete_observer"
+    let slots = (0..makers.len()).collect::<Vec<_>>();
+    let mut requests = Vec::new();
+    for slot in &slots {
+        let maker_authority = &maker_authorities[*slot];
+        let maker_head =
+            client.application_reservation_snapshot(maker_authority.permit.reservation_id)?;
+        let job = collaborative_job_id(plan.round_id, *slot, output)?;
+        load_fill(&mut parties, plan.round_id, *slot, job, output)?;
+        let proof = prove_fill(
+            &mut parties,
+            public.clone(),
+            CollaborativeFillRequest {
+                job_id: job,
+                market_proof_digest: output,
+                limit_direction: PriceLimitDirection::MaximumBuyPrice,
+                limit_commitment: point(taker.manifest.field_commitments[1][0])?,
+                limit_context: Sha256::new()
+                    .chain_update(b"OCLOB:SIGNED-TAKER-LIMIT:v1")
+                    .chain_update(taker.commitment().0)
+                    .chain_update(taker_certificate.digest())
+                    .chain_update(output)
+                    .finalize()
+                    .into(),
+                taker_handle: point(taker_authority.permit.participant_handle)?,
+                asset_id: maker_authority.permit.asset_id,
+                deadline: makers[*slot]
+                    .manifest
+                    .retention_deadline
+                    .min(taker.manifest.retention_deadline),
+                now: now()?,
             },
-            json!({"job_id": hex::encode(job)}),
         )?;
+        for (index, party) in parties.iter_mut().enumerate() {
+            party.call(
+                if [0, 3, 6].contains(&index) {
+                    "complete"
+                } else {
+                    "complete_observer"
+                },
+                json!({"job_id": hex::encode(job)}),
+            )?;
+        }
+        let mut fill = prepare_native_fill(
+            &proof,
+            scope.clone(),
+            maker_authority,
+            &taker_authority,
+            &maker_head,
+            &taker_head,
+            *slot == slots.len() - 1,
+        )?;
+        fill.batch = native_batch_binding(
+            &scope,
+            fill.before_root,
+            plan.round_id,
+            output,
+            &slots,
+            *slot,
+        )?;
+        let request = NativeFillAuthorizationRequest {
+            round_id: plan.round_id,
+            slot: *slot,
+            fill,
+            maker: maker_authority.clone(),
+            taker: taker_authority.clone(),
+        };
+        let mut substituted = request.clone();
+        substituted.fill.mpc_result_digest[0] ^= 1;
+        if certify_native_fill(&mut parties, &substituted).is_ok() {
+            return Err("resident node signed a substituted MPC result".into());
+        }
+        if multifill {
+            let mut extracted = request.clone();
+            extracted.fill.batch = None;
+            match certify_native_fill(&mut parties, &extracted) {
+                Err(error) if error.contains("locally executed matched slots") => {}
+                _ => return Err("node did not reject signing an extracted member".into()),
+            }
+        }
+        let signed = certify_native_fill(&mut parties, &request)?;
+        if multifill && *slot + 1 < slots.len() {
+            taker_head = project_pending_native_head(&taker_head, &signed, now()?)?;
+        }
+        requests.push(NativeFillAuthorizationRequest {
+            fill: signed,
+            ..request
+        });
     }
-    let fill = prepare_native_fill(
-        &proof,
-        scope,
-        &maker_authority,
-        &taker_authority,
-        &maker_head,
-        &taker_head,
-        true,
-    )?;
-    let request = NativeFillAuthorizationRequest {
-        round_id: plan.round_id,
-        slot: 0,
-        fill,
-        maker: maker_authority,
-        taker: taker_authority,
+    let signed = &requests[0].fill;
+    let batch = multifill.then(|| ApplicationNoteFillBatch {
+        version: 1,
+        fills: requests
+            .iter()
+            .map(|request| request.fill.clone())
+            .collect(),
+    });
+    let statement = match &batch {
+        Some(batch) => batch.statement()?,
+        None => signed.signing_message()?,
     };
-    let mut substituted = request.clone();
-    substituted.fill.mpc_result_digest[0] ^= 1;
-    if certify_native_fill(&mut parties, &substituted).is_ok() {
-        return Err("resident node signed a substituted MPC result".into());
-    }
-    let signed = certify_native_fill(&mut parties, &request)?;
     let claimed = PrivateStateFinality {
         round_id: plan.round_id,
         public_output_sha256: output,
-        transition_digest: signed.signing_message()?,
-        canonical_receipt_digest: signed.signing_message()?,
+        transition_digest: statement,
+        canonical_receipt_digest: statement,
         canonical_height: 1,
     };
     let reject_unobserved =
@@ -332,81 +419,121 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         };
     reject_unobserved(&claimed)?;
-    let accepted = bridge.settle_application(&signed)?;
+    if let Some(batch) = &batch {
+        let before = client.state_root()?;
+        for member in &batch.fills {
+            match bridge.settle_application(member) {
+                Err(error) if error.contains("batch member cannot settle individually") => {}
+                _ => return Err("DeFMI did not reject an extracted signed member".into()),
+            }
+        }
+        if client.state_root()? != before {
+            return Err("rejected extraction changed canonical state".into());
+        }
+    }
+    let accepted = match &batch {
+        Some(batch) => bridge.settle_application_batch(batch)?,
+        None => bridge.settle_application(signed)?,
+    };
     let after_maker = client.application_reservation_snapshot(maker_head.binding.hold_id)?;
     let after_taker = client.application_reservation_snapshot(taker_head.binding.hold_id)?;
     if after_maker.sequence != 1
         || after_maker.status != "active"
         || after_maker.remaining_opening.is_none()
-        || after_taker.sequence != 1
+        || after_taker.sequence != makers.len() as u64
         || after_taker.status != "consumed"
     {
         return Err("native canonical reserve lifecycle differs from the fill".into());
     }
     // Exact transport retry returns the existing receipt, never a second fill.
-    let retry = bridge.settle_application(&signed)?;
+    if multifill {
+        let second =
+            client.application_reservation_snapshot(maker_authorities[1].permit.reservation_id)?;
+        let verified = requests[1].fill.verify(&scope, now()?)?;
+        if second.sequence != 1
+            || second.remaining_commitment != verified.remaining[0]
+            || after_taker.remaining_commitment != verified.remaining[1]
+        {
+            return Err("cumulative native reservation head differs from the proofs".into());
+        }
+    }
+    let retry = match &batch {
+        Some(batch) => bridge.settle_application_batch(batch)?,
+        None => bridge.settle_application(signed)?,
+    };
     if retry.tx_id != accepted.tx_id || client.state_root()? != accepted.after_root {
         return Err("native retry applied a second state transition".into());
     }
     let finality = PrivateStateFinality {
         round_id: plan.round_id,
         public_output_sha256: output,
-        transition_digest: signed.signing_message()?,
+        transition_digest: statement,
         canonical_receipt_digest: accepted.statement,
         canonical_height: accepted.height,
     };
     // Even a true coordinator assertion is insufficient until this particular
     // node has independently read and bound the configured canonical record.
     reject_unobserved(&finality)?;
-    let confirmation = NativeFinalityRequest {
-        authorization: NativeFillAuthorizationRequest {
-            fill: signed.clone(),
-            ..request.clone()
-        },
-        transaction_id: accepted.tx_id.clone(),
-    };
     let mut confirmed = Vec::new();
-    for (index, party) in parties.iter_mut().enumerate() {
-        let reader = NodeRpcClient::new(
-            cluster.nodes[index].endpoint(),
-            tls.clone(),
-            Duration::from_secs(30),
-        )?;
-        let before = reader.status()?;
-        let mut substituted = confirmation.clone();
-        substituted.authorization.fill.before_root[0] ^= 1;
-        match party.call(
-            "confirm_oclob_native_finality",
-            serde_json::to_value(&substituted)?,
-        ) {
-            Err(error)
-                if error.contains("configured DeFMI has not confirmed this exact native fill") => {}
-            _ => return Err("node did not reject substituted canonical transaction bytes".into()),
+    for (member_index, request) in requests.iter().enumerate() {
+        let confirmation = NativeFinalityRequest {
+            authorization: request.clone(),
+            transaction_id: accepted.tx_id.clone(),
+            batch: batch.clone(),
+        };
+        for (index, party) in parties.iter_mut().enumerate() {
+            let reader = NodeRpcClient::new(
+                cluster.nodes[index].endpoint(),
+                tls.clone(),
+                Duration::from_secs(30),
+            )?;
+            let before = reader.status()?;
+            let mut substituted = confirmation.clone();
+            substituted.authorization.fill.before_root[0] ^= 1;
+            match party.call(
+                "confirm_oclob_native_finality",
+                serde_json::to_value(&substituted)?,
+            ) {
+                Err(error)
+                    if error
+                        .contains("configured DeFMI has not confirmed this exact native fill")
+                        || error.contains(
+                            "confirmed batch does not contain this exact signed fill",
+                        ) => {}
+                _ => {
+                    return Err(
+                        "node did not reject substituted canonical transaction bytes".into(),
+                    )
+                }
+            }
+            if reader.status()? != before {
+                return Err("rejected canonical observation changed node state".into());
+            }
+            let record: NativeFinalityRecord = serde_json::from_value(party.call(
+                "confirm_oclob_native_finality",
+                serde_json::to_value(&confirmation)?,
+            )?)?;
+            if record.transaction_id != accepted.tx_id
+                || record.before_root != accepted.before_root
+                || record.after_root != accepted.after_root
+                || record.block_id != accepted.block_id
+                || aggregate_finality(&BTreeMap::from([(record.slot, record.clone())]))? != finality
+            {
+                return Err("nodes observed inconsistent native canonical evidence".into());
+            }
+            let once = reader.status()?;
+            let again: NativeFinalityRecord = serde_json::from_value(party.call(
+                "confirm_oclob_native_finality",
+                serde_json::to_value(&confirmation)?,
+            )?)?;
+            if again != record || reader.status()? != once {
+                return Err("repeated canonical observation changed node state".into());
+            }
+            confirmed.push(record);
         }
-        if reader.status()? != before {
-            return Err("rejected canonical observation changed node state".into());
+        if member_index + 1 < requests.len() {
+            reject_unobserved(&finality)?;
         }
-        let record: NativeFinalityRecord = serde_json::from_value(party.call(
-            "confirm_oclob_native_finality",
-            serde_json::to_value(&confirmation)?,
-        )?)?;
-        if record.transaction_id != accepted.tx_id
-            || record.before_root != accepted.before_root
-            || record.after_root != accepted.after_root
-            || record.block_id != accepted.block_id
-            || aggregate_finality(&BTreeMap::from([(record.slot, record.clone())]))? != finality
-        {
-            return Err("nodes observed inconsistent native canonical evidence".into());
-        }
-        let once = reader.status()?;
-        let again: NativeFinalityRecord = serde_json::from_value(party.call(
-            "confirm_oclob_native_finality",
-            serde_json::to_value(&confirmation)?,
-        )?)?;
-        if again != record || reader.status()? != once {
-            return Err("repeated canonical observation changed node state".into());
-        }
-        confirmed.push(record);
     }
     let mut wrong_height = finality.clone();
     wrong_height.canonical_height += 1;
@@ -444,6 +571,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "private_finalization_retry_unchanged": true,
         "trade_price": execution.result.slots[0].trade_price,
         "trade_quantity": execution.result.slots[0].trade_quantity,
+        "atomic_multi_fill": multifill, "fill_count": requests.len(),
+        "atomically_settled_fills": requests.len(),
+        "fills": execution.result.slots.iter().filter(|s| s.matched).collect::<Vec<_>>(),
+        "batch_extraction_rejected": multifill,
+        "partial_observation_did_not_advance": multifill,
+        "same_maker_legal_entity": multifill,
+        "posttrade_facility_sequences": [client.credit_facility_snapshot(maker_authorities[0].permit.facility_id)?.facility.sequence, client.credit_facility_snapshot(taker_authority.permit.facility_id)?.facility.sequence],
         "pretrade_facility_sequences": reserve_sequences,
         "mpc_output_sha256": hex::encode(output),
         "zkpi_sha256": hex::encode(Sha256::digest(&signed.instruction)),

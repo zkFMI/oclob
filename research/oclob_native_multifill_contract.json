@@ -1,0 +1,19 @@
+{
+  "contract_id": "oclob-native-multifill-v1",
+  "objective": "Settle all fills from one native OCLOB matching round atomically and advance all seven private heads only after independently observing every matched slot.",
+  "primary_metric": "atomically_settled_fills",
+  "truth_provider": "Separate corporate containers, actual seven-party MP-SPDZ proof persistence, per-member committee certificates, native DeFMI VM on five Avalanche validators, node-owned canonical reads and validator restart.",
+  "hard_constraints": [
+    "One maker legal entity reserves two separate sell orders of 60 each against its 120-unit facility; one taker reserves buy 90 at a maximum 101. Actual expected fills are 60 at 100 and 30 at 101.",
+    "Every signing node derives complete ordered membership from its own completed round, never a coordinator-provided subset. Extracted member signing and standalone settlement are rejected.",
+    "One canonical transaction applies both members with a common parent; the second fill uses the cumulative taker remainder and exact prior signed receipt.",
+    "All seven nodes observe both accepted members before advancing the private book. A partial set and altered finality fail without state change. Exact retry does not settle twice.",
+    "Maker/taker facility sequences finish at 4/3; five validator roots agree and survive one actual validator restart.",
+    "All builds and tests run on Softbank or Omen. No raw order capability is opened and no participant signature is required after matching."
+  ],
+  "non_claims": [
+    "One operator host and two corporations, not two independent maker firms or independent operators/WAN.",
+    "This scenario does not redeem the five claims or perform a second match. The original single-fill wallet/reuse scenario remains a separate regression gate.",
+    "No new cryptographic primitive, production promotion, cross-DeFMI atomicity, exhaustive eight-fill performance or UI acceptance. The configured canonical reader remains a trust boundary."
+  ]
+}

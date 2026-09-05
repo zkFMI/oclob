@@ -1,27 +1,42 @@
 {
   "contract_sha256": "5d34ded71c410881047d8872027a0dfa72698ab36645d532b3c35a608600da54",
   "independent_operators": false,
-  "manifest_id": "oclob-native-finality-rough-001",
+  "manifest_id": "oclob-native-finality-regression-002",
   "native": {
+    "atomic_multi_fill": false,
+    "batch_extraction_rejected": false,
     "canonical_height": 14,
     "canonical_observation_retry_unchanged": true,
-    "canonical_transaction": "BvADTS2bcffZcEVNZ25HwSgtAb775U2iJtqfrXLMqbh2YaMR4",
+    "canonical_transaction": "2foqCgTYQCpkMrVa7ayjDwchqKNCy73DUd7JsJhQpqsLVFt8xJ",
     "contract_sha256": "5d34ded71c410881047d8872027a0dfa72698ab36645d532b3c35a608600da54",
-    "elapsed_ms": 16232,
+    "elapsed_ms": 16024,
     "exact_retry_did_not_apply_twice": true,
+    "fill_count": 1,
+    "fills": [
+      {
+        "matched": true,
+        "trade_price": 100,
+        "trade_quantity": 40
+      }
+    ],
     "maker_reserve_active": true,
-    "manifest_id": "oclob-native-finality-rough-001",
+    "manifest_id": "oclob-native-finality-regression-002",
     "mpc_nodes": 7,
     "mpc_output_sha256": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
-    "native_after_root": "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
+    "native_after_root": "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
     "native_note_settlement": true,
-    "native_settlement_root": "129b8079fa5590bd635f878a63a30e8c6dac7a4a69bb626b109b33b1bae1e292",
-    "next_order_commitment": "61e5e4f71dce208278c8f59ce4aa15016cf4063636eed01f2f7296e027f20f4a",
+    "native_settlement_root": "6b9f6ca018e6805a078a54e62bb061de29bf70d4babcfefde96011f8f891f6db",
+    "next_order_commitment": "00a886e0df4fe5f52de176fe55f69df245a50f953999a0c7eb64075db719310a",
     "next_order_matched": false,
     "next_order_mpc_nodes": 7,
     "node_observed_canonical_finality": 7,
     "observed_finality_height_substitution_rejected_by_all_nodes": true,
+    "partial_observation_did_not_advance": false,
     "post_match_participant_signatures": 0,
+    "posttrade_facility_sequences": [
+      2,
+      2
+    ],
     "pretrade_facility_sequences": [
       1,
       1
@@ -31,6 +46,7 @@
     "raw_order_capability_opened": false,
     "recipient_claims_redeemed": 3,
     "recovered_note_funded_next_order": true,
+    "same_maker_legal_entity": false,
     "substituted_canonical_fill_rejected_by_all_nodes": true,
     "substituted_mpc_output_rejected_by_resident_node": true,
     "taker_reserve_closed": true,
@@ -38,23 +54,23 @@
     "trade_quantity": 40,
     "unsettled_and_unobserved_finality_rejected_by_all_nodes": true,
     "verdict": "smoke_only",
-    "zkpi_sha256": "990c73cb0c8ba0f623d7bf6297429341c7b7cd08d8710861c4f3f558188f7c19"
+    "zkpi_sha256": "f97cbbb9b65ba77e941162a812b708cc04d47486b1be0caa9bbf2c33e4d52532"
   },
   "recovered_validator_roots": [
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e"
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657"
   ],
   "status": "smoke_only",
   "validator_restart_recovered": true,
   "validator_roots": [
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e",
-    "79246eb3b161c3ca84429992f65988e436b6c69f8ff4a38499ffba3ed8a3357e"
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657",
+    "f8b50814cbca16177c859f53f670d7fcd167a01372515bea51efa379998e8657"
   ],
   "wan_evidence": false
 }

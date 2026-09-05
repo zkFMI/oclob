@@ -176,6 +176,12 @@ impl ProofLoadGuard {
                 request: &request,
                 execution,
                 trust,
+                matched_slots: &self
+                    .native_finality
+                    .as_ref()
+                    .ok_or("native signing requires the local completed-round store")?
+                    .1
+                    .matched_slots(request.round_id, request.fill.mpc_result_digest)?,
                 now,
             },
         )?;
@@ -205,7 +211,10 @@ impl ProofLoadGuard {
             "persistence": format!("{}/proof-slot-{}/Transactions-P{}.data", hex::encode(authorization.round_id), authorization.slot, self.party),
             "job_id": hex::encode(job), "quote_digest": hex::encode(authorization.fill.mpc_result_digest),
         }))?;
-        let verified = crate::native_finality::observe(client, trust, &request, &metadata)?;
+        let matched_slots =
+            handle.matched_slots(authorization.round_id, authorization.fill.mpc_result_digest)?;
+        let verified =
+            crate::native_finality::observe(client, trust, &request, &metadata, &matched_slots)?;
         serde_json::to_value(handle.record(verified)?).map_err(|e| e.to_string())
     }
 }

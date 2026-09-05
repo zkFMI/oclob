@@ -39,6 +39,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-recovery-v1"
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
+                    | "oclob-native-multifill-v1"
             )
         )
     {
@@ -194,6 +195,8 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         return Err(failure("native finality/reuse acceptance is incomplete"));
     }
     let expected: [u8; 32] = hex::decode(
+        // The accepted transaction has already been read independently by all
+        // seven nodes; this observer additionally checks five real validators.
         result["native_after_root"]
             .as_str()
             .ok_or("native result lacks final root")?,
@@ -201,6 +204,17 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     .try_into()
     .map_err(|_| "native result root has incorrect length")?;
     let roots = wait_for_roots(&clients, expected, Duration::from_secs(30))?;
+    if manifest["contract_id"] == "oclob-native-multifill-v1"
+        && (result["atomic_multi_fill"] != true
+            || result["fill_count"] != 2
+            || result["atomically_settled_fills"] != 2
+            || result["node_observed_canonical_finality"] != 14
+            || result["partial_observation_did_not_advance"] != true
+            || result["batch_extraction_rejected"] != true
+            || result["posttrade_facility_sequences"] != json!([4, 3]))
+    {
+        return Err(failure("native atomic multi-fill acceptance is incomplete"));
+    }
     drop(service);
     restart_validator(
         options

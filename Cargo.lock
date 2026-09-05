@@ -836,7 +836,7 @@ dependencies = [
 [[package]]
 name = "qomm-audit"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -854,7 +854,7 @@ dependencies = [
 [[package]]
 name = "qomm-defmi"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "base64",
  "bulletproofs",
@@ -880,7 +880,7 @@ dependencies = [
 [[package]]
 name = "qomm-dsl"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
 dependencies = [
  "sha2",
 ]
@@ -888,7 +888,7 @@ dependencies = [
 [[package]]
 name = "qomm-dsl"
 version = "0.1.0"
-source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "sha2",
 ]
@@ -896,23 +896,12 @@ dependencies = [
 [[package]]
 name = "qomm-measure"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
 
 [[package]]
 name = "qomm-measure"
 version = "0.1.0"
-source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
-
-[[package]]
-name = "qomm-mpc"
-version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
-dependencies = [
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d)",
- "qomm-measure 0.1.0 (git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d)",
- "serde",
- "serde_json",
-]
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 
 [[package]]
 name = "qomm-mpc"
@@ -927,15 +916,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "qomm-mpc"
+version = "0.1.0"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
+dependencies = [
+ "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada)",
+ "qomm-measure 0.1.0 (git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada)",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qomm-proofs"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
  "ed25519-dalek",
  "merlin",
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d)",
+ "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada)",
  "qomm-zk",
  "rand_core",
  "serde",
@@ -945,7 +945,7 @@ dependencies = [
 [[package]]
 name = "qomm-transport"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -955,8 +955,8 @@ dependencies = [
  "merlin",
  "openssl",
  "qomm-audit",
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d)",
- "qomm-mpc 0.1.0 (git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d)",
+ "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada)",
+ "qomm-mpc 0.1.0 (git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada)",
  "qomm-proofs",
  "qomm-zk",
  "qomm-zkpi",
@@ -971,7 +971,7 @@ dependencies = [
 [[package]]
 name = "qomm-zk"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
@@ -984,7 +984,7 @@ dependencies = [
 [[package]]
 name = "qomm-zkpi"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
@@ -1363,7 +1363,7 @@ dependencies = [
 [[package]]
 name = "zkpi-defmi-sdk"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=153fe671e523ec573a6c6261f341423a49371f5d#153fe671e523ec573a6c6261f341423a49371f5d"
+source = "git+https://github.com/shukob/defmi.git?rev=33d0c97380c28c665d20d624d351fac559ef1ada#33d0c97380c28c665d20d624d351fac559ef1ada"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",

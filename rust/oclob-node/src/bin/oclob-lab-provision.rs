@@ -227,6 +227,18 @@ fn provision(root: &Path) -> Result<(), String> {
         rand::rngs::OsRng.fill_bytes(&mut journal_key);
         write_private(&directory.join("outbox-key.raw"), &journal_key)?;
         create_private_dir(directory.join("queue"))?;
+        // Owner-private, production-shaped orders for the separate two-fill
+        // acceptance. The first maker request remains the original 60 @ 100.
+        write_json(
+            &directory.join("queue/multifill-order.json"),
+            &json!({
+                "side": if seed == 11 { "sell" } else { "buy" },
+                "limit_price": 101, "quantity": if seed == 11 { 60 } else { 90 },
+                "time_in_force": if seed == 11 { "good_til_cancelled" } else { "immediate_or_cancel" },
+                "valid_for_seconds": 600
+            }),
+            0o600,
+        )?;
         corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
         let credential = issuer
             .issue_wallet(seed, label.as_bytes(), &mut rand::rngs::OsRng)

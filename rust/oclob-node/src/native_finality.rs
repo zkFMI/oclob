@@ -10,6 +10,7 @@ use oclob_settlement::native::{
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
 use qomm_defmi::application_reservation::ApplicationReserveScope;
+use qomm_defmi::application_settlement::ApplicationNoteFillBatch;
 use qomm_defmi::avalanche::{AcceptedTransition, AvalancheClient};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,6 +24,8 @@ use std::time::Duration;
 pub struct NativeFinalityRequest {
     pub authorization: NativeFillAuthorizationRequest,
     pub transaction_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<ApplicationNoteFillBatch>,
 }
 
 /// The handle can be cloned into the proof listener but has no public method
@@ -33,6 +36,30 @@ pub struct NativeFinalityHandle {
 }
 
 impl NativeFinalityHandle {
+    pub(crate) fn matched_slots(
+        &self,
+        round: Digest32,
+        output: Digest32,
+    ) -> Result<Vec<usize>, String> {
+        let receipt = self
+            .store
+            .lock()
+            .map_err(|_| "node store lock is poisoned")?
+            .completed_round(round)
+            .ok_or("node has not completed the native round")?;
+        if receipt.public_output_sha256 != output {
+            return Err("native request has another completed output".into());
+        }
+        Ok(receipt
+            .result
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.matched)
+            .map(|(index, _)| index)
+            .collect())
+    }
+
     pub(crate) fn new(store: Arc<Mutex<NodeShareStore>>) -> Self {
         Self { store }
     }
@@ -66,6 +93,8 @@ pub struct NativeFinalityRecord {
     pub block_id: String,
     pub height: u64,
     pub statement: Digest32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_statement: Option<Digest32>,
     pub before_root: Digest32,
     pub after_root: Digest32,
 }
@@ -88,6 +117,7 @@ impl NativeFinalityRecord {
             || self.block_id.len() > 128
             || self.height == 0
             || self.statement == [0; 32]
+            || self.batch_statement == Some([0; 32])
             || self.before_root == [0; 32]
             || self.after_root == [0; 32]
             || self.before_root == self.after_root
@@ -105,6 +135,7 @@ pub(crate) fn observe(
     trust: &NativeReservationTrust,
     request: &NativeFinalityRequest,
     metadata: &ProofSlotMetadata,
+    matched_slots: &[usize],
 ) -> Result<VerifiedNativeFinality, String> {
     let authorization = &request.authorization;
     let fill = &authorization.fill;
@@ -132,9 +163,20 @@ pub(crate) fn observe(
         Duration::from_secs(10),
         Duration::from_millis(100),
     )?;
+    let batch_statement = match (&fill.batch, &request.batch) {
+        (None, None) => None,
+        (Some(binding), Some(batch)) => {
+            let statement = batch.statement()?;
+            if batch.fills.get(usize::from(binding.index)) != Some(fill) {
+                return Err("confirmed batch does not contain this exact signed fill".into());
+            }
+            Some(statement)
+        }
+        _ => return Err("native finality is missing the complete signed group".into()),
+    };
     validate_accepted(
         &request.transaction_id,
-        fill.signing_message()?,
+        batch_statement.unwrap_or(fill.signing_message()?),
         fill.before_root,
         &accepted,
     )?;
@@ -153,6 +195,7 @@ pub(crate) fn observe(
         request: authorization,
         execution,
         trust,
+        matched_slots,
         now: deadline,
     }
     .verify_finalized_execution()?;
@@ -165,7 +208,8 @@ pub(crate) fn observe(
         transaction_id: accepted.tx_id,
         block_id: accepted.block_id,
         height: accepted.height,
-        statement: accepted.statement,
+        statement: fill.signing_message()?,
+        batch_statement,
         before_root: accepted.before_root,
         after_root: accepted.after_root,
     }))
@@ -203,6 +247,32 @@ pub fn aggregate_finality(
     records: &BTreeMap<u16, NativeFinalityRecord>,
 ) -> Result<PrivateStateFinality, String> {
     let first = records.values().next().ok_or("no confirmed native fills")?;
+    if let Some(statement) = first.batch_statement {
+        let mut individual = std::collections::BTreeSet::new();
+        for (slot, record) in records {
+            if *slot != record.slot
+                || record.round_id != first.round_id
+                || record.public_output_sha256 != first.public_output_sha256
+                || record.batch_statement != Some(statement)
+                || statement == [0; 32]
+                || record.transaction_id != first.transaction_id
+                || record.block_id != first.block_id
+                || record.height != first.height
+                || record.before_root != first.before_root
+                || record.after_root != first.after_root
+                || !individual.insert(record.statement)
+            {
+                return Err("native observations do not belong to one atomic group".into());
+            }
+        }
+        return Ok(PrivateStateFinality {
+            round_id: first.round_id,
+            public_output_sha256: first.public_output_sha256,
+            transition_digest: statement,
+            canonical_receipt_digest: statement,
+            canonical_height: first.height,
+        });
+    }
     let mut hash = Sha256::new()
         .chain_update(b"OCLOB:NATIVE-ROUND-FINALITY:v1")
         .chain_update((records.len() as u16).to_be_bytes());
@@ -212,6 +282,7 @@ pub fn aggregate_finality(
         if *slot != record.slot
             || record.round_id != first.round_id
             || record.public_output_sha256 != first.public_output_sha256
+            || record.batch_statement.is_some()
             || !transactions.insert(&record.transaction_id)
         {
             return Err(
@@ -320,6 +391,7 @@ mod tests {
                         block_id: format!("block-{slot}"),
                         height: slot as u64 + 1,
                         statement: [slot as u8 + 30; 32],
+                        batch_statement: None,
                         before_root: [slot as u8 + 40; 32],
                         after_root: [slot as u8 + 41; 32],
                     },
@@ -484,5 +556,82 @@ mod tests {
         ] {
             assert!(validate_accepted("tx", [1; 32], [2; 32], &changed).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn fixture() -> (NodeExecutionReceipt, BTreeMap<u16, NativeFinalityRecord>) {
+        let (receipt, mut records) = super::tests::fixture(&[0, 2]);
+        let first = records[&0].clone();
+        for record in records.values_mut() {
+            record.batch_statement = Some([90; 32]);
+            record.transaction_id = first.transaction_id.clone();
+            record.block_id = first.block_id.clone();
+            record.height = first.height;
+            record.before_root = first.before_root;
+            record.after_root = first.after_root;
+        }
+        (receipt, records)
+    }
+
+    #[test]
+    fn one_atomic_transaction_still_requires_every_executed_slot() {
+        let (receipt, records) = fixture();
+        let finality = aggregate_finality(&records).unwrap();
+        assert_eq!(finality.transition_digest, [90; 32]);
+        assert!(require_complete(&receipt, &records, &finality).is_ok());
+        let partial = BTreeMap::from([(0, records[&0].clone())]);
+        assert!(require_complete(&receipt, &partial, &finality).is_err());
+        for change in 0..7 {
+            let mut bad = records.clone();
+            let record = bad.get_mut(&2).unwrap();
+            match change {
+                0 => record.batch_statement = None,
+                1 => record.batch_statement = Some([91; 32]),
+                2 => record.transaction_id.push('x'),
+                3 => record.block_id.push('x'),
+                4 => record.height += 1,
+                5 => record.after_root[0] ^= 1,
+                _ => record.statement = records[&0].statement,
+            }
+            assert!(aggregate_finality(&bad).is_err(), "mutation {change}");
+        }
+    }
+
+    #[test]
+    fn atomic_membership_survives_reopen_without_promoting_a_partial_observation() {
+        let directory = std::env::temp_dir().join(format!(
+            "oclob-batch-finality-unit-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("shares.bin");
+        let key = oclob_edge::NodeDecryptionKey::generate().unwrap();
+        let (receipt, records) = fixture();
+        let finality = aggregate_finality(&records).unwrap();
+        let mut store = NodeShareStore::open(&path, 0, key.clone()).unwrap();
+        store.record_completed_round(receipt.clone()).unwrap();
+        store.record_native_finality(records[&0].clone()).unwrap();
+        let partial_status = store.status().unwrap();
+        drop(store);
+        let mut store = NodeShareStore::open(&path, 0, key.clone()).unwrap();
+        assert_eq!(partial_status, store.status().unwrap());
+        let round = hex::encode(receipt.round_id);
+        assert!(
+            require_complete(&receipt, &store.state.native_finalities[&round], &finality).is_err()
+        );
+        store.record_native_finality(records[&2].clone()).unwrap();
+        let complete_status = store.status().unwrap();
+        store.record_native_finality(records[&2].clone()).unwrap();
+        assert_eq!(complete_status, store.status().unwrap());
+        drop(store);
+        let store = NodeShareStore::open(&path, 0, key).unwrap();
+        assert!(
+            require_complete(&receipt, &store.state.native_finalities[&round], &finality).is_ok()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

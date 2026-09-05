@@ -8,7 +8,8 @@ use ed25519_dalek::VerifyingKey;
 use oclob_edge::{EdgeOrderManifest, VerifiedReservationAuthority};
 use qomm_defmi::application_reservation::ApplicationReserveScope;
 use qomm_defmi::application_settlement::{
-    point, ApplicationNoteFill, ApplicationOpening, ApplicationSpendHead,
+    application_fill_group, point, ApplicationFillBatchBinding, ApplicationNoteFill,
+    ApplicationOpening, ApplicationSpendHead,
 };
 use qomm_defmi::avalanche::CanonicalApplicationReservation;
 use qomm_transport::frost_coordinator::distributed_frost_sign;
@@ -129,6 +130,9 @@ pub struct NativeFillVerifier<'a> {
     pub request: &'a NativeFillAuthorizationRequest,
     pub execution: &'a NativeFillExecution,
     pub trust: &'a NativeReservationTrust,
+    /// Full ordered matched-slot set, read from this node's completed round.
+    /// Never accept this value from a coordinator request.
+    pub matched_slots: &'a [usize],
     pub now: u64,
 }
 
@@ -139,6 +143,7 @@ impl ApplicationStatementVerifier for NativeFillVerifier<'_> {
     ) -> Result<ApplicationStatementAuthorization, String> {
         let request = self.request;
         let fill = &request.fill;
+        self.verify_group()?;
         let app = oclob_manifest_v1()
             .digest()
             .map_err(|error| error.to_string())?;
@@ -280,11 +285,27 @@ impl ApplicationStatementVerifier for NativeFillVerifier<'_> {
 }
 
 impl NativeFillVerifier<'_> {
+    fn verify_group(&self) -> Result<(), String> {
+        let expected = native_batch_binding(
+            &self.request.fill.scope,
+            self.request.fill.before_root,
+            self.request.round_id,
+            self.request.fill.mpc_result_digest,
+            self.matched_slots,
+            self.request.slot,
+        )?;
+        if self.request.fill.batch != expected {
+            return Err("native fill omits or reorders locally executed matched slots".into());
+        }
+        Ok(())
+    }
+
     /// Retrospective binding check after canonical acceptance. This does not
     /// authorize signing and therefore also works for non-signing observers.
     /// `now` is a cryptographic validity anchor, not a claimed block time;
     /// the configured canonical VM has already enforced execution-time bounds.
     pub fn verify_finalized_execution(&self) -> Result<(), String> {
+        self.verify_group()?;
         let fill = &self.request.fill;
         let instruction =
             qomm_zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
@@ -403,6 +424,75 @@ pub fn native_fill_operation(job: [u8; 32]) -> [u8; 32] {
         .into()
 }
 
+/// The listener supplies the full locally executed set. The coordinator uses
+/// the same public calculation but cannot choose a subset for a signer.
+pub fn native_batch_binding(
+    scope: &ApplicationReserveScope,
+    parent: [u8; 32],
+    round: [u8; 32],
+    output: [u8; 32],
+    slots: &[usize],
+    slot: usize,
+) -> Result<Option<ApplicationFillBatchBinding>, String> {
+    if slots.is_empty() || slots.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("native matched slots are empty, repeated or unordered".into());
+    }
+    let index = slots
+        .iter()
+        .position(|s| *s == slot)
+        .ok_or("slot was not matched")?;
+    let operations = slots
+        .iter()
+        .map(|s| collaborative_job_id(round, *s, output).map(native_fill_operation))
+        .collect::<Result<Vec<_>, _>>()?;
+    if slots.len() == 1 {
+        return Ok(None);
+    }
+    Ok(Some(ApplicationFillBatchBinding {
+        group: application_fill_group(scope, parent, &operations)?,
+        index: index as u16,
+        count: slots.len() as u16,
+    }))
+}
+
+/// Off-chain projection for preparing the next member of an atomic group.
+/// This is NOT a canonical readback or finality receipt. The common parent is
+/// retained; the VM independently verifies all cumulative changes at commit.
+pub fn project_pending_native_head(
+    head: &CanonicalApplicationReservation,
+    fill: &ApplicationNoteFill,
+    now: u64,
+) -> Result<CanonicalApplicationReservation, String> {
+    if fill.batch.is_none() || head.state_root != fill.before_root || head.status != "active" {
+        return Err("pending head requires an active hold at the signed batch parent".into());
+    }
+    let index = [&fill.securities, &fill.cash]
+        .iter()
+        .position(|spend| spend.hold_id == head.binding.hold_id)
+        .ok_or("batch member does not use this reservation")?;
+    let spend = [&fill.securities, &fill.cash][index];
+    if head.sequence != spend.sequence
+        || head.head_receipt != spend.previous_receipt
+        || head.remaining_commitment != spend.remaining_commitment
+    {
+        return Err("pending batch member does not extend the current hold".into());
+    }
+    let verified = fill.verify(&head.binding.scope, now)?;
+    let mut next = head.clone();
+    next.sequence = next
+        .sequence
+        .checked_add(1)
+        .ok_or("pending sequence overflow")?;
+    next.remaining_commitment = verified.remaining[index];
+    next.head_receipt = verified.statement;
+    next.remaining_opening = (!spend.close).then(|| verified.normalized_openings[index].clone());
+    if spend.close {
+        next.status = "consumed".into();
+        next.settlement_digest = verified.statement;
+    }
+    Ok(next)
+}
+
 /// Construct a candidate from a proved fill and already-read canonical heads.
 /// Nodes still perform their independent local verification before signing.
 pub fn prepare_native_fill(
@@ -485,6 +575,7 @@ pub fn prepare_native_fill(
             .serialize()
             .map_err(|error| error.to_string())?,
         signature: Vec::new(),
+        batch: None,
     })
 }
 
