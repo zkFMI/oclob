@@ -125,11 +125,12 @@ RUN set -eu; \
     test -x /download/avalanchego/avalanchego; \
     test -x /download/anr/avalanche-network-runner
 
-# The distributed acceptance image does not need the browser bundle or the
-# monolithic demo server. Keeping this builder separate avoids relinking those
-# binaries whenever only MPC-node code or deployment policy changes.
+# The isolated public-book API embeds the native browser bundle, but does not
+# run the legacy monolithic financial demo server.
 FROM oclob-test AS oclob-cluster-builder
 COPY . /workspace
+RUN --mount=type=cache,id=oclob-npm,target=/root/.npm \
+    cd /workspace/oclob_demo/react-flow && npm ci --no-audit --no-fund && npm run build
 RUN --mount=type=cache,id=oclob-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=oclob-cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=oclob-cargo-target,target=/var/cache/oclob/target \

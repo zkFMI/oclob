@@ -42,7 +42,9 @@ The target is **content-informed insertion ahead of an order that has not yet be
 
 The [native public-depth path](docs/PUBLIC_DEPTH_JA.md) aggregates remaining quantities at equal prices inside the MPC and exports a node-signed, price-level-only snapshot. A separate read-only TLS service serves the snapshot without requiring corporate keys or access to the market journal. A matched round is published only after canonical settlement and all node finality confirmations.
 
-The final-source native run verified four network-fetched snapshots, two fills totaling 7,500, recovery after an actual post-settlement process exit, and validator restart. All 127 Rust tests, formatting checks, and all-target Clippy checks passed on Softbank. The existing corporate-worker, wallet, cancellation, and expiry regression also passed, including actual process failures and node restarts. A separate [read-only HTTP adapter](docs/PUBLIC_BOOK_HTTP.md) now serves the verified feed; React Flow and financial API integration remain incomplete.
+The final-source native browser run verified four network-fetched snapshots, two fills totaling 7,500, recovery after an actual post-settlement process exit, and validator restart. All 129 Rust tests, formatting and all-target Clippy checks, frontend type checks, and five frontend unit/component tests passed on Softbank. The earlier corporate-worker, wallet, cancellation, and expiry regression also passed, including actual process failures and node restarts.
+
+The [native React Flow browser](docs/NATIVE_BROWSER.md) now reads the verified [HTTP feed](docs/PUBLIC_BOOK_HTTP.md). It shows aggregate prices, remaining quantities, seven node signatures and the matching settlement record. Desktop and narrow-screen checks used actual MPC/DeFMI results, not mocked responses; see the [visual verification record](docs/NATIVE_BROWSER_AUDIT_20260906.md). This is a **read-only** interface. Native corporate authentication, order actions and private balances remain incomplete. The existing legacy financial demo is a separate path.
 
 ## Architecture
 
