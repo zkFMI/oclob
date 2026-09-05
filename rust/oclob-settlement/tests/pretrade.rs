@@ -32,23 +32,31 @@ fn request_with_pool(
     let decoy = Wallet::new(&mut OsRng);
     let mut ledger = NoteLedger::new(key.clone(), 32);
     for (owner, value) in [(&decoy.address, 25), (&wallet.address, 100)] {
-        ledger.add(ledger.build_note(
-            owner,
-            value,
-            key.commit_u64(value, &Scalar::from(9_u64)),
-            &Scalar::from(9_u64),
-            &mut OsRng,
-        ));
+        ledger.add(
+            ledger
+                .build_note(
+                    owner,
+                    value,
+                    key.commit_u64(value, &Scalar::from(9_u64)),
+                    &Scalar::from(9_u64),
+                    &mut OsRng,
+                )
+                .expect("valid fixture note encryption"),
+        );
     }
     for _ in 2..pool_size {
         let blind = Scalar::random(&mut OsRng);
-        ledger.add(ledger.build_note(
-            &decoy.address,
-            25,
-            key.commit_u64(25, &blind),
-            &blind,
-            &mut OsRng,
-        ));
+        ledger.add(
+            ledger
+                .build_note(
+                    &decoy.address,
+                    25,
+                    key.commit_u64(25, &blind),
+                    &blind,
+                    &mut OsRng,
+                )
+                .expect("valid fixture note encryption"),
+        );
     }
     let notes = ledger
         .notes
@@ -228,13 +236,15 @@ fn note_pool(size: usize) -> Vec<NoteOutput> {
     (0..size)
         .map(|_| {
             let blind = Scalar::random(&mut rng);
-            let note = ledger.build_note(
-                &wallet.address,
-                100,
-                key.commit_u64(100, &blind),
-                &blind,
-                &mut rng,
-            );
+            let note = ledger
+                .build_note(
+                    &wallet.address,
+                    100,
+                    key.commit_u64(100, &blind),
+                    &blind,
+                    &mut rng,
+                )
+                .expect("valid fixture note encryption");
             NoteOutput::from_note(&note, [7; 32], [0; 32]).unwrap()
         })
         .collect()

@@ -8,17 +8,15 @@ use oclob_edge::{
     SealedSettlementCapability, MPC_PARTIES,
 };
 use oclob_node::corporate::{
-    build_reserved_delivery, finalize_reservation, prepare_reservation_from_note, verify_finalized,
-    CorporateNativeConfig, PreparedCorporateReserve,
+    prepare_reservation_from_note, CorporateNativeConfig, PreparedCorporateReserve,
 };
 use oclob_node::corporate_journal::{
     NativeCorporateJournal, StoredCorporateDelivery, StoredCorporateIntent,
 };
-use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor, PreparedEdgeDelivery};
+use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor};
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
 };
-use oclob_settlement::pretrade::FinalizedReservation;
 use qomm_zkpi::handles::Identity;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
@@ -219,6 +217,11 @@ fn run_native(
     let secret = load_secret_32(PathBuf::from(journal_key)).map_err(|e| e.to_string())?;
     let journal =
         NativeCorporateJournal::open(PathBuf::from(journal_path), &secret, config, cluster)?;
+    if std::env::var("OCLOB_NATIVE_CACHE_SCOPE").ok().as_deref() == Some("1") {
+        journal.authorization_scope(config, identity)?;
+        println!("{}", json!({"status":"authorization_scope_cached"}));
+        return Ok(());
+    }
     if std::env::var("OCLOB_NATIVE_CANCEL_ORDER").ok().as_deref() == Some("1") {
         let intent = journal
             .intent(&request_id)?
@@ -297,16 +300,18 @@ fn run_native(
             },
         ))?
     };
+    let enqueue_mode = std::env::var("OCLOB_NATIVE_ENQUEUE").unwrap_or_default();
+    if !matches!(enqueue_mode.as_str(), "" | "1" | "authorized") {
+        return Err("native enqueue mode must be1 or authorized".into());
+    }
+    // Intake and dispatch must agree on FIFO even when separate departmental
+    // clients finish credential/authorization preparation in different orders.
+    let _intake_guard = journal.acquire_intake()?;
     let handle = Identity::from_seed(config.identity_seed).handle(VENUE_DOMAIN);
-    let (_, issuer) =
+    let (eligibility_policy, _) =
         deterministic_demo_environment(&cluster.market_id).map_err(|e| e.to_string())?;
-    let (subject, label) = match scenario {
-        Scenario::Maker => (11, b"distributed-maker".as_slice()),
-        Scenario::Taker => (22, b"distributed-taker".as_slice()),
-    };
-    let wallet = issuer
-        .issue_wallet(subject, label, &mut rand::rngs::OsRng)
-        .map_err(|e| e.to_string())?;
+    let wallet =
+        journal.enrolled_eligibility(config, eligibility_policy.requirement().scope_digest)?;
     let intent = if let Some(intent) = journal.intent(&request_id)? {
         intent
     } else {
@@ -341,14 +346,49 @@ fn run_native(
             eligibility_commitment: hidden_eligibility_commitment(&order),
             accepted_at: unix_seconds()?,
             expires_at: order.expires_at(),
+            reserve_send_tracking: true,
         };
         journal.save_intent(&request_id, &intent)?
     };
     if intent.input_digest != input_digest {
         return Err("corporate request ID names a different order instruction".into());
     }
-    journal.require_turn(&request_id)?;
     let order = SecretOrder::from_secret_wire(&intent.order_wire).map_err(|e| e.to_string())?;
+    let source_note = instruction
+        .as_ref()
+        .map(|input| input.source())
+        .transpose()?
+        .flatten();
+    if enqueue_mode == "authorized" {
+        if journal.authorization(&request_id)?.is_none() {
+            let authorization =
+                oclob_node::corporate_authorization::CorporateReserveAuthorization::create(
+                    config,
+                    journal.authorization_scope(config, identity)?,
+                    &wallet,
+                    &order,
+                    &handle,
+                    intent.eligibility_commitment,
+                    &SigningKey::from_bytes(&intent.signing_key),
+                    unix_seconds()?,
+                )?;
+            journal.save_authorization(&request_id, &authorization, config)?;
+        }
+        let queue_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
+            .map(PathBuf::from)
+            .ok_or("corporate journal path is missing")?
+            .with_file_name("dispatch.enc");
+        let queue =
+            oclob_node::corporate_dispatch::NativeCorporateDispatch::open(queue_path, &secret)?;
+        let duplicate = queue.enqueue_authorized(&journal, config, &request_id, source_note)?;
+        println!(
+            "{}",
+            json!({"status":"authorized_and_queued", "request_id":request_id,
+            "already_present":duplicate, "funding_prepared":journal.stage::<PreparedCorporateReserve>(&request_id,"reserve")?.is_some()})
+        );
+        return Ok(());
+    }
+    journal.require_turn(&request_id)?;
     let prepared: PreparedCorporateReserve =
         if let Some(saved) = journal.stage(&request_id, "reserve")? {
             saved
@@ -372,91 +412,41 @@ fn run_native(
             journal.save_stage(&request_id, "reserve", &pending, &intent)?
         };
     prepared.validate(config)?;
-    if prepared.order_wire != intent.order_wire
-        || prepared.signing_key != intent.signing_key
-        || prepared.eligibility_commitment != intent.eligibility_commitment
-    {
-        return Err("saved reserve belongs to another durable corporate intent".into());
+    if enqueue_mode == "1" {
+        let queue_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
+            .map(PathBuf::from)
+            .ok_or("corporate journal path is missing")?
+            .with_file_name("dispatch.enc");
+        let queue =
+            oclob_node::corporate_dispatch::NativeCorporateDispatch::open(queue_path, &secret)?;
+        let duplicate = queue.enqueue(&journal, config, &request_id, source_note)?;
+        println!(
+            "{}",
+            json!({"status":"queued", "request_id":request_id, "already_present":duplicate})
+        );
+        return Ok(());
     }
-    let reserve_digest: [u8; 32] =
-        Sha256::digest(serde_json::to_vec(&prepared.request).map_err(|e| e.to_string())?).into();
-    let completed: Option<EdgeAdmissionReceipt> = journal.stage(&request_id, "receipt")?;
-    let delivery: StoredCorporateDelivery = if let Some(saved) =
-        journal.stage(&request_id, "delivery")?
-    {
-        saved
-    } else {
-        let finalized: FinalizedReservation =
-            if let Some(saved) = journal.stage(&request_id, "admission")? {
-                verify_finalized(config, identity, &prepared, &saved, unix_seconds()?)?;
-                saved
-            } else {
-                let finalized = finalize_reservation(config, identity, &prepared, unix_seconds()?)?;
-                recovery_test_stop("after-reserve-before-journal")?;
-                journal.save_stage(&request_id, "admission", &finalized, &intent)?
-            };
-        // Update private openings only after independently reading canonical acceptance.
-        journal.save_reserved_witness(&prepared)?;
-        let node_keys: [NodeEncryptionKey; MPC_PARTIES] = cluster
-            .nodes
-            .iter()
-            .map(|n| n.share_encryption_key.clone())
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| "cluster must have seven node keys")?;
-        let (bundle, authority) = build_reserved_delivery(
-            config,
-            &prepared,
-            &finalized,
-            &handle,
-            &node_keys,
-            unix_seconds()?,
-        )?;
-        journal.save_stage(
-            &request_id,
-            "delivery",
-            &StoredCorporateDelivery {
-                reserve_digest,
-                delivery: PreparedEdgeDelivery::from_bundle(bundle),
-                authority,
-            },
-            &intent,
-        )?
-    };
-    if delivery.reserve_digest != reserve_digest {
-        return Err("saved ciphertexts name another reserve request".into());
-    }
-    // A crash after publication must never overwrite a different authority.
-    publish_unchanged(authority_handoff, &delivery.authority)?;
-    let reused_receipt = completed.is_some();
-    let receipt = if let Some(receipt) = completed {
-        receipt
-    } else {
-        let tls = client_tls_context(
-            &identity.tls_certificate,
-            &identity.tls_private_key,
-            &identity.tls_ca,
-        )
-        .map_err(|e| e.to_string())?;
-        let distributor = EdgeDistributor::new(cluster.clone(), tls, Duration::from_secs(30))
-            .map_err(|e| e.to_string())?;
-        let receipt = distributor
-            .submit_prepared(&delivery.delivery)
-            .map_err(|e| e.to_string())?;
-        recovery_test_stop("after-node-admission-before-journal")?;
-        journal.save_receipt(&request_id, &receipt, &delivery, cluster, &intent)?
-    };
-    journal.verify_receipt(&receipt, &delivery, cluster, intent.accepted_at)?;
+    let completed = oclob_node::corporate_submission::complete_native_submission(
+        config,
+        identity,
+        cluster,
+        &journal,
+        &request_id,
+        source_note,
+        |point| {
+            recovery_test_stop(match point {
+            oclob_node::corporate_submission::SubmissionCheckpoint::ReserveObservedBeforeJournal => "after-reserve-before-journal",
+            oclob_node::corporate_submission::SubmissionCheckpoint::NodesAcknowledgedBeforeJournal => "after-node-admission-before-journal",
+            oclob_node::corporate_submission::SubmissionCheckpoint::ExpiryObservedBeforeJournal => "after-expiry-before-journal",
+        })
+        },
+    )?;
+    let receipt = completed.receipt;
+    let reused_receipt = completed.reused_completed_receipt;
+    publish_unchanged(authority_handoff, &completed.authority)?;
     publish_unchanged(handoff, &receipt)?;
-    if let Some(source) = instruction
-        .as_ref()
-        .map(|i| i.source())
-        .transpose()?
-        .flatten()
-    {
-        oclob_node::native_wallet::verify_selected_funding_spent(
-            config, identity, &prepared, source,
-        )?;
+    oclob_node::market_network::publish_corporate_admissions(&journal, identity, cluster)?;
+    if source_note.is_some() {
         publish_unchanged(
             &handoff.with_extension("corporate.json"),
             &json!({
@@ -487,6 +477,35 @@ fn recover_native_wallet(
     // Fixed financial assertions and next-order construction are explicitly
     // confined to the opt-in lab acceptance, not the reusable recovery API.
     let acceptance = std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE").unwrap_or_default();
+    if acceptance == "queued-expiry" {
+        if !matches!(scenario, Scenario::Maker)
+            || recovered.facility.sequence != 2
+            || recovered.facility.values != config.facility_values
+            || recovered.unfilled_release_notes.len() != 1
+            || !recovered.notes.is_empty()
+        {
+            return Err("queued expiry did not restore the original corporate funds".into());
+        }
+        let instruction = NativeOrderInstruction {
+            side: Side::Sell,
+            limit_price: 102,
+            quantity: 5,
+            time_in_force: TimeInForce::GoodTilCancelled,
+            valid_for_seconds: 600,
+            source_note: Some(hex::encode(recovered.unfilled_release_notes[0].note_id)),
+        };
+        publish_unchanged(
+            Path::new("/corporate/queued-expiry-reuse.json"),
+            &instruction,
+        )?;
+        publish_unchanged(
+            &handoff.with_extension("wallet.json"),
+            &json!({"wallet_recovered":true, "facility_sequence":2,
+                "expected_private_balances_verified":true, "unfilled_releases_recovered":1,
+                "after_root":hex::encode(recovered.after_root)}),
+        )?;
+        return Ok(());
+    }
     if !matches!(
         acceptance.as_str(),
         "1" | "cycle-first" | "cycle-final" | "cancel-final" | "expiry-final"

@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-worker-depth-regression-007",
+  "contract_id": "oclob-native-worker-v1",
+  "contract_path": "research/oclob_native_worker_contract.json",
+  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5
+  },
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "current_bottleneck": "R15 adds public price-level output and v2 result binding to the MPC. The prepared corporate-worker settlement/wallet/cancellation/expiry lifecycle must retain its canonical outcomes without configuring the resident market publisher.",
+  "causal_hypothesis": "The new MPC depth output and signed receipts preserve all original settlement bindings and native prepared-worker lifecycle outcomes.",
+  "single_intended_change": "Run the unchanged complete prepared-worker lifecycle against R15 source; no changed financial scenario, fault injections or acceptance thresholds.",
+  "baseline": "R14worker006 /tmp/oclob-native.SbLPdP/oclob,2settlementrounds/3fills/2releases/9claims,facilities8/5,7noderecoveryand5validatorrestart;artifactSHA256993f2be9cef4d237beab5ec6889e58761a06497534d232dba7575c7e848ccd0d;DeFMI5dd1f68unchanged.",
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "completed_dispatches": 1,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "corporate_worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The new public-output digest or execution receipt could break proof authorization, historical retry or private-state advancement. Reject the regression rather than remove native finality or fall back to plaintext matching.",
+  "rejection_rules": [
+    "stale contract hash",
+    "real node outage bypassed",
+    "either actual post-side-effect process stop absent",
+    "saved financial request or node ciphertexts changed",
+    "original resident dispatch incomplete",
+    "second worker acquires live queue",
+    "queue restart changes outcome",
+    "worker receipt not the maker actually settled",
+    "any original R10 final lifecycle gate fails"
+  ],
+  "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_WORKER_MANIFEST=/research/manifests/oclob_native_worker_007.json"
+}

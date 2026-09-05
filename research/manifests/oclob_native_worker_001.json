@@ -1,0 +1,47 @@
+{
+  "manifest_id": "oclob-native-worker-rough-001",
+  "contract_id": "oclob-native-worker-v1",
+  "contract_path": "research/oclob_native_worker_contract.json",
+  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Native exact-request recovery currently depends on manual CLI reinvocation; no resident corporate dispatcher has been exercised through real node unavailability and response-loss crash boundaries.",
+  "causal_hypothesis": "Reusing the existing encrypted outbox and exact native journal stages, with a process-lifetime OS lock and authenticated health-only node RPCs, lets a resident dispatcher recover the same reserve and same seven ciphertexts without double application.",
+  "single_intended_change": "Add native corporate enqueue/dispatch worker and extract the existing proven stage-resume path into a shared library; reuse unchanged settlement/ordering cryptography and R10 lifecycle path.",
+  "baseline": "OCLOB617290b, finalR10 evidencee0d04c587a2c35b0877bc3006f921d57b0a541452a4c400eaabc76fdda60a341;97tests and actual R10 lifecycle/node-restart passed with manually invoked corporate submission.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "completed_dispatches": 1,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "corporate_worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "A queue admission state or response-loss boundary may not match the immutable native journal; reject rather than generating new financial requests or treating queue acknowledgement as settlement.",
+  "rejection_rules": [
+    "stale contract hash",
+    "real node outage is bypassed",
+    "either injected process stop not observed after the actual external side effect",
+    "saved financial request or node ciphertexts changed",
+    "resident worker does not finish the original request",
+    "second worker acquires the same live queue",
+    "restarted queue state changes",
+    "worker receipt does not name the maker actually settled",
+    "any R10 final lifecycle gate fails"
+  ],
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-worker-deferred-regression-005",
+  "contract_id": "oclob-native-worker-v1",
+  "contract_path": "research/oclob_native_worker_contract.json",
+  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5
+  },
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "current_bottleneck": "R13 changes shared journal dispatch/send bindings and corporate intake locking; full R11/R10 exact-request native lifecycle needs fresh source-bound regression.",
+  "causal_hypothesis": "The optional version2 authorization branch leaves immutable prepared-mode ciphertexts and signatures unchanged, preserving the original response-loss, FIFO, settlement, cancellation and expiry outcomes.",
+  "single_intended_change": "Regression of unchanged original full native worker/lifecycle journey against R13 deferred authorization queue. No relaxed counts or generated replacement financial requests.",
+  "baseline": "Publishedbe2af0f with worker004 result30c81f44f628973cba4cbf08d71950564080f644f760de29a184ed5c46979902;2rounds/3fills/2releases/9claims,facilities8/5.",
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "completed_dispatches": 1,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "corporate_worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "New expiry bookkeeping could reject the original response-loss retry or wallet reconstruction; do not use admission-only expiry evidence to claim the missing full settlement lifecycle.",
+  "rejection_rules": [
+    "stale contract hash",
+    "real node outage bypassed",
+    "either actual post-side-effect process stop absent",
+    "saved financial request or node ciphertexts changed",
+    "original resident dispatch incomplete",
+    "second worker acquires live queue",
+    "queue restart changes outcome",
+    "worker receipt not the maker actually settled",
+    "any original R10 final lifecycle gate fails"
+  ],
+  "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

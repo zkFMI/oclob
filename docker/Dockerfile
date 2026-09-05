@@ -4,7 +4,7 @@ ARG RUST_VERSION=1.97.1
 ARG NODE_VERSION=20.19.2
 ARG MP_SPDZ_COMMIT=9d809599ea6ce627216a389ca7d984fbb75d0cb9
 ARG QOMM_COMMIT=27299a1b49818d8c33ecfe9f4eeafab664f6ca64
-ARG DEFMI_COMMIT=4b07c2b7ec218b5b09ab20b6c4342710dfc23a83
+ARG DEFMI_COMMIT=5dd1f68d43da3f81e640c6eae25749d358e6680f
 ARG BUILD_JOBS=16
 
 FROM debian:bookworm-slim AS mp-spdz-builder
@@ -68,6 +68,9 @@ RUN --mount=type=cache,id=oclob-npm,target=/root/.npm \
        /var/cache/oclob/target/release/oclob-node \
        /var/cache/oclob/target/release/oclob-lab-provision \
        /var/cache/oclob/target/release/oclob-edge-submit \
+       /var/cache/oclob/target/release/oclob-corporate-worker \
+       /var/cache/oclob/target/release/oclob-market-worker \
+       /var/cache/oclob/target/release/oclob-public-book \
        /var/cache/oclob/target/release/oclob-cluster-e2e \
        /var/cache/oclob/target/release/oclob-native-bootstrap \
        /var/cache/oclob/target/release/oclob-native-e2e \
@@ -138,6 +141,9 @@ RUN --mount=type=cache,id=oclob-cargo-registry,target=/usr/local/cargo/registry 
        /var/cache/oclob/target/release/oclob-node \
        /var/cache/oclob/target/release/oclob-lab-provision \
        /var/cache/oclob/target/release/oclob-edge-submit \
+       /var/cache/oclob/target/release/oclob-corporate-worker \
+       /var/cache/oclob/target/release/oclob-market-worker \
+       /var/cache/oclob/target/release/oclob-public-book \
        /var/cache/oclob/target/release/oclob-cluster-e2e \
        /var/cache/oclob/target/release/oclob-native-bootstrap \
        /var/cache/oclob/target/release/oclob-native-e2e \
@@ -168,7 +174,7 @@ ENTRYPOINT ["oclob-server", "--host", "0.0.0.0", "--port", "18800", "--state-dir
 FROM debian:bookworm-slim AS oclob-cluster
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates libssl3 libgmp10 libgmpxx4ldbl libsodium23 libboost-thread1.74.0 \
+       ca-certificates curl libssl3 libgmp10 libgmpxx4ldbl libsodium23 libboost-thread1.74.0 \
        libboost-filesystem1.74.0 libboost-iostreams1.74.0 libntl44 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 oclob \
@@ -177,12 +183,17 @@ COPY --from=oclob-cluster-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-node /usr/local/bin/oclob-node
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-lab-provision /usr/local/bin/oclob-lab-provision
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-edge-submit /usr/local/bin/oclob-edge-submit
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-corporate-worker /usr/local/bin/oclob-corporate-worker
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-market-worker /usr/local/bin/oclob-market-worker
+COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-public-book /usr/local/bin/oclob-public-book
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-cluster-e2e /usr/local/bin/oclob-cluster-e2e
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-native-bootstrap /usr/local/bin/oclob-native-bootstrap
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-native-e2e /usr/local/bin/oclob-native-e2e
 RUN ! ldd /opt/MP-SPDZ/malicious-shamir-party.x | grep -F 'not found' \
     && ! ldd /opt/MP-SPDZ/libSPDZ.so | grep -F 'not found' \
-    && ! ldd /usr/local/bin/oclob-node | grep -F 'not found'
+    && ! ldd /usr/local/bin/oclob-node | grep -F 'not found' \
+    && test -x /usr/local/bin/oclob-corporate-worker \
+    && ! ldd /usr/local/bin/oclob-corporate-worker | grep -F 'not found'
 ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
 USER oclob
 WORKDIR /var/lib/oclob

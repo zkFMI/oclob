@@ -1,0 +1,47 @@
+{
+  "manifest_id": "oclob-native-deferred-final-source-003",
+  "contract_id": "oclob-native-deferred-v1",
+  "contract_path": "research/oclob_native_deferred_contract.json",
+  "contract_sha256": "ce7e91bcc926fb04ba33c5e716bc32d5afaa1796ea7a943b011d641196864a2d",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Whole002 passed all declared native predictions, but the parallel unit build needed an assertion without Debug to keep the secret mandate intentionally non-Debug. Run the identical scenario on the final formatted source that passed109 unit tests and Clippy.",
+  "causal_hypothesis": "The test-only equality assertion repair has no runtime effect, so final-source whole execution retains3 offline intakes,2 native accepted makers,1 rejected overcommit,2 atomic fills,4/3 facility generations and unchanged restarts.",
+  "single_intended_change": "Final-source replication after unit-only assertion repair; retain the same signed source association, manifest contract and all acceptance counts. No crypto, funding, routing or economic policy changes.",
+  "baseline": "Whole002 smoke_only: artifactb54ec6ad681274d57ba278f8a00ea5e2deef919d88002e5ca08a64500f501881,Softbank/tmp/oclob-native.RYAbha; wholelog1d8c638b066d8bc099a14a152db15c1af0c5060cc93173e8a27350ab8dd9c6dd. Code003 passed109/fmt/all-targetClippy,log824b47f9642abdb3a8b3f8e91de1f5915207ce74a24c1958fed97e349bc03e8a.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "concurrent_maker_clients": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "maker_intakes": 3
+  },
+  "primary_metric": "atomically_settled_fills",
+  "point_prediction": {
+    "queued_without_funding": 3,
+    "accepted_maker_orders": 2,
+    "over_capacity_rejected": 1,
+    "atomically_settled_fills": 2,
+    "posttrade_facility_sequences": [
+      4,
+      3
+    ],
+    "worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "Original-to-funded association or credential validation could expose an actual mismatch rather than a test-only error; reject rather than mutate authorization or relax counts.",
+  "rejection_rules": [
+    "stalecontracthash",
+    "intakequeriespausedDeFMI",
+    "anyfundingpreparebeforeunpause",
+    "originalauthorizationdigestchanges",
+    "FIFOdeadlock",
+    "70-unitrequestcreatesareserve",
+    "onlyoneacceptedmaker",
+    "acceptedmakersnotthesettledmakers",
+    "existing14-observation/batch/finality/restartgatesfail"
+  ],
+  "promotion_rules": [
+    "smoke_only when all real whole-flow predictions and invariants pass; no product/WAN/performance/economic promotion"
+  ],
+  "command": "make remote-native-deferred-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

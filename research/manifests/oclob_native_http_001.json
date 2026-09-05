@@ -1,0 +1,39 @@
+{
+  "manifest_id": "oclob-native-http-rough-001",
+  "contract_id": "oclob-native-http-v1",
+  "contract_path": "research/oclob_native_http_contract.json",
+  "contract_sha256": "720c4d2ee16d9412ca30840a3457c88a278d97515909a3521ce91c0b54306a15",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The real MPC public depth has only a fixed-record TLS reader; a browser cannot retrieve it as an HTTP resource.",
+  "causal_hypothesis": "An isolated HTTP adapter using maintained HTTP parsing and the existing pinned TLS verifier can return exactly the finalized aggregate book without gaining corporate keys, private journals or order access.",
+  "single_intended_change": "Add read-only GET /v1/book with optional minimum_sequence, no cache, no financial methods, and fail-closed generic errors. Leave actual four-order settlement scenario and trust assumptions unchanged.",
+  "baseline": "Publishedbb12a37/R15depth002;4networkTLSsnapshots,2fills/7500,actualpostcanonicalcrash+recovery,5validatorrestart. No HTTP adapter.",
+  "evaluation_population": {
+    "hosts": 1,
+    "corporate_clients": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 4,
+    "http_snapshots": 4
+  },
+  "primary_metric": "http_verified_depth_snapshots",
+  "point_prediction": {
+    "http_verified_depth_snapshots": 4,
+    "http_fail_closed_checks": 6,
+    "trade_notional": 7500,
+    "autonomously_settled_fills": 2
+  },
+  "most_likely_prediction_error": "Adapter error handling, snapshot expiry or orchestration may return stale data, hide an upstream outage, or fail to preserve exact pre/post-settlement snapshot semantics.",
+  "rejection_rules": [
+    "stale contract hash",
+    "any HTTP/TLS snapshot mismatch",
+    "wrong missing/route/method/query/future/offline status",
+    "missing real upstream stop or market crash",
+    "any original native depth financial/finality gate failure",
+    "HTTP adapter mounts corporate secret or market private journal"
+  ],
+  "promotion_rules": [
+    "smoke_only only after actual complete native scenario; not browser, financial API, public-internet availability or product acceptance"
+  ],
+  "command": "make remote-native-http-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

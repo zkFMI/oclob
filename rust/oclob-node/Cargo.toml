@@ -3,8 +3,10 @@ name = "oclob-node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+zeroize = { version = "1.8", features = ["alloc"] }
 zkfmi-crypto = { workspace = true, features = ["tls"] }
 oclob-core.workspace = true
 oclob-dekyx.workspace = true
@@ -28,5 +30,7 @@ qomm-proofs.workspace = true
 qomm-zk.workspace = true
 curve25519-dalek.workspace = true
 zkpi-defmi-sdk.workspace = true
+libc.workspace = true
+tiny_http.workspace = true
 
 [dev-dependencies]

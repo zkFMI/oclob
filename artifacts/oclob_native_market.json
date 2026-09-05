@@ -1,0 +1,45 @@
+{
+  "contract_sha256": "0a2d96cbfcc55f06daa8619aafeabfb2766ccf40062afee900effe4075ed2240",
+  "independent_operators": false,
+  "manifest_id": "oclob-native-market-final-source-002",
+  "native": {
+    "admitted_orders": 3,
+    "autonomously_settled_fills": 2,
+    "canonical_response_loss_recovered": true,
+    "completed_market_rounds": 3,
+    "contract_sha256": "0a2d96cbfcc55f06daa8619aafeabfb2766ccf40062afee900effe4075ed2240",
+    "independent_operators": false,
+    "manifest_id": "oclob-native-market-final-source-002",
+    "native_after_root": "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "native_note_settlement": true,
+    "native_transaction_id": "2w8oVbhma8piBsWPMwPDJCrm2TgybpWrMKdqkP5CtFmHgShsC7",
+    "node_finality_observations": 14,
+    "post_match_participant_signatures": 0,
+    "restart_did_not_duplicate_settlement": true,
+    "service_processes": [
+      "1b56df29c504c3d500b436fb3f611d7c42b31239ee7bd4e32bacac8d917c148b",
+      "666397cd490c6f141788b0295440e3d98cb1cc28bd1bd4189218f025d282ab52",
+      "5c50f5ac0f793c77d15ec6fcde0f3319d9761a8a9257ff567abfac08bda08c98"
+    ],
+    "status": "smoke_only",
+    "trade_notional": 9030,
+    "wan_evidence": false
+  },
+  "recovered_validator_roots": [
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb"
+  ],
+  "status": "smoke_only",
+  "validator_restart_recovered": true,
+  "validator_roots": [
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb",
+    "bc02d199406dd9b09be639d9caec77aa9d5fdf17e5fa5ce687d89519effb41eb"
+  ],
+  "wan_evidence": false
+}

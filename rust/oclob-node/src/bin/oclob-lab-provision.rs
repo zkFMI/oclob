@@ -87,6 +87,10 @@ fn provision(root: &Path) -> Result<(), String> {
     let coordinator_dir = create_private_dir(root.join("coordinator"))?;
     let settlement_dir = create_private_dir(root.join("settlement"))?;
     let defmi_dir = create_private_dir(root.join("defmi"))?;
+    let market_dir = create_private_dir(root.join("market"))?;
+    create_private_dir(market_dir.join("state"))?;
+    create_private_dir(root.join("market-public"))?;
+    let book_dir = create_private_dir(root.join("public-book"))?;
     let (ca_key, ca_cert) = create_ca()?;
     write_public(&public_dir.join("ca.pem"), &ca_cert.to_pem().map_err(err)?)?;
 
@@ -132,6 +136,60 @@ fn provision(root: &Path) -> Result<(), String> {
     let taker_fingerprint = certificate_fingerprint(&taker_cert.to_der().map_err(err)?);
     let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
     let settlement_fingerprint = certificate_fingerprint(&settlement_cert.to_der().map_err(err)?);
+    let (market_tls_key, market_cert) =
+        issue_leaf(&ca_key, &ca_cert, "oclob-market", &["oclob-market"], true)?;
+    write_private(
+        &market_dir.join("tls-key.pem"),
+        &market_tls_key.private_key_to_pem_pkcs8().map_err(err)?,
+    )?;
+    write_public(
+        &market_dir.join("tls.pem"),
+        &market_cert.to_pem().map_err(err)?,
+    )?;
+    let mut market_journal_key = [0u8; 32];
+    let (book_key, book_cert) = issue_leaf(
+        &ca_key,
+        &ca_cert,
+        "oclob-public-book",
+        &["oclob-public-book"],
+        true,
+    )?;
+    write_private(
+        &book_dir.join("tls-key.pem"),
+        &book_key.private_key_to_pem_pkcs8().map_err(err)?,
+    )?;
+    write_public(&book_dir.join("tls.pem"), &book_cert.to_pem().map_err(err)?)?;
+    write_json(
+        &public_dir.join("book-endpoint.json"),
+        &serde_json::to_value(oclob_node::market_network::MarketEndpoint {
+            host: "oclob-public-book".into(),
+            port: 9446,
+            server_name: "oclob-public-book".into(),
+            certificate_sha256: certificate_fingerprint(&book_cert.to_der().map_err(err)?),
+        })
+        .map_err(err)?,
+        0o644,
+    )?;
+    rand::rngs::OsRng.fill_bytes(&mut market_journal_key);
+    write_private(&market_dir.join("journal-key.raw"), &market_journal_key)?;
+    let market_config = oclob_node::market_network::MarketServiceConfig {
+        endpoint: oclob_node::market_network::MarketEndpoint {
+            host: "oclob-market".into(),
+            port: 9445,
+            server_name: "oclob-market".into(),
+            certificate_sha256: certificate_fingerprint(&market_cert.to_der().map_err(err)?),
+        },
+        participants: vec![maker_fingerprint, taker_fingerprint],
+        journal: PathBuf::from("/market/state.enc"),
+        journal_key: PathBuf::from("/market-identity/journal-key.raw"),
+        base_asset: oclob_settlement::canonical_securities_asset_id(MARKET),
+        quote_asset: oclob_settlement::canonical_cash_asset_id(),
+    };
+    write_json(
+        &public_dir.join("market.json"),
+        &serde_json::to_value(market_config).map_err(err)?,
+        0o644,
+    )?;
     let principals = vec![
         Principal {
             certificate_sha256: maker_fingerprint,
@@ -199,7 +257,15 @@ fn provision(root: &Path) -> Result<(), String> {
         rand::rngs::OsRng.fill_bytes(&mut identity_seed);
         let handle = Identity::from_seed(identity_seed).handle(b"defmi:oclob:v1");
         let spend = Scalar::random(&mut rand::rngs::OsRng);
-        let wallet = Wallet::from_parts(handle.secret, spend);
+        let mut opening_seed = zeroize::Zeroizing::new([0; 96]);
+        rand::rngs::OsRng.fill_bytes(opening_seed.as_mut());
+        let mut custody_seed = zeroize::Zeroizing::new([0; 96]);
+        rand::rngs::OsRng.fill_bytes(custody_seed.as_mut());
+        let wallet = Wallet::from_parts(
+            handle.secret,
+            spend,
+            zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&opening_seed),
+        );
         let capacity_blind = Scalar::random(&mut rand::rngs::OsRng);
         let facility: [u8; 32] =
             Sha256::digest([b"OCLOB:LAB:NATIVE-FACILITY:v1".as_slice(), label.as_bytes()].concat())
@@ -216,6 +282,8 @@ fn provision(root: &Path) -> Result<(), String> {
             facility_values: [amount, 0, 0],
             facility_blindings: [capacity_blind.to_bytes(), [0; 32], [0; 32]],
             wallet_spend_secret: spend.to_bytes(),
+            wallet_opening_seed: opening_seed.to_vec(),
+            credential_custody_seed: custody_seed.to_vec(),
             identity_seed,
         };
         write_json(
@@ -227,6 +295,12 @@ fn provision(root: &Path) -> Result<(), String> {
         rand::rngs::OsRng.fill_bytes(&mut journal_key);
         write_private(&directory.join("outbox-key.raw"), &journal_key)?;
         create_private_dir(directory.join("queue"))?;
+        write_json(
+            &directory.join("queue/queued-expiry-order.json"),
+            &json!({"side": "sell", "limit_price": 102, "quantity": 5,
+                "time_in_force": "good_til_cancelled", "valid_for_seconds": 45}),
+            0o600,
+        )?;
         write_json(
             &directory.join("queue/cycle-order.json"),
             &json!({
@@ -247,10 +321,57 @@ fn provision(root: &Path) -> Result<(), String> {
             }),
             0o600,
         )?;
-        corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
+        for (name, price, quantity) in if seed == 11 {
+            vec![
+                ("depth-high-order.json", 101, 30),
+                ("depth-low1-order.json", 100, 30),
+                ("depth-low2-order.json", 100, 60),
+            ]
+        } else {
+            vec![("depth-buy-order.json", 101, 75)]
+        } {
+            write_json(
+                &directory.join("queue").join(name),
+                &json!({"side":if seed == 11 {"sell"} else {"buy"},
+                "limit_price":price,"quantity":quantity,"time_in_force":if seed == 11 {"good_til_cancelled"} else {"immediate_or_cancel"},
+                "valid_for_seconds":1200}),
+                0o600,
+            )?;
+        }
+        if seed == 11 {
+            for (name, price) in [
+                ("market-high-order.json", 101),
+                ("market-low-order.json", 100),
+            ] {
+                write_json(
+                    &directory.join("queue").join(name),
+                    &json!({"side":"sell","limit_price":price,"quantity":60,
+                    "time_in_force":"good_til_cancelled","valid_for_seconds":1200}),
+                    0o600,
+                )?;
+            }
+        }
+        write_json(
+            &directory.join("queue/over-capacity-order.json"),
+            &json!({"side":"sell", "limit_price":101, "quantity":70,
+                "time_in_force":"good_til_cancelled", "valid_for_seconds":600}),
+            0o600,
+        )?;
         let credential = issuer
             .issue_wallet(seed, label.as_bytes(), &mut rand::rngs::OsRng)
             .map_err(err)?;
+        let encrypted_credential = credential
+            .seal_custody(&zkfmi_crypto::traits::KemDecapsulator::public_key(
+                &config.credential_custody_key()?,
+            ))
+            .map_err(err)?;
+        corporate_journals.push((
+            directory.join("queue/outbox.enc"),
+            journal_key,
+            config,
+            credential.scope_digest(),
+            encrypted_credential,
+        ));
         let enrollment = credential
             .present([31; 32], [32; 32], 253_402_300_798, &mut rand::rngs::OsRng)
             .map_err(err)?;
@@ -266,7 +387,7 @@ fn provision(root: &Path) -> Result<(), String> {
                     key.commit_u64(value, &blind),
                     &blind,
                     &mut rand::rngs::OsRng,
-                );
+                )?;
                 NoteOutput::from_note(&note, asset, [0; 32])?.body()
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -373,10 +494,15 @@ fn provision(root: &Path) -> Result<(), String> {
         &serde_json::to_value(&public).map_err(err)?,
         0o644,
     )?;
-    for (path, key, config) in corporate_journals {
-        oclob_node::corporate_journal::NativeCorporateJournal::initialize(
+    for (path, key, config, scope, credential) in corporate_journals {
+        oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
+            path.with_file_name("dispatch.enc"),
+            &key,
+        )?;
+        let journal = oclob_node::corporate_journal::NativeCorporateJournal::initialize(
             path, &key, &config, &public,
         )?;
+        journal.enroll_eligibility(&config, scope, &credential)?;
     }
     Ok(())
 }

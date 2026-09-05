@@ -310,13 +310,36 @@ def secret_input():
     source.push_str(
         "arriving_side = secret_input()\narriving_price = secret_input()\narriving_quantity = secret_input()\narriving_can_rest = secret_input()\narriving_price_blinding = secret_input()\narriving_reserve = secret_input()\narriving_reserve_blinding = secret_input()\narriving_handle = secret_input()\nremaining = arriving_quantity\narriving_reserve_remaining = arriving_reserve\narriving_reserve_blinding_remaining = arriving_reserve_blinding\nprivate_book_wires = []\nsettlement_proof_wires = []\n",
     );
+    // Same price/time rule as the canonical book, evaluated on secret values.
+    // Keep each source slot in place: proofs, private state and reservation
+    // authorities must stay bound to that original order. A secret prefix over
+    // better eligible prices (or an earlier equal-price slot) determines how
+    // much of the arriving order can reach this slot; no public sorting oracle.
+    for slot in 0..MAX_MATCH_SLOTS {
+        source.push_str(&format!(
+            "eligible_{slot} = active_{slot} * (resting_side_{slot} != arriving_side) * arriving_side.if_else(resting_price_{slot} >= arriving_price, arriving_price >= resting_price_{slot}) * (resting_quantity_{slot} > 0)\n"
+        ));
+    }
+    for slot in 0..MAX_MATCH_SLOTS {
+        source.push_str(&format!("higher_quantity_{slot} = sint(0)\n"));
+        for other in 0..MAX_MATCH_SLOTS {
+            if other == slot {
+                continue;
+            }
+            let earlier = u8::from(other < slot);
+            source.push_str(&format!(
+                "better_{slot}_{other} = arriving_side.if_else(resting_price_{other} > resting_price_{slot}, resting_price_{other} < resting_price_{slot}) + (resting_price_{other} == resting_price_{slot}) * {earlier}\nhigher_quantity_{slot} += eligible_{other} * better_{slot}_{other} * resting_quantity_{other}\n"
+            ));
+        }
+        source.push_str(&format!("available_{slot} = (arriving_quantity > higher_quantity_{slot}).if_else(arriving_quantity - higher_quantity_{slot}, 0)\n"));
+    }
     for slot in 0..MAX_MATCH_SLOTS {
         source.push_str(&format!(
             "opposite_{slot} = resting_side_{slot} != arriving_side\n\
 price_cross_{slot} = arriving_side.if_else(resting_price_{slot} >= arriving_price, arriving_price >= resting_price_{slot})\n\
-positive_{slot} = (resting_quantity_{slot} > 0) * (remaining > 0)\n\
+positive_{slot} = (resting_quantity_{slot} > 0) * (available_{slot} > 0)\n\
 matched_{slot} = active_{slot} * opposite_{slot} * price_cross_{slot} * positive_{slot}\n\
-minimum_{slot} = (resting_quantity_{slot} <= remaining).if_else(resting_quantity_{slot}, remaining)\n\
+minimum_{slot} = (resting_quantity_{slot} <= available_{slot}).if_else(resting_quantity_{slot}, available_{slot})\n\
 trade_quantity_{slot} = matched_{slot} * minimum_{slot}\n\
 trade_price_{slot} = matched_{slot} * resting_price_{slot}\n\
 trade_price_blinding_{slot} = matched_{slot} * resting_price_blinding_{slot}\n\
@@ -380,6 +403,32 @@ print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
     source.push_str(
         "published_remaining = remaining * arriving_can_rest\narriving_active_next = arriving_can_rest * (published_remaining > 0)\nprivate_book_wires += [arriving_active_next, arriving_side, arriving_price, published_remaining, arriving_price_blinding, arriving_reserve_remaining, arriving_reserve_blinding_remaining, arriving_handle]\nsint.write_to_file(private_book_wires + settlement_proof_wires)\nprint_ln('OCLOB_ARRIVING_REMAINING=%s', published_remaining.reveal())\n",
     );
+    // Domain adapter only: the sorting network is the pinned upstream
+    // Compiler.library.loopy_odd_even_merge_sort, not a local sorting core.
+    source.push_str(
+        "from Compiler.library import loopy_odd_even_merge_sort\ndepth = sint.Matrix(16, 4)\n",
+    );
+    for i in 0..=MAX_MATCH_SLOTS {
+        source.push_str(&format!("depth_active_{i} = private_book_wires[{i} * 8] * (private_book_wires[{i} * 8 + 3] > 0)\ndepth_first_{i} = depth_active_{i}\ndepth_quantity_{i} = sint(0)\n"));
+    }
+    for i in 0..=MAX_MATCH_SLOTS {
+        for j in 0..=MAX_MATCH_SLOTS {
+            source.push_str(&format!("depth_same_{i}_{j} = depth_active_{j} * (private_book_wires[{i} * 8 + 1] == private_book_wires[{j} * 8 + 1]) * (private_book_wires[{i} * 8 + 2] == private_book_wires[{j} * 8 + 2])\ndepth_quantity_{i} += depth_same_{i}_{j} * private_book_wires[{j} * 8 + 3]\n"));
+            if j < i {
+                source.push_str(&format!("depth_first_{i} *= 1 - depth_same_{i}_{j}\n"));
+            }
+        }
+        source.push_str(&format!("depth[{i}][1] = depth_first_{i} * private_book_wires[{i} * 8 + 1]\ndepth[{i}][2] = depth_first_{i} * private_book_wires[{i} * 8 + 2]\ndepth[{i}][3] = depth_first_{i} * depth_quantity_{i}\ndepth[{i}][0] = (1 - depth_first_{i}) * 2**34 + depth[{i}][1] * 2**33 + depth[{i}][1].if_else(depth[{i}][2], 2**32 - 1 - depth[{i}][2])\n"));
+    }
+    for i in MAX_MATCH_SLOTS + 1..16 {
+        source.push_str(&format!(
+            "depth[{i}] = [sint(2**34 + 2**32 - 1), sint(0), sint(0), sint(0)]\n"
+        ));
+    }
+    source.push_str("loopy_odd_even_merge_sort(depth, key_indices=[0])\n");
+    for i in 0..=MAX_MATCH_SLOTS {
+        source.push_str(&format!("print_ln('OCLOB_LEVEL_{i}_SIDE=%s', depth[{i}][1].reveal())\nprint_ln('OCLOB_LEVEL_{i}_PRICE=%s', depth[{i}][2].reveal())\nprint_ln('OCLOB_LEVEL_{i}_QUANTITY=%s', depth[{i}][3].reveal())\n"));
+    }
     Ok(source)
 }
 
@@ -389,11 +438,14 @@ print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
 pub fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
     let value = |name: &str| -> Result<u64, String> {
         let prefix = format!("{name}=");
-        output
+        let mut found = output
             .lines()
-            .find_map(|line| line.trim().strip_prefix(&prefix))
-            .ok_or_else(|| format!("missing {name}"))?
-            .trim()
+            .filter_map(|line| line.trim().strip_prefix(&prefix));
+        let item = found.next().ok_or_else(|| format!("missing {name}"))?;
+        if found.next().is_some() {
+            return Err(format!("duplicate {name}"));
+        }
+        item.trim()
             .parse::<u64>()
             .map_err(|error| format!("invalid {name}: {error}"))
     };
@@ -409,9 +461,38 @@ pub fn parse_result(output: &str) -> Result<MpcBatchResult, String> {
             trade_quantity: value(&format!("OCLOB_SLOT_{slot}_QUANTITY"))?,
         });
     }
+    let mut levels = Vec::new();
+    let mut padding = false;
+    for index in 0..=MAX_MATCH_SLOTS {
+        let side = value(&format!("OCLOB_LEVEL_{index}_SIDE"))?;
+        let price = value(&format!("OCLOB_LEVEL_{index}_PRICE"))?;
+        let quantity = value(&format!("OCLOB_LEVEL_{index}_QUANTITY"))?;
+        if quantity == 0 {
+            if side != 0 || price != 0 {
+                return Err("noncanonical public depth padding".into());
+            }
+            padding = true;
+            continue;
+        }
+        if padding {
+            return Err("active public level after padding".into());
+        }
+        let side = match side {
+            0 => oclob_core::Side::Buy,
+            1 => oclob_core::Side::Sell,
+            _ => return Err("invalid public depth side".into()),
+        };
+        levels.push(oclob_core::MpcPriceLevel {
+            side,
+            price,
+            quantity,
+        });
+    }
+    oclob_core::validate_public_levels(&levels)?;
     Ok(MpcBatchResult {
         slots,
         arriving_remaining: value("OCLOB_ARRIVING_REMAINING")?,
+        public_levels: Some(levels),
     })
 }
 
@@ -471,13 +552,32 @@ fn compatibility_private_values(input: &PrivateMatchBatch) -> Result<Vec<i128>, 
 /// Domain-separated commitment to the public matching result.
 pub fn public_output_digest(result: &MpcBatchResult) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"OCLOB:MPC-PUBLIC-OUTPUT:v1");
+    hash.update(if result.public_levels.is_some() {
+        b"OCLOB:MPC-PUBLIC-OUTPUT:v2"
+    } else {
+        b"OCLOB:MPC-PUBLIC-OUTPUT:v1"
+    });
     for slot in &result.slots {
         hash.update([u8::from(slot.matched)]);
         hash.update(slot.trade_price.to_be_bytes());
         hash.update(slot.trade_quantity.to_be_bytes());
     }
     hash.update(result.arriving_remaining.to_be_bytes());
+    if let Some(levels) = &result.public_levels {
+        hash.update(public_depth_digest(levels));
+    }
+    hash.finalize().into()
+}
+
+pub fn public_depth_digest(levels: &[oclob_core::MpcPriceLevel]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"OCLOB:PUBLIC-PRICE-LEVELS:v1");
+    hash.update((levels.len() as u64).to_be_bytes());
+    for level in levels {
+        hash.update([level.side.wire()]);
+        hash.update(level.price.to_be_bytes());
+        hash.update(level.quantity.to_be_bytes());
+    }
     hash.finalize().into()
 }
 
@@ -576,6 +676,156 @@ pub enum MpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_mpc_prioritizes_secret_prices_then_original_time_in_both_directions() {
+        use oclob_core::Side::{Buy, Sell};
+        let root = std::env::var("MP_SPDZ_ROOT")
+            .expect("real MPC regression requires the approved remote Docker image");
+        let mut runner = MpcRunner::compile(root).unwrap();
+        let cases = vec![
+            (vec![(Sell, 101, 60), (Sell, 100, 60)], Buy, 101, 90, false),
+            (vec![(Buy, 100, 60), (Buy, 101, 60)], Sell, 100, 90, false),
+            (vec![(Sell, 100, 60), (Sell, 100, 60)], Buy, 101, 90, false),
+            (vec![(Buy, 101, 60), (Buy, 101, 60)], Sell, 100, 90, false),
+            (
+                vec![
+                    (Sell, 99, 50),
+                    (Buy, 101, 20),
+                    (Sell, 105, 80),
+                    (Buy, 100, 10),
+                ],
+                Sell,
+                100,
+                25,
+                false,
+            ),
+            (
+                vec![(Buy, 105, 60), (Sell, 103, 60), (Sell, 100, 0)],
+                Buy,
+                101,
+                90,
+                true,
+            ),
+            (vec![(Sell, 100, 60)], Buy, 101, 90, true),
+            (vec![(Sell, 100, 60)], Buy, 101, 90, false),
+            (vec![], Buy, 101, 90, true),
+            (
+                vec![
+                    (Sell, 105, 10),
+                    (Sell, 100, 10),
+                    (Sell, 102, 10),
+                    (Sell, 103, 10),
+                    (Sell, 101, 10),
+                    (Sell, 100, 10),
+                    (Sell, 107, 10),
+                    (Sell, 104, 10),
+                ],
+                Buy,
+                104,
+                35,
+                false,
+            ),
+        ];
+        for (values, side, limit, quantity, can_rest) in cases {
+            let input = PrivateMatchBatch {
+                resting: values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (side, price, quantity))| PrivateRestingInput {
+                        commitment: OrderCommitment([i as u8 + 1; 32]),
+                        side: *side,
+                        price: *price,
+                        quantity: *quantity,
+                    })
+                    .collect(),
+                arriving_side: side,
+                arriving_price: limit,
+                arriving_quantity: quantity,
+                arriving_can_rest: can_rest,
+            };
+            // Independent, clear unit oracle: stable price sorting followed by
+            // ordinary greedy matching, not the circuit's pairwise formula.
+            let mut priority = values
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| {
+                    v.0 != side
+                        && v.2 > 0
+                        && if side == Buy {
+                            v.1 <= limit
+                        } else {
+                            v.1 >= limit
+                        }
+                })
+                .collect::<Vec<_>>();
+            priority.sort_by(|(i, a), (j, b)| {
+                if side == Buy {
+                    a.1.cmp(&b.1).then(i.cmp(j))
+                } else {
+                    b.1.cmp(&a.1).then(i.cmp(j))
+                }
+            });
+            let mut expected = vec![
+                MpcSlotResult {
+                    matched: false,
+                    trade_price: 0,
+                    trade_quantity: 0
+                };
+                values.len()
+            ];
+            let mut remaining = quantity;
+            for (slot, (_, price, available)) in priority {
+                let fill = remaining.min(*available);
+                remaining -= fill;
+                if fill > 0 {
+                    expected[slot] = MpcSlotResult {
+                        matched: true,
+                        trade_price: *price,
+                        trade_quantity: fill,
+                    };
+                }
+            }
+            let actual = runner.execute_batch(&input).unwrap();
+            assert!(actual.all_parties_agreed);
+            let mut depth = std::collections::BTreeMap::<(u8, u64), u64>::new();
+            for ((side, price, quantity), fill) in values.iter().zip(&expected) {
+                if *quantity > fill.trade_quantity {
+                    *depth.entry((side.wire(), *price)).or_default() +=
+                        quantity - fill.trade_quantity;
+                }
+            }
+            if can_rest && remaining > 0 {
+                *depth.entry((side.wire(), limit)).or_default() += remaining;
+            }
+            let mut levels = depth
+                .into_iter()
+                .map(|((side, price), quantity)| oclob_core::MpcPriceLevel {
+                    side: if side == 0 { Buy } else { Sell },
+                    price,
+                    quantity,
+                })
+                .collect::<Vec<_>>();
+            levels.sort_by_key(|v| {
+                (
+                    v.side.wire(),
+                    if v.side == Buy {
+                        u64::MAX - v.price
+                    } else {
+                        v.price
+                    },
+                )
+            });
+            assert_eq!(
+                actual.result,
+                MpcBatchResult {
+                    slots: expected,
+                    arriving_remaining: if can_rest { remaining } else { 0 },
+                    public_levels: Some(levels),
+                }
+            );
+        }
+    }
 
     #[test]
     fn generated_program_has_no_public_order_input() {

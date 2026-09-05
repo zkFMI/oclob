@@ -38,6 +38,10 @@ pub struct CorporateNativeConfig {
     pub facility_values: [u64; 3],
     pub facility_blindings: [[u8; 32]; 3],
     pub wallet_spend_secret: [u8; 32],
+    /// Independent X25519 and ML-KEM seeds; required on backup and restore.
+    pub wallet_opening_seed: Vec<u8>,
+    /// Separate recipient key for encrypted DeKYX holder custody.
+    pub credential_custody_seed: Vec<u8>,
     pub identity_seed: [u8; 32],
 }
 
@@ -234,7 +238,11 @@ pub fn prepare_reservation_from_note(
     if facility.state_root != root || client.state_root()? != root {
         return Err("canonical funding changed; rebuild the same request before submission".into());
     }
-    let wallet = Wallet::from_parts(handle.secret, scalar(config.wallet_spend_secret)?);
+    let wallet = Wallet::from_parts(
+        handle.secret,
+        scalar(config.wallet_spend_secret)?,
+        config.note_opening_key()?,
+    );
     let mut source = None;
     for (index, opening) in ledger.scan(&wallet, &key) {
         if notes[index].lock_id != [0; 32]
@@ -473,4 +481,29 @@ fn random() -> [u8; 32] {
 }
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+impl CorporateNativeConfig {
+    pub fn credential_custody_key(
+        &self,
+    ) -> Result<zkfmi_crypto::hybrid::kem::HybridKemKey, String> {
+        let seed: &[u8; 96] = self
+            .credential_custody_seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| "corporate credential custody requires its independent 96-byte seed")?;
+        if self.credential_custody_seed == self.wallet_opening_seed {
+            return Err("credential custody and note delivery require separate keys".into());
+        }
+        Ok(zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(seed))
+    }
+
+    pub fn note_opening_key(&self) -> Result<zkfmi_crypto::hybrid::kem::HybridKemKey, String> {
+        let seed: &[u8; 96] = self
+            .wallet_opening_seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| "corporate wallet requires its independent 96-byte opening seed")?;
+        Ok(zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(seed))
+    }
 }

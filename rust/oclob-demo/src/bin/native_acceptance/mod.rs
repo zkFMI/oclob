@@ -42,6 +42,13 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
+                    | "oclob-native-worker-v1"
+                    | "oclob-native-expiry-v1"
+                    | "oclob-native-expiry-v2"
+                    | "oclob-native-deferred-v1"
+                    | "oclob-native-market-v1"
+                    | "oclob-native-depth-v1"
+                    | "oclob-native-http-v1"
             )
         )
     {
@@ -203,8 +210,59 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         thread::sleep(Duration::from_millis(250));
     }
     let result: Value = read_json_limited(Path::new("/handoff/native-result.json"))?;
-    if result["native_note_settlement"] != true {
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-expiry-v1" | "oclob-native-expiry-v2")
+    ) {
+        if result["reconciled_expired_requests"] != 2
+            || result["never_reserved"] != 1
+            || result["completed_native_releases"] != 1
+            || result["mpc_nodes_down_during_reconciliation"] != 7
+            || result["next_order_admitted_nodes"] != 7
+            || result["exact_released_note_reused"] != true
+            || result["worker_restart_unchanged"] != true
+            || result["release_response_loss_recovered"] != true
+            || result["contract_sha256"] != contract_hash
+        {
+            return Err(failure("native queued expiry acceptance is incomplete"));
+        }
+    } else if result["native_note_settlement"] != true {
         return Err(failure("native settlement result is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-market-v1"
+        && (result["admitted_orders"] != 3
+            || result["completed_market_rounds"] != 3
+            || result["autonomously_settled_fills"] != 2
+            || result["trade_notional"] != 9030
+            || result["node_finality_observations"] != 14
+            || result["post_match_participant_signatures"] != 0
+            || result["restart_did_not_duplicate_settlement"] != true
+            || result["canonical_response_loss_recovered"] != true
+            || result["contract_sha256"] != contract_hash)
+    {
+        return Err(failure("resident native market acceptance is incomplete"));
+    }
+    if (manifest["contract_id"] == "oclob-native-depth-v1"
+        || manifest["contract_id"] == "oclob-native-http-v1")
+        && (result["admitted_orders"] != 4
+            || result["completed_market_rounds"] != 4
+            || result["canonically_published_depth_snapshots"] != 4
+            || result["trade_notional"] != 7500
+            || result["autonomously_settled_fills"] != 2
+            || result["node_finality_observations"] != 14
+            || result["post_match_participant_signatures"] != 0
+            || result["restart_did_not_duplicate_settlement"] != true
+            || result["canonical_response_loss_recovered"] != true
+            || result["public_depth_stays_old_before_finality"] != true
+            || result["network_reader_requires_no_corporate_keys_or_journal"] != true
+            || result["contract_sha256"] != contract_hash)
+    {
+        return Err(failure("native depth acceptance is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-http-v1"
+        && (result["http_verified_depth_snapshots"] != 4 || result["http_fail_closed_checks"] != 6)
+    {
+        return Err(failure("native HTTP book acceptance is incomplete"));
     }
     if manifest["contract_id"] == "oclob-native-finality-v1"
         && (result["node_observed_canonical_finality"] != 7
@@ -236,27 +294,51 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     {
         return Err(failure("native repeated settlement cycle is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-lifecycle-v1"
-        && (result["completed_native_rounds"] != 2
-            || result["completed_native_releases"] != 2
-            || result["recipient_claims_redeemed"] != 9
-            || result["final_facility_sequences"] != json!([8, 5])
-            || result["expiry_wallet"]["unfilled_releases_recovered"] != 1
-            || result["node_restart_state_preserved"] != true
-            || result["cancellation_refund_funded_expiry_order"] != true)
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-lifecycle-v1" | "oclob-native-worker-v1")
+    ) && (result["completed_native_rounds"] != 2
+        || result["completed_native_releases"] != 2
+        || result["recipient_claims_redeemed"] != 9
+        || result["final_facility_sequences"] != json!([8, 5])
+        || result["expiry_wallet"]["unfilled_releases_recovered"] != 1
+        || result["node_restart_state_preserved"] != true
+        || result["cancellation_refund_funded_expiry_order"] != true)
     {
         return Err(failure(
             "native cancellation/expiry lifecycle is incomplete",
         ));
     }
-    if manifest["contract_id"] == "oclob-native-multifill-v1"
-        && (result["atomic_multi_fill"] != true
-            || result["fill_count"] != 2
-            || result["atomically_settled_fills"] != 2
-            || result["node_observed_canonical_finality"] != 14
-            || result["partial_observation_did_not_advance"] != true
-            || result["batch_extraction_rejected"] != true
-            || result["posttrade_facility_sequences"] != json!([4, 3]))
+    if manifest["contract_id"] == "oclob-native-worker-v1"
+        && (result["corporate_worker"]["completed_dispatches"] != 1
+            || result["corporate_worker"]["waiting_without_dispatch"] != true
+            || result["corporate_worker"]["reserve_response_loss_recovered"] != true
+            || result["corporate_worker"]["node_response_loss_recovered"] != true
+            || result["corporate_worker"]["actual_restart_unchanged"] != true
+            || result["corporate_worker"]["admission_matches_settled_order"] != true)
+    {
+        return Err(failure("native corporate worker recovery is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-deferred-v1"
+        && (result["deferred_authorization"]["queued_without_funding"] != 3
+            || result["deferred_authorization"]["accepted_maker_orders"] != 2
+            || result["deferred_authorization"]["over_capacity_rejected"] != 1
+            || result["deferred_authorization"]["worker_restart_unchanged"] != true)
+    {
+        return Err(failure(
+            "native deferred authorization acceptance is incomplete",
+        ));
+    }
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-multifill-v1" | "oclob-native-deferred-v1")
+    ) && (result["atomic_multi_fill"] != true
+        || result["fill_count"] != 2
+        || result["atomically_settled_fills"] != 2
+        || result["node_observed_canonical_finality"] != 14
+        || result["partial_observation_did_not_advance"] != true
+        || result["batch_extraction_rejected"] != true
+        || result["posttrade_facility_sequences"] != json!([4, 3]))
     {
         return Err(failure("native atomic multi-fill acceptance is incomplete"));
     }

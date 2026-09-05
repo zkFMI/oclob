@@ -1,0 +1,45 @@
+{
+  "manifest_id": "oclob-native-depth-final-002",
+  "contract_id": "oclob-native-depth-v1",
+  "contract_path": "research/oclob_native_depth_contract.json",
+  "contract_sha256": "1030b5be06d8e851b8e6674c22f227fc38371cb1cff2dd423db9a27b1ca879be",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The first native-depth whole run passed. Verify the final implementation including redacted-book authenticity, freshness, canonical-finality rejection tests and the isolated read-only TLS service.",
+  "causal_hypothesis": "Compute equal-side equal-price residual sums inside the existing MPC, obliviously sort and compact them using the pinned official compiler library, bind the canonical levels to node-signed result digests, and expose only a finalized public snapshot through a read-only network service.",
+  "single_intended_change": "Repeat the identical complete native-depth scenario on the final source with additional ordinary verifier, parser and transport regression coverage; no changed financial or privacy acceptance thresholds.",
+  "baseline": "Native depth rough001 /tmp/oclob-native.ZbwGWh/oclob, artifactSHA256db89d8cc03a3d6e423d7387c9556894adde8ab3d6754fdbf8e286c26d5e28667: four snapshots,2fills,7500notional,14observations,actualpostcanonicalexit75andrecovery,fivevalidatorrestart. Dependency pins unchanged.",
+  "evaluation_population": {
+    "hosts": 1,
+    "corporate_clients": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 4
+  },
+  "primary_metric": "canonically_published_depth_snapshots",
+  "point_prediction": {
+    "canonically_published_depth_snapshots": 4,
+    "pretrade_100_quantity": 90,
+    "posttrade_100_quantity": 15,
+    "posttrade_101_quantity": 30,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 7500,
+    "node_finality_observations": 14,
+    "public_depth_stays_old_before_finality": true,
+    "restart_did_not_duplicate_settlement": true
+  },
+  "most_likely_prediction_error": "A fixed-shape aggregation/sort, result binding, or publication checkpoint may reveal source-order positions, publish a partial state too early, or mismatch the existing slot-specific native proof path for fills in slots1and2. Reject rather than compute a replacement book in clear.",
+  "rejection_rules": [
+    "stale contract hash",
+    "plaintext depth calculation at coordinator",
+    "per-order rather than aggregated output",
+    "wrong snapshot levels",
+    "early posttrade publication",
+    "unbound result or public-book substitution",
+    "wrong canonical fills/notional",
+    "missing real network read or actual process restart"
+  ],
+  "promotion_rules": [
+    "smoke_only only when the complete native snapshot and settlement prediction passes; never product/WAN/performance/economic promotion"
+  ],
+  "command": "make remote-native-depth-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_DEPTH_MANIFEST=/research/manifests/oclob_native_depth_002.json"
+}

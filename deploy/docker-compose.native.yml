@@ -54,6 +54,102 @@ services:
       OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
       OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
       OCLOB_CORPORATE_REQUEST_ID: native-taker-001
+  maker-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker/queue:/corporate:rw
+    environment:
+      OCLOB_MARKET_CONFIG: ${OCLOB_MARKET_CONFIG:-}
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+    command: [oclob-corporate-worker]
+  taker-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker/queue:/corporate:rw
+    environment:
+      OCLOB_MARKET_CONFIG: ${OCLOB_MARKET_CONFIG:-}
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+      OCLOB_CORPORATE_JOURNAL: /corporate/outbox.enc
+      OCLOB_CORPORATE_JOURNAL_KEY: /identity/outbox-key.raw
+    command: [oclob-corporate-worker]
+  market-worker:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks:
+      oclob-private:
+        aliases: [oclob-market]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/settlement:/settlement:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market:/market-identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market/state:/market:rw
+      - ${OCLOB_RUNTIME_DIR}/cluster/market-public:/market-public:rw
+      - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+      - ${OCLOB_SOURCE_DIR}/research:/research:ro
+    environment:
+      OCLOB_MARKET_CRASH_AFTER_CANONICAL: ${OCLOB_MARKET_CRASH_AFTER_CANONICAL:-0}
+      OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_market_contract.json}
+      OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_market_002.json}
+    command: [oclob-market-worker]
+  public-book:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks:
+      oclob-private:
+        aliases: [oclob-public-book]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/public-book:/book-identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market-public:/market-public:ro
+    command: [oclob-public-book]
+  book-api:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+    command: [oclob-public-book, --http, "0.0.0.0:9880"]
+    healthcheck:
+      test: [CMD, curl, --silent, --output, /dev/null, --max-time, "2", "http://127.0.0.1:9880/v1/book"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  book-reader:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+    command: [oclob-public-book, --get, "0"]
   native-coordinator:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"

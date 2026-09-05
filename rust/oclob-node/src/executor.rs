@@ -240,6 +240,8 @@ pub struct NodeExecutionReceipt {
     pub private_state_sha256: Digest32,
     pub public_output_sha256: Digest32,
     pub result: MpcBatchResult,
+    #[serde(default)]
+    pub depth_attestation: Option<crate::public_depth::DepthAttestation>,
     pub execution_ms: u64,
     pub signer: Digest32,
     pub signature: Vec<u8>,
@@ -265,6 +267,28 @@ impl NodeExecutionReceipt {
             || self.signer != expected_signer.to_bytes()
         {
             return Err(PartyExecutionError::Receipt);
+        }
+        match (&self.result.public_levels, &self.depth_attestation) {
+            (Some(levels), Some(a)) => {
+                a.verify(expected_signer)
+                    .map_err(|_| PartyExecutionError::Receipt)?;
+                if a.party != self.party
+                    || a.market_id != plan.market_id
+                    || a.sequence != plan.sequence
+                    || a.round_id != self.round_id
+                    || a.public_output_sha256 != self.public_output_sha256
+                    || a.book_digest != oclob_mpc::public_depth_digest(levels)
+                    || a.state_commitment != self.private_state_sha256
+                    || a.program_sha256 != self.program_sha256
+                    || a.issued_at != plan.issued_at
+                    || a.valid_until != plan.expires_at
+                    || a.settlement_required != self.result.slots.iter().any(|s| s.matched)
+                {
+                    return Err(PartyExecutionError::Receipt);
+                }
+            }
+            (None, None) => {}
+            _ => return Err(PartyExecutionError::Receipt),
         }
         let signature = Signature::try_from(self.signature.as_slice())
             .map_err(|_| PartyExecutionError::Receipt)?;
@@ -464,6 +488,16 @@ impl PartyExecutor {
             prepared,
             &result,
         )?;
+        let depth_attestation = Some(
+            crate::public_depth::DepthAttestation::sign(
+                self.party,
+                plan,
+                &result,
+                private_state_sha256,
+                &self.signing_key,
+            )
+            .map_err(|_| PartyExecutionError::Receipt)?,
+        );
         let mut receipt = NodeExecutionReceipt {
             version: VERSION,
             party: self.party,
@@ -475,6 +509,7 @@ impl PartyExecutor {
             private_parent_digest: prepared.private_parent_digest(),
             private_state_sha256,
             public_output_sha256,
+            depth_attestation,
             result,
             execution_ms,
             signer: self.signing_key.verifying_key().to_bytes(),

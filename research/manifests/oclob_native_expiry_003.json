@@ -1,0 +1,42 @@
+{
+  "manifest_id": "oclob-native-expiry-deferred-regression-003",
+  "contract_id": "oclob-native-expiry-v2",
+  "contract_path": "research/oclob_native_expiry_fenced_contract.json",
+  "contract_sha256": "c2e175e7dea340ea7242c3d4c928c69d38de319398a651efb9330fee050c1cf1",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5
+  },
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "current_bottleneck": "R13 adds authorization-bound send fences and a common corporate intake lock to the native journal; R12 exact-prepared expiry must be rerun on this source.",
+  "causal_hypothesis": "Version1 prepared requests retain their original digest and send-fence semantics, so all original actual expiry/refund/restart outcomes remain unchanged.",
+  "single_intended_change": "Regression of the unchanged fenced expiry v2 whole journey against R13 deferred authorization integration. No relaxed deadlines, financial receipts or counts.",
+  "baseline": "Publishedbe2af0f with expiry002 result eafd578c934ee9c4b462127fc0e8021deefef0e65d7c76489da58cfb0e1f8063,2 reconciled/1 never-reserved/1 released/7 admitted/sequence3.",
+  "primary_metric": "reconciled_expired_requests",
+  "point_prediction": {
+    "reconciled_expired_requests": 2,
+    "never_reserved": 1,
+    "completed_native_releases": 1,
+    "next_order_admitted_nodes": 7,
+    "final_maker_facility_sequence": 3,
+    "worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The new immutable decision may reject a legitimate retry after reserve acceptance or leave the second queued request behind a resolved first request; reject the entire journey if exact durable recovery fails.",
+  "rejection_rules": [
+    "stale contract hash",
+    "absence without an atomic unsent fence",
+    "legacy or ambiguous send classified as never reserved",
+    "fewer than7 stopped MPC containers at either expiry boundary",
+    "either actual post-side-effect process stop absent",
+    "synthetic release receipt",
+    "wrong recovered funding or canonical facility",
+    "next order not admitted by all7 nodes",
+    "worker or five-validator restart changes outcome"
+  ],
+  "command": "make remote-native-expiry-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

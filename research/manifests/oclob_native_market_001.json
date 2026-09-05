@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-market-rough-001",
+  "contract_id": "oclob-native-market-v1",
+  "contract_path": "research/oclob_native_market_contract.json",
+  "contract_sha256": "0a2d96cbfcc55f06daa8619aafeabfb2766ccf40062afee900effe4075ed2240",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The native coordinator is a scenario executable reading hand-picked maker/taker files. Autonomous market operation is missing; the existing secret matching loop consumes slots in supplied order, so higher-price-first intake can violate the intended price/time rule.",
+  "causal_hypothesis": "Use a TLS-authenticated durable admission inbox and a resident market journal to select every next certified order. Reuse existing live ordering, MPC, proof, zkPI and canonical-finality functions. Compute secret better-price eligible quantity before each slot while preserving original proof-slot identities, so arrival101-before100 still allocates at100 first.",
+  "single_intended_change": "Replace manual scenario orchestration with a reusable resident native-order pipeline, including the directly necessary hidden price-priority allocation and corporate-to-market receipt delivery. No substitute plain matching engine or raw-order broker.",
+  "baseline": "PublishedOCLOBbf2e7fb33f7997a46bbd1f806d14b7806f340199,109tests,R13deferred003/expiry003/worker005. Closest executable reference is existing oclob-native-e2e and pure canonical price/time book in oclob-core; existing MP-SPDZ/pinned DeFMI supply all cryptographic primitives.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_clients": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 3
+  },
+  "primary_metric": "autonomously_settled_fills",
+  "point_prediction": {
+    "admitted_orders": 3,
+    "completed_market_rounds": 3,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 9030,
+    "node_finality_observations": 14,
+    "post_match_participant_signatures": 0,
+    "restart_did_not_duplicate_settlement": true
+  },
+  "most_likely_prediction_error": "Generic price priority or the resident progress journal may misbind slot-specific proof/authority data or repeat a financial side effect after process restart. Reject rather than use hand-picked scenario output or relax matching/settlement counts.",
+  "rejection_rules": [
+    "stale contract hash",
+    "manual maker/taker selection at service",
+    "raw-order service intake",
+    "wrong or unauthenticated receipt/envelope admitted",
+    "input-order rather than price-priority allocation",
+    "changed exact in-flight financial request",
+    "fewer than2 canonical fills",
+    "notional differs from9030",
+    "missing actual service restart",
+    "duplicate canonical application",
+    "advancing state before all14 finality confirmations"
+  ],
+  "promotion_rules": [
+    "smoke_only when full native prediction and invariants pass; never full product/WAN/crypto/performance/economic promotion"
+  ],
+  "command": "make remote-native-market-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

@@ -105,6 +105,7 @@ enum NodeRequest {
         certificate: OrderCertificate,
     },
     Status,
+    Health,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -131,6 +132,9 @@ enum NodeResponse {
     Status {
         status: NodeStoreStatus,
     },
+    Healthy {
+        party: u16,
+    },
     Rejected {
         code: String,
     },
@@ -155,7 +159,7 @@ pub struct NodeAdmissionReceipt {
 }
 
 impl NodeAdmissionReceipt {
-    fn sign(
+    pub(crate) fn sign(
         party: u16,
         manifest: &EdgeOrderManifest,
         order_share_digest: Digest32,
@@ -391,6 +395,25 @@ pub struct NodePrivateStateReceipt {
 }
 
 impl NodePrivateStateReceipt {
+    pub fn verify_public_signature(&self, key: &VerifyingKey) -> Result<(), NetworkError> {
+        if self.version != RECORD_VERSION
+            || self.party >= 7
+            || self.round_id == [0; 32]
+            || self.private_state_sha256 == [0; 32]
+            || self.transition_digest == [0; 32]
+            || self.canonical_receipt_digest == [0; 32]
+            || self.canonical_height == 0
+            || self.generation == 0
+            || self.state_digest == [0; 32]
+            || self.signer != key.to_bytes()
+        {
+            return Err(NetworkError::Protocol);
+        }
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| NetworkError::Protocol)?;
+        key.verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| NetworkError::Protocol)
+    }
     #[allow(clippy::too_many_arguments)]
     fn sign(
         party: u16,
@@ -483,7 +506,7 @@ pub struct ServerTlsConfig {
 
 #[derive(Clone)]
 pub struct ClientTlsConfig {
-    connector: Arc<SslConnector>,
+    pub(crate) connector: Arc<SslConnector>,
 }
 
 pub fn server_tls_context(
@@ -1007,6 +1030,16 @@ impl NodeRpcClient {
         }
     }
 
+    /// Authenticated liveness only; corporate peers do not receive book counts,
+    /// generations, ordering activity or state digests from this endpoint.
+    pub fn health(&self) -> Result<(), NetworkError> {
+        match self.call(NodeRequest::Health)? {
+            NodeResponse::Healthy { party } if party == self.endpoint.party => Ok(()),
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
     fn call(&self, request: NodeRequest) -> Result<NodeResponse, NetworkError> {
         let tcp = TcpStream::connect((self.endpoint.host.as_str(), self.endpoint.port))?;
         tcp.set_read_timeout(Some(self.timeout))?;
@@ -1364,6 +1397,14 @@ fn dispatch_checked(
                 .map_err(|_| NetworkError::State)?;
             Ok(NodeResponse::Status { status })
         }
+        NodeRequest::Health => Ok(NodeResponse::Healthy {
+            party: runtime
+                .store
+                .lock()
+                .map_err(|_| NetworkError::State)?
+                .state
+                .party,
+        }),
     }
 }
 
@@ -1420,7 +1461,7 @@ fn decode_record<T: DeserializeOwned>(magic: &[u8; 8], record: &[u8]) -> Result<
     serde_json::from_slice(payload).map_err(|_| NetworkError::Protocol)
 }
 
-fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, NetworkError> {
+pub(crate) fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, NetworkError> {
     let symlink = fs::symlink_metadata(path)?;
     if symlink.file_type().is_symlink() {
         return Err(NetworkError::UnsafeKey);
@@ -1593,6 +1634,70 @@ mod tests {
     }
 
     /// Transport-only peer: real mutual TLS and the pinned bounded codec,
+    /// Public reader separately proves a CA-only handshake, endpoint pin and
+    /// hostname checks. No fictional market data is used as financial evidence.
+    #[test]
+    fn public_depth_transport_requires_server_trust_but_no_corporate_key() {
+        use crate::public_depth_network::{exchange, fetch, tls_context};
+        let files = tls_files();
+        let other_ca = tls_files();
+        for case in 0..4 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let tls = tls_context(&files.server_cert, &files.server_key).unwrap();
+            let missing_path = files.root.join("no-published-book.json");
+            // No book is read, so no signature verification or financial
+            // execution is claimed by this transport-only test.
+            let cluster = ClusterPublicConfig {
+                version: 3,
+                market_id: "transport-test".into(),
+                program: "test".into(),
+                settlement_release_threshold: 3,
+                nodes: Vec::new(),
+            };
+            let for_server = cluster.clone();
+            let server = thread::spawn(move || {
+                exchange(
+                    listener.accept().unwrap().0,
+                    &tls,
+                    &missing_path,
+                    &for_server,
+                )
+            });
+            let endpoint = crate::market_network::MarketEndpoint {
+                host: "127.0.0.1".into(),
+                port: address.port(),
+                server_name: if case == 2 {
+                    "wrong.invalid"
+                } else {
+                    "localhost"
+                }
+                .into(),
+                certificate_sha256: if case == 1 {
+                    [99; 32]
+                } else {
+                    files.server_fingerprint
+                },
+            };
+            let failure = fetch(
+                &endpoint,
+                if case == 3 { &other_ca.ca } else { &files.ca },
+                &cluster,
+                0,
+            )
+            .unwrap_err();
+            let outcome = server.join().unwrap();
+            if case == 0 {
+                assert_eq!(failure, "no finalized public book yet");
+                outcome.unwrap();
+            } else {
+                assert!(outcome.is_err());
+                assert_ne!(failure, "no finalized public book yet");
+            }
+        }
+    }
+
+    /// Transport-only peer: real mutual TLS and the pinned bounded codec,
     /// but no financial state machine. Native Docker acceptance separately
     /// verifies the actual DeFMI reads/writes and validator state.
     fn private_admission_exchange_peer(
@@ -1692,6 +1797,80 @@ mod tests {
             Duration::from_secs(3),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn market_transport_pins_peer_enforces_participant_and_saves_before_ack() {
+        use crate::market_journal::MarketJournal;
+        use crate::market_network::{
+            receive_connection, submit, MarketEndpoint, MarketServiceConfig,
+        };
+        let files = tls_files();
+        let (cluster, input, _) = crate::market_tests::fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let journal = Arc::new(
+            MarketJournal::open(&files.root.join("market.enc"), &[31; 32], &cluster, true).unwrap(),
+        );
+        let tls = server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap();
+        let config = MarketServiceConfig {
+            endpoint: MarketEndpoint {
+                host: address.ip().to_string(),
+                port: address.port(),
+                server_name: "localhost".into(),
+                certificate_sha256: files.server_fingerprint,
+            },
+            participants: vec![files.participant_fingerprint],
+            journal: files.root.join("market.enc"),
+            journal_key: files.root.join("unused-config-key"),
+            base_asset: [1; 32],
+            quote_asset: [2; 32],
+        };
+        let identity = ClientIdentityConfig {
+            version: 1,
+            tls_certificate: files.participant_cert.clone(),
+            tls_private_key: files.participant_key.clone(),
+            tls_ca: files.ca.clone(),
+            application_signing_key: files.root.join("unused-transport-key"),
+        };
+        let endpoint = config.endpoint.clone();
+        let server_journal = journal.clone();
+        let server_cluster = cluster.clone();
+        let worker = thread::spawn(move || {
+            let mut exchanges = 0;
+            for connection in listener.incoming().take(5) {
+                let _ = receive_connection(
+                    connection.unwrap(),
+                    &tls,
+                    &config,
+                    &server_cluster,
+                    &server_journal,
+                );
+                exchanges += 1;
+            }
+            exchanges
+        });
+        submit(&endpoint, &identity, &input).unwrap();
+        assert_eq!(
+            journal.next().unwrap().unwrap().digest().unwrap(),
+            input.digest().unwrap()
+        );
+        submit(&endpoint, &identity, &input).unwrap();
+        let mut bad = input.clone();
+        bad.signature[0] ^= 1;
+        assert!(submit(&endpoint, &identity, &bad).is_err());
+        let mut unauthorized = identity.clone();
+        unauthorized.tls_certificate = files.coordinator_cert.clone();
+        unauthorized.tls_private_key = files.coordinator_key.clone();
+        assert!(submit(&endpoint, &unauthorized, &input).is_err());
+        let mut wrong_pin = endpoint;
+        wrong_pin.certificate_sha256 = [0; 32];
+        assert!(submit(&wrong_pin, &identity, &input).is_err());
+        assert_eq!(worker.join().unwrap(), 5);
+        assert_eq!(
+            journal.next().unwrap().unwrap().digest().unwrap(),
+            input.digest().unwrap()
+        );
     }
 
     #[test]
@@ -1932,6 +2111,7 @@ mod tests {
                 MAX_MATCH_SLOTS
             ],
             arriving_remaining: 40,
+            public_levels: None,
         };
         let output = public_output_digest(&result);
         let store_path = files.root.join("release-shares.bin");
@@ -1959,6 +2139,7 @@ mod tests {
                 public_output_sha256: output,
                 result,
                 execution_ms: 1,
+                depth_attestation: None,
                 signer: receipt_signer.verifying_key().to_bytes(),
                 signature: vec![62; 64],
             })

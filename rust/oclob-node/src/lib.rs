@@ -8,11 +8,23 @@
 #![forbid(unsafe_code)]
 
 pub mod corporate;
+pub mod corporate_authorization;
+pub mod corporate_dispatch;
+pub mod corporate_expiry;
 pub mod corporate_journal;
+pub mod corporate_submission;
+pub mod market_journal;
+pub mod market_network;
+pub mod market_runtime;
+#[cfg(test)]
+mod market_tests;
 pub mod native_admission;
 pub mod native_finality;
 pub mod native_lifecycle;
 pub mod native_wallet;
+pub mod public_depth;
+pub mod public_depth_http;
+pub mod public_depth_network;
 
 pub mod edge_client;
 pub mod executor;
@@ -2131,6 +2143,7 @@ mod tests {
                 MAX_MATCH_SLOTS
             ],
             arriving_remaining: 40,
+            public_levels: None,
         };
         let resting_output = public_output_digest(&resting_result);
         let resting_generation = store.status().unwrap().generation;
@@ -2148,6 +2161,7 @@ mod tests {
                 public_output_sha256: resting_output,
                 result: resting_result,
                 execution_ms: 1,
+                depth_attestation: None,
                 signer: [38; 32],
                 signature: vec![39; 64],
             })
@@ -2207,6 +2221,7 @@ mod tests {
                 MAX_MATCH_SLOTS
             ],
             arriving_remaining: 0,
+            public_levels: None,
         };
         let ioc_output = public_output_digest(&ioc_result);
         let ioc_generation = store.status().unwrap().generation;
@@ -2224,6 +2239,7 @@ mod tests {
                 public_output_sha256: ioc_output,
                 result: ioc_result,
                 execution_ms: 1,
+                depth_attestation: None,
                 signer: [47; 32],
                 signature: vec![48; 64],
             })

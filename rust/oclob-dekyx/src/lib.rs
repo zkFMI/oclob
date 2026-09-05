@@ -136,6 +136,56 @@ pub struct DemoEligibilityWallet {
     action_digest: Digest32,
 }
 
+/// Public credential plus recipient-encrypted private holder material. The
+/// recovery key is provisioned and retained independently by the corporation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EncryptedEligibilityWallet {
+    credential: Credential,
+    witness: dekyx_core::EncryptedCredentialWitness,
+    scope_digest: Digest32,
+    qualification: Qualification,
+    audience_digest: Digest32,
+    action_digest: Digest32,
+}
+
+impl EncryptedEligibilityWallet {
+    fn custody_context(&self) -> Digest32 {
+        Sha256::new()
+            .chain_update(b"OCLOB:ELIGIBILITY-CUSTODY:v1")
+            .chain_update(self.scope_digest)
+            .chain_update(self.audience_digest)
+            .chain_update(self.action_digest)
+            .chain_update((self.qualification.namespace.len() as u64).to_be_bytes())
+            .chain_update(self.qualification.namespace.as_bytes())
+            .chain_update(self.qualification.predicate_digest)
+            .finalize()
+            .into()
+    }
+
+    pub fn restore(
+        &self,
+        recovery_key: &zkfmi_crypto::hybrid::kem::HybridKemKey,
+        expected_scope: Digest32,
+    ) -> Result<DemoEligibilityWallet, EligibilityError> {
+        if self.scope_digest != expected_scope {
+            return Err(EligibilityError::ContextMismatch);
+        }
+        let witness = self
+            .witness
+            .restore(&self.credential, recovery_key, &self.custody_context())
+            .map_err(|error| EligibilityError::DeKyx(error.to_string()))?;
+        Ok(DemoEligibilityWallet {
+            credential: self.credential.clone(),
+            witness,
+            scope_digest: self.scope_digest,
+            qualification: self.qualification.clone(),
+            audience_digest: self.audience_digest,
+            action_digest: self.action_digest,
+        })
+    }
+}
+
 impl DemoEligibilityIssuer {
     pub fn issue_wallet<R: RngCore + CryptoRng>(
         &self,
@@ -186,6 +236,32 @@ impl DemoEligibilityIssuer {
 }
 
 impl DemoEligibilityWallet {
+    pub fn seal_custody(
+        &self,
+        recipient_public: &[u8],
+    ) -> Result<EncryptedEligibilityWallet, EligibilityError> {
+        let custody_context: Digest32 = Sha256::new()
+            .chain_update(b"OCLOB:ELIGIBILITY-CUSTODY:v1")
+            .chain_update(self.scope_digest)
+            .chain_update(self.audience_digest)
+            .chain_update(self.action_digest)
+            .chain_update((self.qualification.namespace.len() as u64).to_be_bytes())
+            .chain_update(self.qualification.namespace.as_bytes())
+            .chain_update(self.qualification.predicate_digest)
+            .finalize()
+            .into();
+        Ok(EncryptedEligibilityWallet {
+            credential: self.credential.clone(),
+            witness: self
+                .witness
+                .seal_custody(&self.credential, recipient_public, custody_context)
+                .map_err(|error| EligibilityError::DeKyx(error.to_string()))?,
+            scope_digest: self.scope_digest,
+            qualification: self.qualification.clone(),
+            audience_digest: self.audience_digest,
+            action_digest: self.action_digest,
+        })
+    }
     pub fn credential_digest(&self) -> Result<Digest32, EligibilityError> {
         self.credential
             .digest()
@@ -343,6 +419,21 @@ mod tests {
     fn proof_is_bound_to_one_order_and_one_use() {
         let (mut verifier, issuer) = deterministic_demo_environment("JGB10Y-JPY").unwrap();
         let wallet = issuer.issue_wallet(11, b"first", &mut OsRng).unwrap();
+        let recovery = zkfmi_crypto::hybrid::kem::HybridKemKey::generate().unwrap();
+        let saved = wallet
+            .seal_custody(&zkfmi_crypto::traits::KemDecapsulator::public_key(
+                &recovery,
+            ))
+            .unwrap();
+        let scope = wallet.scope_digest();
+        let holder_nullifier = wallet.subject_nullifier();
+        drop(wallet);
+        assert!(saved.restore(&recovery, [99; 32]).is_err());
+        let mut tampered = saved.clone();
+        tampered.action_digest[0] ^= 1;
+        assert!(tampered.restore(&recovery, scope).is_err());
+        let wallet = saved.restore(&recovery, scope).unwrap();
+        assert_eq!(wallet.subject_nullifier(), holder_nullifier);
         let commitment = [8; 32];
         let proof = wallet
             .present(commitment, [9; 32], 2_000, &mut OsRng)

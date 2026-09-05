@@ -358,6 +358,7 @@ mod tests {
                 oclob_core::MAX_MATCH_SLOTS
             ],
             arriving_remaining: 0,
+            public_levels: None,
         };
         for &slot in slots {
             result.slots[slot] = oclob_core::MpcSlotResult {
@@ -379,6 +380,7 @@ mod tests {
             public_output_sha256: oclob_mpc::public_output_digest(&result),
             result,
             execution_ms: 1,
+            depth_attestation: None,
             signer: [7; 32],
             signature: vec![8; 64],
         };

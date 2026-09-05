@@ -1,0 +1,19 @@
+{
+  "contract_id": "oclob-native-worker-v1",
+  "objective": "Run the real native corporate dispatcher through node unavailability and two actual process-crash boundaries, restart the resident worker and use its exact admitted maker order in the complete R10 native two-round settlement, cancellation and expiry journey.",
+  "primary_metric": "completed_native_releases",
+  "truth_provider": "The existing encrypted CorporateOutbox and native corporate journal, seven real mTLS node acknowledgements and malicious-secure MP-SPDZ executions, real native DeFMI holds/facilities/notes on five Avalanche validators, independent node-owned readbacks and process restarts.",
+  "hard_constraints": [
+    "Use a saved signed reserve and immutable ciphertext delivery; the worker must not issue new credentials, regenerate another order or construct replacement financial proof bytes after an ambiguous send.",
+    "With node6 stopped, real authenticated health calls return waiting and the dispatch queue remains Queued. No fake healthy node or plaintext substitute.",
+    "Kill the actual local worker after canonical reserve readback but before saving admission, then after all seven node acknowledgements but before saving the receipt. Both process stops must return75 and the normal resident worker must finish without a human replay command.",
+    "Restart the resident worker after queue admission; its queue summary must remain byte-equivalent and its signed seven-node receipt must identify the exact maker order later matched and settled. Reject a second simultaneous worker on the same queue.",
+    "Preserve all R10 gates:2 actual settlement rounds,3 fills, cancelled remainder29 reused to fund5-unit real GTC expiry,2 canonical releases,9 cumulative claim materializations, facilities8/5,7+7 node-owned release observations,actual7-node restart and5-validator root/restart agreement.",
+    "No raw pre-match orders, identity witness, reserve openings, credentials, encryption keys or share payloads in public artifacts. All compilation/tests/Docker on Omen or Softbank."
+  ],
+  "non_claims": [
+    "This is one-host functional smoke, not independent operators/WAN, throughput/economics confirmation or production promotion.",
+    "Corporate intake currently prepares the signed reserve before enqueue; general deferred credential/funding preparation, multiple simultaneous facility writers, expiration reconciliation for incompletely admitted orders and unattended market-side coordination remain separate unresolved product paths.",
+    "Queue MpcAdmitted is not a canonical settlement receipt. Nine claims are cumulative materializations, not nine unspent balances. Configured DeFMI canonical reader remains trusted."
+  ]
+}

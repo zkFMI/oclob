@@ -124,8 +124,31 @@ impl AdmissionAuthority {
                         | "defmivm.txStatus"
                         | "defmivm.network"
                 );
-                let write = (role == PeerRole::Participant
-                    && method == "defmivm.issueNoteClaimRedemption")
+                let participant_expiry = if role == PeerRole::Participant
+                    && method == "defmivm.issueApplicationNoteRelease"
+                {
+                    let release: qomm_defmi::application_settlement::ApplicationNoteRelease =
+                        serde_json::from_value(
+                            params
+                                .get("release")
+                                .cloned()
+                                .ok_or("expiry release is missing")?,
+                        )
+                        .map_err(err)?;
+                    release.signing_message()?;
+                    release.scope == self.scope
+                        && release.reason
+                            == qomm_defmi::application_settlement::ApplicationReleaseReason::Expired
+                        && release.committee_public.is_empty()
+                        && release.signature.is_empty()
+                    // The VM, not this ingress or the corporate clock, checks
+                    // the actual deadline and current canonical reserve head.
+                } else {
+                    false
+                };
+                let write = participant_expiry
+                    || (role == PeerRole::Participant
+                        && method == "defmivm.issueNoteClaimRedemption")
                     || matches!(role, PeerRole::Coordinator | PeerRole::Settlement)
                         && matches!(
                             method,
@@ -381,5 +404,53 @@ mod tests {
             *seen.lock().unwrap(),
             vec!["defmivm.applicationNoteReservation", "defmivm.txStatus"]
         );
+        // Unit authorization boundary only: the real VM must still enforce
+        // expiry and canonical head checks, exercised by the native Docker run.
+        use qomm_defmi::application_settlement::{
+            ApplicationNoteRelease, ApplicationReleaseReason,
+        };
+        let release = ApplicationNoteRelease {
+            scope: authority.scope.clone(),
+            before_root: [10; 32],
+            operation_id: [11; 32],
+            hold_id: [12; 32],
+            sequence: 0,
+            previous_receipt: [13; 32],
+            reason: ApplicationReleaseReason::Expired,
+            committee_public: Vec::new(),
+            pq_committee: None,
+            signature: Vec::new(),
+            pq_authorization: None,
+        };
+        let expiry = |value: &ApplicationNoteRelease| ProofRequest {
+            id: 3,
+            method: "chain".into(),
+            params: json!({"jsonrpc":"2.0", "id":4, "method":"defmivm.issueApplicationNoteRelease", "params":{"release":value}}),
+        };
+        assert!(authority
+            .dispatch(PeerRole::Participant, expiry(&release))
+            .is_ok());
+        let forwarded = seen.lock().unwrap().len();
+        let mut wrong_scope = release.clone();
+        wrong_scope.scope.defmi_id = [99; 32];
+        let mut cancellation = release.clone();
+        cancellation.reason = ApplicationReleaseReason::Cancelled;
+        let mut signed_expiry = release.clone();
+        signed_expiry.signature = vec![1; 64];
+        for invalid in [&wrong_scope, &cancellation, &signed_expiry] {
+            assert!(authority
+                .dispatch(PeerRole::Participant, expiry(invalid))
+                .is_err());
+        }
+        assert!(authority
+            .dispatch(PeerRole::Operator, expiry(&release))
+            .is_err());
+        assert!(authority
+            .dispatch(
+                PeerRole::Participant,
+                chain("defmivm.issueApplicationNoteRelease")
+            )
+            .is_err());
+        assert_eq!(seen.lock().unwrap().len(), forwarded);
     }
 }

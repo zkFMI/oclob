@@ -1,0 +1,46 @@
+{
+  "manifest_id": "oclob-native-worker-expiry-regression-004",
+  "contract_id": "oclob-native-worker-v1",
+  "contract_path": "research/oclob_native_worker_contract.json",
+  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5
+  },
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "current_bottleneck": "R12 native queue expiry updates the corporate journal and pins DeFMI5dd1f68 after the independent foundation/app extraction. Existing R11 full native matching, cancellation, expiry and restart evidence is tied to4b07c2b and must be rerun against the new exact source.",
+  "causal_hypothesis": "The corporate send/unsent fence allows identical committed-reserve retries, and the dependency preserves typed reservation/fill/release semantics, so the original worker-admitted maker completes the unchanged full native lifecycle.",
+  "single_intended_change": "Regression of the full already-existing worker/lifecycle scenario against R12 fenced expiry and DeFMI5dd1f68d43da3f81e640c6eae25749d358e6680f. No relaxed acceptance counts or replacement financial requests.",
+  "baseline": "R11 published9647cc53e4ea78ff8f12f36468a1a6aca789c05a; worker003 resultSHA2565c0ad97a17b5f700150a2ebfc9ea05cf5144e881e082e600010cf882e0a4a5c8 with2rounds/3fills/2releases/9claims,facilities8/5 and node/validator restart equality.",
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "completed_dispatches": 1,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "corporate_worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "New expiry bookkeeping could reject the original response-loss retry or wallet reconstruction; do not use admission-only expiry evidence to claim the missing full settlement lifecycle.",
+  "rejection_rules": [
+    "stale contract hash",
+    "real node outage bypassed",
+    "either actual post-side-effect process stop absent",
+    "saved financial request or node ciphertexts changed",
+    "original resident dispatch incomplete",
+    "second worker acquires live queue",
+    "queue restart changes outcome",
+    "worker receipt not the maker actually settled",
+    "any original R10 final lifecycle gate fails"
+  ],
+  "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

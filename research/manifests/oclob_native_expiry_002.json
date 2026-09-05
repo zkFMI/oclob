@@ -1,0 +1,42 @@
+{
+  "manifest_id": "oclob-native-expiry-fenced-002",
+  "contract_id": "oclob-native-expiry-v2",
+  "contract_path": "research/oclob_native_expiry_fenced_contract.json",
+  "contract_sha256": "c2e175e7dea340ea7242c3d4c928c69d38de319398a651efb9330fee050c1cf1",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5
+  },
+  "promotion_rules": [
+    "smoke_only if every real end-to-end gate passes; never independent-operator, economic, performance or product promotion"
+  ],
+  "current_bottleneck": "Rough001 reached2 reconciled requests and seven-node admission of the refund-funded order, but the source could infer absence from local time and an unchanged canonical facility despite a concurrent or legacy send. This observed implementation gap disqualifies the rough artifact as release evidence; the same user objective is unchanged.",
+  "causal_hypothesis": "A crash-durable first-write-wins send-or-end-unsent decision, saved before the first reserve RPC and checked when consuming absence resolutions, closes the send/expiry race while retaining recovery of a real committed reserve and its canonical expiry.",
+  "single_intended_change": "Fence never-dispatched expiry in the corporate journal; preserve pending status for legacy/ambiguous sends. Box the large expiry result variant without changing its serialized bytes to satisfy the observed Clippy gate. Add direct participant expiry authorization negative tests. No new financial signatures, canonical absence fabrication or matching policy changes.",
+  "baseline": "Rough001 onSoftbank /tmp/oclob-native.sK24nm returned2/1/1/7 with worker/validator restart; private resultSHA25674e74cb79ffa2b4e947704cd6a4e2d56efcc5084921d000c70f0cd5b51e65a87; wholelogSHA2568e8810da35fb9ea514c59c93a407e981f57e2955cc3fad78a2a86a519bbde716. Code001100 tests passed then Clippy rejected the large enum. Dependency5dd1f68d43da3f81e640c6eae25749d358e6680f.",
+  "primary_metric": "reconciled_expired_requests",
+  "point_prediction": {
+    "reconciled_expired_requests": 2,
+    "never_reserved": 1,
+    "completed_native_releases": 1,
+    "next_order_admitted_nodes": 7,
+    "final_maker_facility_sequence": 3,
+    "worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The new immutable decision may reject a legitimate retry after reserve acceptance or leave the second queued request behind a resolved first request; reject the entire journey if exact durable recovery fails.",
+  "rejection_rules": [
+    "stale contract hash",
+    "absence without an atomic unsent fence",
+    "legacy or ambiguous send classified as never reserved",
+    "fewer than7 stopped MPC containers at either expiry boundary",
+    "either actual post-side-effect process stop absent",
+    "synthetic release receipt",
+    "wrong recovered funding or canonical facility",
+    "next order not admitted by all7 nodes",
+    "worker or five-validator restart changes outcome"
+  ],
+  "command": "make remote-native-expiry-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

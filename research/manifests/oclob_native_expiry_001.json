@@ -1,0 +1,43 @@
+{
+  "manifest_id": "oclob-native-expiry-rough-001",
+  "contract_id": "oclob-native-expiry-v1",
+  "contract_path": "research/oclob_native_expiry_contract.json",
+  "contract_sha256": "9ad9c0551ad7193f614655aa8de9bd5da0940464f2b4fa667263a7470105d9ff",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "R11 leaves expired incomplete dispatches ReleasePending with no automatic canonical release or funding recovery.",
+  "causal_hypothesis": "Reconcile native expiry independently of MPC availability, reuse the pinned VM's non-discretionary expiry and exact corporate journal, and restore funding before queue finalization. This should recover both absence and lost-response reserve cases without replacement financial signatures or synthetic receipts.",
+  "single_intended_change": "Connect the existing corporate dispatcher to native expiry reconciliation, durable exact release/result stages and real corporate funding recovery. Narrow DeFMI outbox pending-to-proven-absence fix at5dd1f68; explicit expiry-only participant ingress. Dedicated native Docker acceptance, not a synthetic matching result.",
+  "baseline": "R11 published9647cc53e4ea78ff8f12f36468a1a6aca789c05a with100 tests and full native worker/lifecycle smoke; contractbb025519 and result5c0ad97a. DeFMI5dd1f68d43da3f81e640c6eae25749d358e6680f outbox fix passes125 qomm-transport tests,format/Clippy.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "expired_requests": 2
+  },
+  "primary_metric": "reconciled_expired_requests",
+  "point_prediction": {
+    "reconciled_expired_requests": 2,
+    "never_reserved": 1,
+    "completed_native_releases": 1,
+    "next_order_admitted_nodes": 7,
+    "final_maker_facility_sequence": 3,
+    "worker_restart_unchanged": true
+  },
+  "most_likely_prediction_error": "The recovered unfilled escrow note or journal's resolved-request sequencing may differ from the actual canonical facility history; reject rather than silently regenerating state or treating missing reads as absence.",
+  "rejection_rules": [
+    "stale contract hash",
+    "fewer than7 stopped MPC containers at either expiry boundary",
+    "transport error treated as absence",
+    "either actual post-side-effect process stop absent",
+    "synthetic release receipt",
+    "funding witness or exact returned note differs from canonical",
+    "next request remains blocked after completed reconciliation",
+    "queue restart changes outcome",
+    "five validators fail root/restart agreement"
+  ],
+  "promotion_rules": [
+    "smoke_only when all real feature-flow gates pass; never product, WAN, performance or economic promotion"
+  ],
+  "command": "make remote-native-expiry-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

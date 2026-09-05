@@ -232,6 +232,7 @@ impl EdgeDistributor {
 
 /// Output accepted only after all seven independently authenticated node
 /// receipts agree on the program bytes and public MPC result.
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AgreedRoundExecution {
     pub receipts: Vec<NodeExecutionReceipt>,
     pub result: MpcBatchResult,
@@ -625,7 +626,7 @@ fn unix_seconds() -> Option<u64> {
         .map(|duration| duration.as_secs())
 }
 
-fn receipt_digest(
+pub(crate) fn receipt_digest(
     manifest: &EdgeOrderManifest,
     generations: &[u64; MPC_PARTIES],
     order_share_digests: &[Digest32; MPC_PARTIES],

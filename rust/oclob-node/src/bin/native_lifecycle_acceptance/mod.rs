@@ -7,7 +7,11 @@ use oclob_node::native_lifecycle::{
 use oclob_ordering::OrderCertificate;
 use qomm_defmi::application_settlement::ApplicationNoteRelease;
 
-pub(super) fn run(phase: &str, contract_hash: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn run(
+    phase: &str,
+    contract_hash: &str,
+    verify_worker: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cluster: ClusterPublicConfig = read("/public/cluster.json")?;
     cluster.validate()?;
     let coordinator: ClientIdentityConfig = read("/identity/client.json")?;
@@ -106,6 +110,38 @@ pub(super) fn run(phase: &str, contract_hash: &str) -> Result<(), Box<dyn std::e
         cycle["completed_native_releases"] = json!(2);
         cycle["recipient_claims_redeemed"] = json!(9);
         cycle["final_facility_sequences"] = json!([8, 5]);
+        if verify_worker {
+            let waiting: Value = read("/handoff/worker-waiting.json")?;
+            let queued: Value = read("/handoff/worker-queued.json")?;
+            let reserve_stop = read_last_worker_event("/handoff/worker-reserve-stop.jsonl")?;
+            let admission_stop = read_last_worker_event("/handoff/worker-admission-stop.jsonl")?;
+            let admitted: Value = read("/handoff/worker-admitted.json")?;
+            let before: Value = read("/handoff/worker-before-restart.json")?;
+            let after: Value = read("/handoff/worker-after-restart.json")?;
+            let maker: EdgeAdmissionReceipt = read("/handoff/maker.json")?;
+            if waiting["status"] != "waiting_for_nodes"
+                || queued.as_array().map(Vec::len) != Some(1)
+                || queued[0]["state"] != "queued"
+                || reserve_stop["checkpoint"] != "after-reserve-before-journal"
+                || admission_stop["checkpoint"] != "after-node-admission-before-journal"
+                || admitted["status"] != "admitted"
+                || admitted["request_id"] != "native-maker-001"
+                || admitted["receipt_digest"] != hex::encode(maker.receipt_digest)
+                || before != after
+                || before.as_array().map(Vec::len) != Some(1)
+                || before[0]["state"]["mpc_admitted"]["receipt"]["job_id"]
+                    != maker.commitment().hex()
+            {
+                return Err(
+                    "native corporate worker did not pass real outage/crash/restart acceptance"
+                        .into(),
+                );
+            }
+            cycle["corporate_worker"] = json!({"waiting_without_dispatch":true,
+                "reserve_response_loss_recovered":true,"node_response_loss_recovered":true,
+                "actual_restart_unchanged":true,"admission_matches_settled_order":true,
+                "completed_dispatches":1,"receipt_digest":hex::encode(maker.receipt_digest)});
+        }
         publish_result(&cycle, "/handoff/native-result.json")?;
         return Ok(());
     }
@@ -325,6 +361,17 @@ fn verify_terminal_restart(
         return Err("native terminal checkpoint has an unexpected retained-record count");
     }
     Ok(())
+}
+
+fn read_last_worker_event(path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    if bytes.len() > 65536 {
+        return Err("worker event log exceeds acceptance bound".into());
+    }
+    let source = std::str::from_utf8(&bytes)?;
+    Ok(serde_json::from_str(
+        source.lines().last().ok_or("worker event log is empty")?,
+    )?)
 }
 
 #[cfg(test)]
