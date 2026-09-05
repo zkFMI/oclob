@@ -9,6 +9,7 @@ use base64::Engine;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
+use qomm_defmi::asset_link::{self, AssetLinkProof};
 use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides, ThresholdDvpPackage};
 use qomm_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
 use qomm_proofs::price_limit::{
@@ -100,7 +101,10 @@ pub struct CollaborativeFillProof {
     pub securities_refund_opening: OpeningEnvelope,
     pub cash_delivery_opening: OpeningEnvelope,
     pub cash_refund_opening: OpeningEnvelope,
-    pub asset_blinding: Scalar,
+    /// Zero-knowledge link between the hidden zkPI asset and the canonical
+    /// DeFMI rail. The Pedersen blinding is destroyed after this proof is
+    /// created and never enters the settlement handoff.
+    pub asset_link: AssetLinkProof,
 }
 
 /// Canonical public facts against which the OCLOB settlement adapter
@@ -155,9 +159,12 @@ impl CollaborativeFillProof {
         if (self.instruction.payer_handle, self.instruction.payee_handle) != expected_handles {
             return Err("zkPI payer and payee do not match the reserved Maker and Taker".into());
         }
-        let expected_asset = key.commit(&asset_scalar(&context.asset_id), &self.asset_blinding);
-        if self.instruction.asset_commitment != expected_asset
-            || !self.instruction.ranges.is_threshold()
+        if !asset_link::verify(
+            key,
+            &context.asset_id,
+            &self.instruction.asset_commitment,
+            &self.asset_link,
+        ) || !self.instruction.ranges.is_threshold()
         {
             return Err("zkPI asset or range evidence is not the canonical threshold form".into());
         }
@@ -344,6 +351,13 @@ pub fn prove_fill<T: ProofPartyRpc>(
     let price_range_wire = encode_threshold_range(&zkpi_proofs.price)?;
     let asset_blinding = Scalar::random(&mut OsRng);
     let asset_commitment = key.commit(&asset_scalar(&request.asset_id), &asset_blinding);
+    let asset_link = asset_link::prove(
+        &key,
+        request.asset_id,
+        &asset_commitment,
+        &asset_blinding,
+        &mut OsRng,
+    )?;
     let (payer, payee) = match request.limit_direction {
         PriceLimitDirection::MaximumBuyPrice => (request.taker_handle, maker_handle),
         PriceLimitDirection::MinimumSellPrice => (maker_handle, request.taker_handle),
@@ -435,7 +449,7 @@ pub fn prove_fill<T: ProofPartyRpc>(
         securities_refund_opening,
         cash_delivery_opening,
         cash_refund_opening,
-        asset_blinding,
+        asset_link,
     })
 }
 

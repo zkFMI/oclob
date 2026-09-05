@@ -959,14 +959,15 @@ fn verify_collaborative_statements(
     taker_reserve: RistrettoPoint,
 ) -> RunResult<()> {
     let key = qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1");
-    let expected_asset = key.commit(
-        &qomm_zkpi::asset_scalar(&canonical_securities_asset_id(MARKET)),
-        &proof.asset_blinding,
-    );
     if proof.maker_handle != maker_handle
         || proof.instruction.payee_handle != maker_handle
         || proof.instruction.payer_handle == maker_handle
-        || proof.instruction.asset_commitment != expected_asset
+        || !qomm_defmi::asset_link::verify(
+            &key,
+            &canonical_securities_asset_id(MARKET),
+            &proof.instruction.asset_commitment,
+            &proof.asset_link,
+        )
         || proof.securities_remainder + proof.instruction.amount_commitment != maker_reserve
         || proof.cash_remainder + proof.cash_commitment != taker_reserve
         || proof.maker_pool_remainder != proof.securities_remainder
