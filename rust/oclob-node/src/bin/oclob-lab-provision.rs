@@ -134,6 +134,35 @@ fn provision(root: &Path) -> Result<(), String> {
     )?;
     let maker_fingerprint = certificate_fingerprint(&maker_cert.to_der().map_err(err)?);
     let taker_fingerprint = certificate_fingerprint(&taker_cert.to_der().map_err(err)?);
+    for (directory, role, fingerprint) in [
+        (&maker_dir, "maker", maker_fingerprint),
+        (&taker_dir, "taker", taker_fingerprint),
+    ] {
+        let hostname = format!("oclob-{role}-api");
+        let (key, certificate) = issue_leaf(&ca_key, &ca_cert, &hostname, &[&hostname], true)?;
+        write_private(
+            &directory.join("api-tls-key.pem"),
+            &key.private_key_to_pem_pkcs8().map_err(err)?,
+        )?;
+        write_public(
+            &directory.join("api-tls.pem"),
+            &certificate.to_pem().map_err(err)?,
+        )?;
+        let api = oclob_node::corporate_api::CorporateApiConfig {
+            endpoint: oclob_node::market_network::MarketEndpoint {
+                host: hostname.clone(),
+                port: 9890,
+                server_name: hostname,
+                certificate_sha256: certificate_fingerprint(&certificate.to_der().map_err(err)?),
+            },
+            clients: vec![fingerprint],
+        };
+        write_json(
+            &public_dir.join(format!("{role}-api.json")),
+            &serde_json::to_value(api).map_err(err)?,
+            0o644,
+        )?;
+    }
     let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
     let settlement_fingerprint = certificate_fingerprint(&settlement_cert.to_der().map_err(err)?);
     let (market_tls_key, market_cert) =
