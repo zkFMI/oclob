@@ -10,6 +10,8 @@ oclob-core.workspace = true
 oclob-edge.workspace = true
 oclob-ordering.workspace = true
 oclob-proofs.workspace = true
+dekyx-core.workspace = true
+openssl.workspace = true
 qomm-defmi.workspace = true
 qomm-proofs.workspace = true
 qomm-transport.workspace = true
@@ -27,3 +29,6 @@ sha2.workspace = true
 hex.workspace = true
 merlin.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+oclob-dekyx.workspace = true

@@ -3,8 +3,10 @@
 //! This command is intentionally labelled `lab`: production operators create
 //! their private keys independently and submit CSRs to an offline authority.
 
+use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::SigningKey;
 use oclob_edge::{NodeDecryptionKey, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD};
+use oclob_node::corporate::CorporateNativeConfig;
 use oclob_node::network::{
     certificate_fingerprint, ClientIdentityConfig, ClusterNodePublic, ClusterPublicConfig,
     PeerRole, Principal,
@@ -19,6 +21,11 @@ use openssl::x509::extension::{
     SubjectKeyIdentifier,
 };
 use openssl::x509::{X509Builder, X509NameBuilder, X509};
+use qomm_defmi::note_chain::NoteOutput;
+use qomm_defmi::notes::{NoteLedger, Wallet};
+use qomm_zk::pedersen::Pedersen;
+use qomm_zkpi::handles::Identity;
+use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
@@ -79,6 +86,7 @@ fn provision(root: &Path) -> Result<(), String> {
     let taker_dir = create_private_dir(root.join("taker"))?;
     let coordinator_dir = create_private_dir(root.join("coordinator"))?;
     let settlement_dir = create_private_dir(root.join("settlement"))?;
+    let defmi_dir = create_private_dir(root.join("defmi"))?;
     let (ca_key, ca_cert) = create_ca()?;
     write_public(&public_dir.join("ca.pem"), &ca_cert.to_pem().map_err(err)?)?;
 
@@ -146,6 +154,105 @@ fn provision(root: &Path) -> Result<(), String> {
             application_key: settlement_app.verifying_key().to_bytes(),
         },
     ];
+    let native_receipt_key = SigningKey::generate(&mut rand::rngs::OsRng);
+    write_private(
+        &defmi_dir.join("receipt-key.raw"),
+        &native_receipt_key.to_bytes(),
+    )?;
+    write_json(
+        &public_dir.join("native-issuer.json"),
+        &json!(native_receipt_key.verifying_key().to_bytes()),
+        0o644,
+    )?;
+    let (defmi_tls_key, defmi_tls_cert) =
+        issue_leaf(&ca_key, &ca_cert, "oclob-defmi", &["oclob-defmi"], true)?;
+    write_private(
+        &defmi_dir.join("tls-key.pem"),
+        &defmi_tls_key.private_key_to_pem_pkcs8().map_err(err)?,
+    )?;
+    write_public(
+        &defmi_dir.join("tls.pem"),
+        &defmi_tls_cert.to_pem().map_err(err)?,
+    )?;
+    write_json(
+        &defmi_dir.join("principals.json"),
+        &serde_json::to_value(&principals).map_err(err)?,
+        0o600,
+    )?;
+    let key = Pedersen::new(b"qomm:defmi:v1");
+    let (_, issuer) = oclob_dekyx::deterministic_demo_environment(MARKET).map_err(err)?;
+    let mut funding = Vec::new();
+    for (directory, seed, label, asset, amount) in [
+        (
+            &maker_dir,
+            11,
+            "distributed-maker",
+            oclob_settlement::canonical_securities_asset_id(MARKET),
+            120_u64,
+        ),
+        (
+            &taker_dir,
+            22,
+            "distributed-taker",
+            oclob_settlement::canonical_cash_asset_id(),
+            10_000_u64,
+        ),
+    ] {
+        let mut identity_seed = [0; 32];
+        rand::rngs::OsRng.fill_bytes(&mut identity_seed);
+        let handle = Identity::from_seed(identity_seed).handle(b"defmi:oclob:v1");
+        let spend = Scalar::random(&mut rand::rngs::OsRng);
+        let wallet = Wallet::from_parts(handle.secret, spend);
+        let capacity_blind = Scalar::random(&mut rand::rngs::OsRng);
+        let facility: [u8; 32] =
+            Sha256::digest([b"OCLOB:LAB:NATIVE-FACILITY:v1".as_slice(), label.as_bytes()].concat())
+                .into();
+        let config = CorporateNativeConfig {
+            host: "oclob-defmi".into(),
+            port: 9443,
+            server_name: "oclob-defmi".into(),
+            venue_id: Sha256::digest(b"defmi:oclob:v1").into(),
+            defmi_id: Sha256::digest(b"oclob-integrated-defmi-v1").into(),
+            issuer_public: native_receipt_key.verifying_key().to_bytes(),
+            facility_id: facility,
+            asset_id: asset,
+            facility_values: [amount, 0, 0],
+            facility_blindings: [capacity_blind.to_bytes(), [0; 32], [0; 32]],
+            wallet_spend_secret: spend.to_bytes(),
+            identity_seed,
+        };
+        write_json(
+            &directory.join("native.json"),
+            &serde_json::to_value(config).map_err(err)?,
+            0o600,
+        )?;
+        let credential = issuer
+            .issue_wallet(seed, label.as_bytes(), &mut rand::rngs::OsRng)
+            .map_err(err)?;
+        let enrollment = credential
+            .present([31; 32], [32; 32], 253_402_300_798, &mut rand::rngs::OsRng)
+            .map_err(err)?;
+        let ledger = NoteLedger::new(key.clone(), 32);
+        let decoy = Wallet::new(&mut rand::rngs::OsRng);
+        let notes = [(&wallet.address, amount), (&decoy.address, 25)]
+            .into_iter()
+            .map(|(address, value)| {
+                let blind = Scalar::random(&mut rand::rngs::OsRng);
+                let note = ledger.build_note(
+                    address,
+                    value,
+                    key.commit_u64(value, &blind),
+                    &blind,
+                    &mut rand::rngs::OsRng,
+                );
+                NoteOutput::from_note(&note, asset, [0; 32])?.body()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        funding.push(json!({"asset": asset, "facility": facility,
+            "entity": enrollment.subject_line_id().map_err(err)?,
+            "capacity": key.commit_u64(amount, &capacity_blind).compress().to_bytes(), "notes": notes}));
+    }
+    write_json(&defmi_dir.join("funding.json"), &json!(funding), 0o600)?;
     let hosts = (0..MPC_PARTIES)
         .map(|party| format!("oclob-node-{party}:{MPC_PORT}"))
         .collect::<Vec<_>>()
@@ -176,9 +283,6 @@ fn provision(root: &Path) -> Result<(), String> {
             &node_dir.join("proof-state-passphrase.raw"),
             &proof_state_passphrase,
         )?;
-        let defmi_receipt_secret: [u8; 32] =
-            Sha256::digest(b"oclob-integrated-receipt-key-v1").into();
-        let defmi_receipt_key = SigningKey::from_bytes(&defmi_receipt_secret);
         let trusted_defmi_id: [u8; 32] = Sha256::digest(b"oclob-integrated-defmi-v1").into();
         let trusted_venue_id: [u8; 32] = Sha256::digest(b"defmi:oclob:v1").into();
         let config = json!({
@@ -207,7 +311,7 @@ fn provision(root: &Path) -> Result<(), String> {
             "proof_state_passphrase": "/node/proof-state-passphrase.raw",
             "trusted_defmi_id": hex::encode(trusted_defmi_id),
             "trusted_reservation_venue_id": hex::encode(trusted_venue_id),
-            "trusted_defmi_receipt_public": hex::encode(defmi_receipt_key.verifying_key().to_bytes())
+            "trusted_defmi_receipt_public": hex::encode(native_receipt_key.verifying_key().to_bytes())
         });
         write_json(&node_dir.join("config.json"), &config, 0o600)?;
         public_nodes.push(ClusterNodePublic {

@@ -22,8 +22,10 @@ thiserror.workspace = true
 qomm-zkpi.workspace = true
 qomm-mpc.workspace = true
 qomm-transport.workspace = true
+qomm-defmi.workspace = true
+qomm-proofs.workspace = true
+qomm-zk.workspace = true
+curve25519-dalek.workspace = true
+zkpi-defmi-sdk.workspace = true
 
 [dev-dependencies]
-curve25519-dalek.workspace = true
-qomm-zk.workspace = true
-zkpi-defmi-sdk.workspace = true

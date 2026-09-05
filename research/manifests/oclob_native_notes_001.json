@@ -1,0 +1,18 @@
+{
+  "manifest_id": "oclob-native-notes-rough-001",
+  "contract_id": "oclob-native-notes-v1",
+  "contract_path": "research/oclob_native_notes_contract.json",
+  "contract_sha256": "1e3b46f44422669be0049dd81cab57c768687d174a98a59eb63db98a5d848229",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Corporate CLI still used post-match raw-order capabilities; native monetary verification and execution-bound committee signing were not connected across the actual services.",
+  "causal_hypothesis": "Finalizing owner-proved notes before share distribution and preserving those exact permit bindings through MPC, zkPI and native fill certification will let live DeFMI settle without a post-match corporate signature or reconstructed raw order.",
+  "single_intended_change": "Connect the corporate pretrade reserve, private issuer ingress and existing native fill protocol across their separate containers.",
+  "baseline": "Published c4571f3 has native adapter tests but only the old canonical account path is connected end to end.",
+  "evaluation_population": {"corporate_containers": 2, "orders": 2, "mpc_containers": 7, "validators": 5, "operator_hosts": 1},
+  "primary_metric": "corporate_pretrade_to_native_note_settlement",
+  "point_prediction": {"corporate_pretrade_to_native_note_settlement": 1, "trade_quantity": 40, "trade_price": 100, "post_match_participant_signatures": 0},
+  "most_likely_prediction_error": "The corporate reserve's canonical commitment, its reblinded MPC representation and the native head/ciphertext normalization may differ, causing real proof or finality rejection.",
+  "rejection_rules": ["contract hash differs", "canonical reserve absent at node admission", "legacy capability or local replacement proof used", "wrong price or quantity", "native monetary proof/certificate rejection", "wrong hold lifecycle or duplicate application", "five validators disagree"],
+  "promotion_rules": ["This run can establish smoke_only evidence; it cannot establish independent operators, security acceptance, performance superiority or product readiness."],
+  "command": "make remote-native-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

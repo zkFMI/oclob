@@ -1,0 +1,18 @@
+{
+  "contract_id": "oclob-native-notes-v1",
+  "objective": "Corporate-owned pretrade anonymous note reservations followed by seven resident MPC nodes producing the exact zkPI and native application certificate accepted by five live Avalanche DeFMI validators.",
+  "hard_constraints": [
+    "Reserve is finalized before the corporate process distributes any order shares.",
+    "Coordinator has no corporate wallet seeds, facility openings or DeFMI issuer signing key.",
+    "Matching nodes receive redacted admissions, not canonical note references or raw orders.",
+    "Matched threshold handoff contains reservation authority only, not a raw order.",
+    "No post-match participant signature and no coordinator replacement proof.",
+    "Native DeFMI checks full monetary proofs, exact reserved heads, committee certificates and replay protection.",
+    "All execution is on Softbank or Omen; one-host containers are not WAN or independent operators."
+  ],
+  "truth_provider": "Actual corporate containers, seven malicious-shamir MP-SPDZ containers, and canonical RPC readbacks from five live Avalanche validators.",
+  "primary_metric": "corporate_pretrade_to_native_note_settlement",
+  "scenario": {"maker": "sell GTC 60 at 100", "taker": "buy IOC 40 at 101", "fill_quantity": 40, "fill_price": 100},
+  "verification": ["native receipt and unchanged root on exact retry", "maker active remaining hold and taker closed hold", "all five validator roots agree", "private book advances only after native finality"],
+  "non_claims": ["One functional scenario is smoke evidence, not performance or economic evidence.", "Lab provisioning generates keys centrally; production custody and independent issuance remain separate gates.", "Initial lab note issuance and guarantee grants are issuer-approved funding fixtures, not claims about central-bank integration.", "Encrypted opening plaintext correctness, fault-tolerant recovery and native claim materialization remain separate gates."]
+}

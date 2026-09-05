@@ -1,0 +1,59 @@
+# Merge with docker-compose.distributed.yml. Native DeFMI starts BEFORE orders.
+services:
+  native-bootstrap:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+    command: [oclob-native-bootstrap, /public/cluster.json, /identity/client.json, /handoff/native-committee.bin]
+  defmi:
+    image: ${OCLOB_AVALANCHE_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks:
+      oclob-private:
+        aliases: [oclob-defmi]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/defmi:/defmi:ro
+      - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:ro
+      - ${OCLOB_RUNTIME_DIR}/out:/out:rw
+      - ${OCLOB_SOURCE_DIR}/research:/research:ro
+    environment:
+      OCLOB_NATIVE_L1_SERVICE: "1"
+      OCLOB_RESEARCH_CONTRACT: /research/oclob_native_notes_contract.json
+      OCLOB_RESEARCH_MANIFEST: /research/manifests/oclob_native_notes_001.json
+      QOMM_AVALANCHE_ARTIFACT: /out/oclob_native_notes.json
+    healthcheck:
+      test: [CMD, test, -s, /out/native-ready.json]
+      interval: 2s
+      timeout: 1s
+      retries: 120
+      start_period: 120s
+  maker:
+    environment:
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+  taker:
+    environment:
+      OCLOB_NATIVE_RESERVATION_CONFIG: /identity/native.json
+  native-coordinator:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/coordinator:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/settlement:/settlement:ro
+      - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
+      - ${OCLOB_SOURCE_DIR}/research:/research:ro
+    command: [oclob-native-e2e]

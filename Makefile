@@ -42,21 +42,22 @@ remote-test:
 	  rsync -a --compress -e "ssh $(REMOTE_TEST_SSH_OPTIONS)" "$(REMOTE_TEST_HOST):$$remote_dir/oclob/$$relative" "$$relative"; \
 	done
 
+remote-distributed-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-distributed-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
 	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
 	esac
 	@set -eu; \
-	remote_dir="$$(ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-distributed.XXXXXX')"; \
+	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-distributed.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-distributed.*) ;; *) echo "refusing unsafe remote directory: $$remote_dir" >&2; exit 2 ;; esac; \
 	image="oclob-cluster:$$(git rev-parse --short=12 HEAD)-$$(date +%s)"; \
 	cleanup() { \
-	  ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set +e; if [ -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' ]; then OCLOB_RUNTIME_DIR='$$remote_dir/oclob/.runtime' OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$image' OCLOB_UID=10001 OCLOB_GID=\$$(id -g) docker compose -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' down --remove-orphans >/dev/null 2>&1; fi; rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; \
+	  ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set +e; if [ -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' ]; then OCLOB_RUNTIME_DIR='$$remote_dir/oclob/.runtime' OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$image' OCLOB_UID=10001 OCLOB_GID=\$$(id -g) docker compose -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' down --remove-orphans >/dev/null 2>&1; fi; rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
-	ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set -eu; \
+	ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set -eu; \
 	  gid=\$$(id -g); container_uid=10001; runtime='$$remote_dir/oclob/.runtime'; \
 	  install -d -m 0770 \"\$$runtime\" \"\$$runtime/state\" \"\$$runtime/handoff\"; \
 	  for party in 0 1 2 3 4 5 6; do install -d -m 0770 \"\$$runtime/state/node-\$$party\"; done; \
@@ -93,19 +94,20 @@ remote-distributed-e2e:
 	  \$$compose down --remove-orphans"; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_distributed_e2e.json" artifacts/oclob_distributed_e2e.json
 
+remote-avalanche-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-avalanche-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
 	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
 	esac
 	@set -eu; \
-	remote_dir="$$(ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-avalanche.XXXXXX')"; \
+	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-avalanche.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-avalanche.*) ;; *) echo "refusing unsafe remote directory: $$remote_dir" >&2; exit 2 ;; esac; \
 	image="oclob-avalanche:$$(git rev-parse --short=12 HEAD)-$$(date +%s)"; \
-	cleanup() { ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; }; \
+	cleanup() { ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; }; \
 	trap cleanup EXIT INT TERM; \
 	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
-	ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set -eu; \
+	ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set -eu; \
 	  install -d -m 0777 '$$remote_dir/out'; \
 	  built=0; \
 	  for build_attempt in 1 2 3; do \
@@ -118,22 +120,23 @@ remote-avalanche-e2e:
 	  cp '$$remote_dir/out/oclob_avalanche_acceptance.json' '$$remote_dir/oclob/artifacts/oclob_avalanche_acceptance.json'"; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_avalanche_acceptance.json" artifacts/oclob_avalanche_acceptance.json
 
+remote-integrated-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-integrated-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
 	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
 	esac
 	@set -eu; \
-	remote_dir="$$(ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-integrated.XXXXXX')"; \
+	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-integrated.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-integrated.*) ;; *) echo "refusing unsafe remote directory: $$remote_dir" >&2; exit 2 ;; esac; \
 	cluster_image="oclob-cluster:$$(git rev-parse --short=12 HEAD)-$$(date +%s)"; \
 	avalanche_image="oclob-integrated:$$(git rev-parse --short=12 HEAD)-$$(date +%s)"; \
 	cleanup() { \
-	  ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set +e; if [ -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' ]; then OCLOB_RUNTIME_DIR='$$remote_dir/oclob/.runtime' OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$cluster_image' OCLOB_AVALANCHE_IMAGE='$$avalanche_image' OCLOB_UID=10001 OCLOB_GID=\$$(id -g) docker compose -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' down --remove-orphans >/dev/null 2>&1; fi; rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; \
+	  ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set +e; if [ -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' ]; then OCLOB_RUNTIME_DIR='$$remote_dir/oclob/.runtime' OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$cluster_image' OCLOB_AVALANCHE_IMAGE='$$avalanche_image' OCLOB_UID=10001 OCLOB_GID=\$$(id -g) docker compose -f '$$remote_dir/oclob/deploy/docker-compose.distributed.yml' down --remove-orphans >/dev/null 2>&1; fi; rm -rf -- '$$remote_dir'" >/dev/null 2>&1 || true; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
-	ssh -o BatchMode=yes "$(REMOTE_TEST_HOST)" "set -eu; \
+	ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set -eu; \
 	  gid=\$$(id -g); container_uid=10001; runtime='$$remote_dir/oclob/.runtime'; \
 	  install -d -m 0770 \"\$$runtime\" \"\$$runtime/state\" \"\$$runtime/handoff\" \"\$$runtime/out\"; \
 	  for party in 0 1 2 3 4 5 6; do install -d -m 0770 \"\$$runtime/state/node-\$$party\"; done; \
@@ -176,6 +179,40 @@ remote-integrated-e2e:
 	  cp \"\$$runtime/out/oclob_distributed_avalanche_acceptance.json\" '$$remote_dir/oclob/artifacts/oclob_distributed_avalanche_acceptance.json'; \
 	  \$$compose down --remove-orphans"; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_distributed_avalanche_acceptance.json" artifacts/oclob_distributed_avalanche_acceptance.json
+
+.PHONY: remote-native-e2e
+remote-native-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
+remote-native-e2e:
+	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
+	@set -eu; \
+	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
+	case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
+	printf 'Native run directory: %s\n' "$$remote_dir"; \
+	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
+	ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set -eu; \
+	  runtime='$$remote_dir/runtime'; install -d -m 0770 \"\$$runtime\" \"\$$runtime/state\" \"\$$runtime/handoff\" \"\$$runtime/out\"; \
+	  for party in 0 1 2 3 4 5 6; do install -d -m 0770 \"\$$runtime/state/node-\$$party\"; done; \
+	  export OCLOB_RUNTIME_DIR=\"\$$runtime\" OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_UID=10001 OCLOB_GID=\$$(id -g); \
+	  export OCLOB_CLUSTER_IMAGE='oclob-native-cluster:local' OCLOB_AVALANCHE_IMAGE='oclob-native-avalanche:local'; \
+	  export COMPOSE_PROJECT_NAME='oclob-native-$$(date +%s)'; \
+	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
+	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT INT TERM; \
+	  docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-cluster -t \"\$$OCLOB_CLUSTER_IMAGE\" '$$remote_dir/oclob'; \
+	  docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-avalanche-acceptance -t \"\$$OCLOB_AVALANCHE_IMAGE\" '$$remote_dir/oclob'; \
+	  docker run --rm --user \"\$$OCLOB_UID:\$$OCLOB_GID\" --mount type=bind,src=\"\$$runtime\",dst=/runtime \"\$$OCLOB_CLUSTER_IMAGE\" oclob-lab-provision --out /runtime/cluster; \
+	  \$$compose config --quiet; \
+	  \$$compose up -d --wait --wait-timeout 180 node-0 node-1 node-2 node-3 node-4 node-5 node-6; \
+	  \$$compose run --rm native-bootstrap; \
+	  \$$compose up -d --wait --wait-timeout 600 defmi; \
+	  defmi_container=\$$(\$$compose ps -q defmi); [ -n \"\$$defmi_container\" ]; \
+	  \$$compose run --rm maker; \
+	  \$$compose run --rm taker; \
+	  \$$compose run --rm native-coordinator; \
+	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
+	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
+	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" artifacts/oclob_native_notes.json; \
+	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 
 release-gate:
 	$(MAKE) remote-test \

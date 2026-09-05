@@ -7,6 +7,7 @@ use oclob_edge::{
     settlement_capability_commitment, EdgeOrderBundle, NodeEncryptionKey,
     SealedSettlementCapability, MPC_PARTIES,
 };
+use oclob_node::corporate::{reserve_and_share, CorporateNativeConfig};
 use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor};
 use oclob_node::network::{client_tls_context, ClientIdentityConfig, ClusterPublicConfig};
 use qomm_zkpi::handles::Identity;
@@ -17,6 +18,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -43,6 +45,21 @@ fn run() -> Result<(), String> {
     cluster.validate().map_err(|error| error.to_string())?;
     let identity: ClientIdentityConfig = read_json(&identity_path)?;
     identity.validate().map_err(|error| error.to_string())?;
+    let native = std::env::var_os("OCLOB_NATIVE_RESERVATION_CONFIG")
+        .map(|path| {
+            let path = PathBuf::from(path);
+            if fs::symlink_metadata(&path)
+                .map_err(|error| error.to_string())?
+                .permissions()
+                .mode()
+                & 0o077
+                != 0
+            {
+                return Err("native funding configuration must be owner-only".to_string());
+            }
+            read_json::<CorporateNativeConfig>(&path)
+        })
+        .transpose()?;
     // Each order gets an unlinkable signing key. The long-lived corporate mTLS
     // identity authorizes transport admission, while DeKYX proves eligibility;
     // neither the coordinator nor the public ordering certificate receives the
@@ -77,10 +94,15 @@ fn run() -> Result<(), String> {
             &mut rand::rngs::OsRng,
         )
         .map_err(|error| error.to_string())?;
-    let settlement_handle = Identity::from_seed(match scenario {
-        Scenario::Maker => [11; 32],
-        Scenario::Taker => [22; 32],
-    })
+    let settlement_handle = Identity::from_seed(
+        native
+            .as_ref()
+            .map(|config| config.identity_seed)
+            .unwrap_or(match scenario {
+                Scenario::Maker => [11; 32],
+                Scenario::Taker => [22; 32],
+            }),
+    )
     .handle(VENUE_DOMAIN);
     let order = demo_order(
         &cluster.market_id,
@@ -89,6 +111,34 @@ fn run() -> Result<(), String> {
         wallet.subject_nullifier(),
     )?;
     let eligibility_commitment = hidden_eligibility_commitment(&order);
+    if let Some(native) = native {
+        let (bundle, authority) = reserve_and_share(
+            &native,
+            &identity,
+            &wallet,
+            &order,
+            &settlement_handle,
+            eligibility_commitment,
+            &signing_key,
+            &node_keys,
+            unix_seconds()?,
+        )?;
+        let distributor = EdgeDistributor::new(cluster, tls, Duration::from_secs(30))
+            .map_err(|error| error.to_string())?;
+        // Only the redacted manifest and encrypted authority go to handoff.
+        // All canonical ledger references remain threshold encrypted.
+        write_json_exclusive(&settlement_handoff_path, &authority)?;
+        let receipt = distributor
+            .submit(bundle)
+            .map_err(|error| error.to_string())?;
+        write_handoff(&handoff_path, &receipt)?;
+        println!(
+            "{}",
+            json!({"status": "pretrade_reserved_and_admitted", "nodes": MPC_PARTIES,
+            "order_commitment": receipt.commitment().hex(), "native_pretrade": true})
+        );
+        return Ok(());
+    }
     let settlement_capability_commitment =
         settlement_capability_commitment(&order, &signing_key.verifying_key().to_bytes());
     let bundle = EdgeOrderBundle::create_with_settlement_handle(

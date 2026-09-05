@@ -1,0 +1,43 @@
+{
+  "contract_sha256": "1e3b46f44422669be0049dd81cab57c768687d174a98a59eb63db98a5d848229",
+  "independent_operators": false,
+  "manifest_id": "oclob-native-notes-rough-001",
+  "native": {
+    "canonical_height": 14,
+    "canonical_transaction": "U984P19TNxXTA7qfjPZSidyiat9AK2PSnng374zv9rbscoaMd",
+    "contract_sha256": "1e3b46f44422669be0049dd81cab57c768687d174a98a59eb63db98a5d848229",
+    "elapsed_ms": 10277,
+    "exact_retry_did_not_apply_twice": true,
+    "maker_reserve_active": true,
+    "manifest_id": "oclob-native-notes-rough-001",
+    "mpc_nodes": 7,
+    "mpc_output_sha256": "c315ae838b0afce7de21f3b64ec18c5705ac0c81de5c72b2e7af0519222e8087",
+    "native_after_root": "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "native_note_settlement": true,
+    "post_match_participant_signatures": 0,
+    "raw_order_capability_opened": false,
+    "substituted_mpc_output_rejected_by_resident_node": true,
+    "taker_reserve_closed": true,
+    "trade_price": 100,
+    "trade_quantity": 40,
+    "verdict": "smoke_only",
+    "zkpi_sha256": "4040fd3ea5cdf4519527a7efc850bffc4dfc53bc1a82404a8f55d64b91248187"
+  },
+  "recovered_validator_roots": [
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352"
+  ],
+  "status": "smoke_only",
+  "validator_restart_recovered": true,
+  "validator_roots": [
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352",
+    "1de8216ed4fc13f0d46896748466c06b2c7a9e3dd200077f0fc8211fd83e0352"
+  ],
+  "wan_evidence": false
+}

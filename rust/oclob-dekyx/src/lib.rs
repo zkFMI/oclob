@@ -44,6 +44,16 @@ pub struct OclobEligibilityVerifier {
 }
 
 impl OclobEligibilityVerifier {
+    /// Reuse the exact issuer/status anchors at DeFMI's private reservation
+    /// boundary. The caller cannot replace these with request-supplied keys.
+    pub fn directory(&self) -> &IssuerDirectory {
+        &self.directory
+    }
+
+    pub fn requirement(&self) -> &EligibilityRequirement {
+        &self.requirement
+    }
+
     pub fn new(
         directory: IssuerDirectory,
         requirement: EligibilityRequirement,
@@ -174,6 +184,36 @@ impl DemoEligibilityIssuer {
 }
 
 impl DemoEligibilityWallet {
+    pub fn credential_digest(&self) -> Result<Digest32, EligibilityError> {
+        self.credential
+            .digest()
+            .map_err(|error| EligibilityError::DeKyx(error.to_string()))
+    }
+
+    pub fn scope_digest(&self) -> Digest32 {
+        self.scope_digest
+    }
+
+    /// The same DeKYX credential authorizes a signed pretrade mandate without
+    /// exposing its witness or treating an order presentation as reusable consent.
+    pub fn present_context<R: RngCore + CryptoRng>(
+        &self,
+        context: PresentationContext,
+        rng: &mut R,
+    ) -> Result<AnonymousPresentation, EligibilityError> {
+        if context.scope_digest != self.scope_digest {
+            return Err(EligibilityError::ContextMismatch);
+        }
+        AnonymousPresentation::create(
+            self.credential.clone(),
+            &self.witness,
+            context,
+            std::slice::from_ref(&self.qualification),
+            rng,
+        )
+        .map_err(|error| EligibilityError::DeKyx(error.to_string()))
+    }
+
     pub fn subject_nullifier(&self) -> Digest32 {
         self.witness.scope_nullifier(&self.scope_digest)
     }

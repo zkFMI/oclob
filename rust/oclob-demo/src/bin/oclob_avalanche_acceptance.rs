@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "native_acceptance/mod.rs"]
+mod native_acceptance;
+
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
@@ -100,6 +103,9 @@ fn run_main() -> RunResult<()> {
 }
 
 fn run(options: &Options) -> RunResult<Value> {
+    if std::env::var_os("OCLOB_NATIVE_L1_SERVICE").is_some() {
+        return native_acceptance::serve(options);
+    }
     match IntegratedPaths::from_environment()? {
         Some(paths) => run_integrated(options, &paths),
         None => run_compatibility(options),
