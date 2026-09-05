@@ -8,6 +8,7 @@ use oclob_mpc::{
     PERSISTENCE_WIRES, PRIVATE_BOOK_WIRES, SETTLEMENT_PROOF_WIRES_PER_FILL, SHAMIR_FIELD_ORDER,
 };
 use oclob_ordering::{CommitteePolicy, OrderCertificate};
+use oclob_settlement::native::{ExecutedReservationBinding, NativeFillExecution};
 use qomm_mpc::persistence::parse_header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,7 +27,7 @@ const PARTY_RECEIPT_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-PARTY-RECEIPT:v1";
 const ARTIFACT_DOMAIN: &[u8] = b"OCLOB:MP-SPDZ-ARTIFACT:v1";
 const PROOF_SLOT_METADATA_DOMAIN: &[u8] = b"OCLOB:PROOF-SLOT-METADATA:v1";
 const VERSION: u16 = 1;
-const PROOF_SLOT_METADATA_VERSION: u16 = 1;
+const PROOF_SLOT_METADATA_VERSION: u16 = 2;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 /// Owner-only binding between an extracted proof handoff and the exact public
@@ -44,6 +45,8 @@ pub(crate) struct ProofSlotMetadata {
     pub proof_wires: usize,
     pub signer: Digest32,
     pub signature: Vec<u8>,
+    #[serde(default)]
+    pub native_fill: Option<NativeFillExecution>,
 }
 
 impl ProofSlotMetadata {
@@ -59,6 +62,15 @@ impl ProofSlotMetadata {
         body.extend_from_slice(&self.persistence_sha256);
         body.extend_from_slice(&(self.proof_wires as u64).to_be_bytes());
         body.extend_from_slice(&self.signer);
+        if self.version >= 2 {
+            body.extend_from_slice(
+                &self
+                    .native_fill
+                    .as_ref()
+                    .map(NativeFillExecution::digest)
+                    .unwrap_or([0; 32]),
+            );
+        }
         body
     }
 
@@ -443,8 +455,13 @@ impl PartyExecutor {
         let output = std::str::from_utf8(&output).map_err(|_| PartyExecutionError::Output)?;
         let result = parse_result(output).map_err(|_| PartyExecutionError::Output)?;
         let public_output_sha256 = public_output_digest(&result);
-        let private_state_sha256 =
-            self.retain_private_state(&round, plan.round_id, public_output_sha256)?;
+        let private_state_sha256 = self.retain_private_state(
+            &round,
+            plan.round_id,
+            public_output_sha256,
+            prepared,
+            &result,
+        )?;
         let mut receipt = NodeExecutionReceipt {
             version: VERSION,
             party: self.party,
@@ -478,6 +495,8 @@ impl PartyExecutor {
         round: &Path,
         round_id: Digest32,
         public_output_sha256: Digest32,
+        prepared: &PreparedPartyInput,
+        result: &MpcBatchResult,
     ) -> Result<Digest32, PartyExecutionError> {
         let source = round
             .join("Persistence")
@@ -552,6 +571,22 @@ impl PartyExecutor {
                 proof_wires: SETTLEMENT_PROOF_WIRES_PER_FILL,
                 signer: self.signing_key.verifying_key().to_bytes(),
                 signature: Vec::new(),
+                native_fill: result
+                    .slots
+                    .get(slot)
+                    .filter(|fill| fill.matched)
+                    .and_then(|_| {
+                        Some(NativeFillExecution {
+                            maker: ExecutedReservationBinding::from_manifest(
+                                prepared.resting_manifests.get(slot)?,
+                            )?,
+                            taker: ExecutedReservationBinding::from_manifest(
+                                &prepared.arriving_manifest,
+                            )?,
+                            taker_may_close: result.arriving_remaining == 0
+                                && result.slots.iter().rposition(|fill| fill.matched) == Some(slot),
+                        })
+                    }),
             };
             metadata.sign(&self.signing_key);
             let encoded = serde_json::to_vec(&metadata).map_err(|_| PartyExecutionError::Output)?;

@@ -60,7 +60,7 @@ use std::collections::BTreeMap;
 
 const COMMITTEE_SIZE: usize = 7;
 const SHAMIR_THRESHOLD: usize = 2;
-const SIGNING_QUORUM: [usize; 3] = [1, 4, 7];
+pub(crate) const SIGNING_QUORUM: [usize; 3] = [1, 4, 7];
 const AMOUNT_BITS: usize = 32;
 const PRICE_BITS: usize = 32;
 const MAX_PUBLIC_WIRE_BYTES: usize = 1 << 20;

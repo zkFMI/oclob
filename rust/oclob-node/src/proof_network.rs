@@ -8,10 +8,14 @@ use crate::executor::ProofSlotMetadata;
 use crate::network::{certificate_fingerprint, ServerTlsConfig};
 use oclob_core::{Digest32, MAX_MATCH_SLOTS};
 use oclob_mpc::SETTLEMENT_PROOF_WIRES_PER_FILL;
+use oclob_settlement::collaborative::collaborative_job_id;
+use oclob_settlement::native::{
+    NativeFillAuthorizationRequest, NativeFillVerifier, NativeReservationTrust,
+};
 use qomm_transport::proof_party::{
     encode_bounded_response, read_bounded_request_line, ProofParty, ProofRequest, ProofResponse,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{BufReader, Read, Write};
@@ -20,7 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const COLLABORATIVE_FILL_DOMAIN: &[u8] = b"OCLOB:COLLABORATIVE-FILL:v1";
 const MAX_METADATA_BYTES: u64 = 16 * 1024;
@@ -31,10 +35,16 @@ struct ProofLoadGuard {
     root: PathBuf,
     party: u16,
     receipt_signer: Digest32,
+    native_trust: Option<NativeReservationTrust>,
 }
 
 impl ProofLoadGuard {
-    fn new(root: impl AsRef<Path>, party: u16, receipt_signer: Digest32) -> Result<Self, String> {
+    fn new(
+        root: impl AsRef<Path>,
+        party: u16,
+        receipt_signer: Digest32,
+        native_trust: Option<NativeReservationTrust>,
+    ) -> Result<Self, String> {
         let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
         if !root.is_dir() || receipt_signer == [0; 32] {
             return Err("proof persistence root is not a directory".into());
@@ -43,10 +53,11 @@ impl ProofLoadGuard {
             root,
             party,
             receipt_signer,
+            native_trust,
         })
     }
 
-    fn validate(&self, params: &Value) -> Result<(), String> {
+    fn validate(&self, params: &Value) -> Result<ProofSlotMetadata, String> {
         let relative = params
             .get("persistence")
             .and_then(Value::as_str)
@@ -108,7 +119,8 @@ impl ProofLoadGuard {
             .chain_update(public_output)
             .finalize()
             .into();
-        if metadata.version != 1
+        if !matches!(metadata.version, 1 | 2)
+            || (metadata.version == 1 && metadata.native_fill.is_some())
             || metadata.party != self.party
             || metadata.round_id != round_id
             || usize::from(metadata.slot) != slot
@@ -122,7 +134,49 @@ impl ProofLoadGuard {
         {
             return Err("proof request does not match the signed MPC execution output".into());
         }
-        Ok(())
+        Ok(metadata)
+    }
+
+    fn authorize_native_fill(
+        &self,
+        params: Value,
+        party: &mut ProofParty,
+    ) -> Result<Value, String> {
+        let trust = self
+            .native_trust
+            .as_ref()
+            .ok_or("native reservation trust is not configured")?;
+        let request: NativeFillAuthorizationRequest =
+            serde_json::from_value(params).map_err(|_| "native fill request is malformed")?;
+        let job = collaborative_job_id(
+            request.round_id,
+            request.slot,
+            request.fill.mpc_result_digest,
+        )?;
+        let metadata = self.validate(&json!({
+            "persistence": format!("{}/proof-slot-{}/Transactions-P{}.data", hex::encode(request.round_id), request.slot, self.party),
+            "job_id": hex::encode(job), "quote_digest": hex::encode(request.fill.mpc_result_digest),
+        }))?;
+        let execution = metadata
+            .native_fill
+            .as_ref()
+            .ok_or("node did not execute this pretrade-reserved matching pair")?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "system clock is before Unix epoch")?
+            .as_secs();
+        let message = party.authorize_application_statement(
+            job,
+            &NativeFillVerifier {
+                request: &request,
+                execution,
+                trust,
+                now,
+            },
+        )?;
+        Ok(
+            json!({"authorized": true, "kind": "oclob-native-note-fill", "message": hex::encode(message)}),
+        )
     }
 }
 
@@ -177,6 +231,7 @@ pub struct ProofRpcServerConfig {
     pub persistence_root: PathBuf,
     pub expected_party: u16,
     pub expected_receipt_signer: Digest32,
+    pub native_trust: Option<NativeReservationTrust>,
     pub max_connections: usize,
     pub timeout: Duration,
 }
@@ -190,6 +245,7 @@ impl ProofRpcServer {
             persistence_root,
             expected_party,
             expected_receipt_signer,
+            native_trust,
             max_connections,
             timeout,
         } = config;
@@ -214,6 +270,7 @@ impl ProofRpcServer {
             persistence_root,
             expected_party,
             expected_receipt_signer,
+            native_trust,
         )?);
         let handle = thread::Builder::new()
             .name("oclob-proof-listener".into())
@@ -309,7 +366,7 @@ fn serve_connection(
             .map_err(|_| "proof RPC request is not valid JSON".to_owned())?;
         let response = if request.method == "load" {
             match guard.validate(&request.params) {
-                Ok(()) => party
+                Ok(_) => party
                     .lock()
                     .map_err(|_| "proof-party state lock is poisoned".to_owned())?
                     .handle(request),
@@ -318,6 +375,24 @@ fn serve_connection(
                     ok: false,
                     result: None,
                     error: Some(error),
+                },
+            }
+        } else if request.method == "authorize_oclob_native_fill" {
+            let mut party = party
+                .lock()
+                .map_err(|_| "proof-party state lock is poisoned".to_owned())?;
+            match guard.authorize_native_fill(request.params, &mut party) {
+                Ok(result) => ProofResponse {
+                    id: request.id,
+                    ok: true,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => ProofResponse {
+                    id: request.id,
+                    ok: false,
+                    result: None,
+                    error: Some(error.chars().take(512).collect()),
                 },
             }
         } else {
@@ -384,6 +459,7 @@ mod tests {
             proof_wires: SETTLEMENT_PROOF_WIRES_PER_FILL,
             signer: [0; 32],
             signature: Vec::new(),
+            native_fill: None,
         };
         metadata.sign(&signing);
         fs::write(
@@ -406,7 +482,8 @@ mod tests {
             ),
             "quote_digest": hex::encode(public_output),
         });
-        let guard = ProofLoadGuard::new(&root, party, signing.verifying_key().to_bytes()).unwrap();
+        let guard =
+            ProofLoadGuard::new(&root, party, signing.verifying_key().to_bytes(), None).unwrap();
         guard.validate(&params).unwrap();
 
         let mut wrong_output = params.clone();
@@ -414,6 +491,61 @@ mod tests {
         assert!(guard.validate(&wrong_output).is_err());
         fs::write(&proof_path, b"tampered shares").unwrap();
         assert!(guard.validate(&params).is_err());
+
+        fs::write(&proof_path, proof).unwrap();
+        let binding = oclob_settlement::native::ExecutedReservationBinding {
+            order_commitment: [11; 32],
+            source_order_commitment: [12; 32],
+            admission_digest: [13; 32],
+            participant_handle: [14; 32],
+            amount_commitment: [15; 32],
+            side_commitment: [16; 32],
+            valid_until: 2_000,
+        };
+        metadata.version = 2;
+        metadata.native_fill = Some(oclob_settlement::native::NativeFillExecution {
+            maker: binding.clone(),
+            taker: oclob_settlement::native::ExecutedReservationBinding {
+                order_commitment: [17; 32],
+                ..binding
+            },
+            taker_may_close: false,
+        });
+        metadata.sign(&signing);
+        fs::write(
+            slot_dir.join("metadata.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(guard.validate(&params).unwrap().native_fill.is_some());
+        metadata.native_fill.as_mut().unwrap().taker_may_close = true;
+        fs::write(
+            slot_dir.join("metadata.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            guard.validate(&params).is_err(),
+            "unsigned closure policy change accepted"
+        );
+        metadata.sign(&signing);
+        fs::write(
+            slot_dir.join("metadata.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(guard.validate(&params).is_ok());
+        metadata.version = 1;
+        metadata.sign(&signing);
+        fs::write(
+            slot_dir.join("metadata.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            guard.validate(&params).is_err(),
+            "v1 sidecar must not authorize a native fill"
+        );
         drop(cleanup);
     }
 }

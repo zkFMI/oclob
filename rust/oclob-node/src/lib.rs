@@ -162,6 +162,8 @@ pub struct PreparedPartyInput {
     round_commitment: Digest32,
     private_parent_digest: Digest32,
     contents: Vec<u8>,
+    arriving_manifest: EdgeOrderManifest,
+    resting_manifests: Vec<EdgeOrderManifest>,
 }
 
 impl PreparedPartyInput {
@@ -634,6 +636,23 @@ impl NodeShareStore {
             round_commitment,
             private_parent_digest,
             contents,
+            arriving_manifest: self
+                .state
+                .records
+                .get(&arriving.hex())
+                .ok_or_else(|| NodeError::Round("arriving manifest disappeared".into()))?
+                .manifest
+                .clone(),
+            resting_manifests: resting
+                .iter()
+                .map(|commitment| {
+                    self.state
+                        .records
+                        .get(&commitment.hex())
+                        .map(|record| record.manifest.clone())
+                        .ok_or_else(|| NodeError::Round("resting manifest disappeared".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 

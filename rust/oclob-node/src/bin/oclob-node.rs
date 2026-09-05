@@ -168,6 +168,12 @@ fn run() -> Result<(), String> {
             persistence_root: config.mpc_work_root.join("private-state"),
             expected_party: config.party,
             expected_receipt_signer: public_node.receipt_verifying_key,
+            native_trust: Some(oclob_settlement::native::NativeReservationTrust {
+                venue_id: trusted_venue_id,
+                defmi_id: trusted_defmi_id,
+                issuer: ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
+                    .map_err(|_| "trusted reservation issuer key is malformed")?,
+            }),
             max_connections: config.max_connections,
             timeout: Duration::from_secs(config.rpc_timeout_seconds),
         },
