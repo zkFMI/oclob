@@ -280,6 +280,69 @@ impl ApplicationStatementVerifier for NativeFillVerifier<'_> {
 }
 
 impl NativeFillVerifier<'_> {
+    /// Retrospective binding check after canonical acceptance. This does not
+    /// authorize signing and therefore also works for non-signing observers.
+    /// `now` is a cryptographic validity anchor, not a claimed block time;
+    /// the configured canonical VM has already enforced execution-time bounds.
+    pub fn verify_finalized_execution(&self) -> Result<(), String> {
+        let fill = &self.request.fill;
+        let instruction =
+            qomm_zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
+        let job = collaborative_job_id(
+            self.request.round_id,
+            self.request.slot,
+            fill.mpc_result_digest,
+        )?;
+        let maker = self.execution.maker.participant_handle;
+        let taker = self.execution.taker.participant_handle;
+        let payer = instruction.payer_handle.compress().to_bytes();
+        let payee = instruction.payee_handle.compress().to_bytes();
+        if fill.operation_id != native_fill_operation(job)
+            || instruction.nonce != job
+            || fill.scope.application_binding
+                != oclob_manifest_v1().digest().map_err(|e| e.to_string())?
+            || fill.scope.venue_id != self.trust.venue_id
+            || fill.scope.defmi_id != self.trust.defmi_id
+            || fill.scope.amount_bits != 32
+            || self.execution.maker.order_commitment == self.execution.taker.order_commitment
+            || !((payer == maker && payee == taker) || (payer == taker && payee == maker))
+        {
+            return Err("finalized fill differs from the locally executed pair or job".into());
+        }
+        let (maker_head, taker_head, maker_asset, taker_asset) = if payer == maker {
+            (
+                &fill.cash,
+                &fill.securities,
+                fill.cash_asset,
+                fill.securities_asset,
+            )
+        } else {
+            (
+                &fill.securities,
+                &fill.cash,
+                fill.securities_asset,
+                fill.cash_asset,
+            )
+        };
+        if maker_head.close || (taker_head.close && !self.execution.taker_may_close) {
+            return Err("finalized fill closes an active order reservation".into());
+        }
+        self.verify_authority(
+            &self.request.maker,
+            &self.execution.maker,
+            maker_head,
+            maker_asset,
+            instruction.deadline,
+        )?;
+        self.verify_authority(
+            &self.request.taker,
+            &self.execution.taker,
+            taker_head,
+            taker_asset,
+            instruction.deadline,
+        )
+    }
+
     fn verify_authority(
         &self,
         authority: &NativeReservationAuthority,

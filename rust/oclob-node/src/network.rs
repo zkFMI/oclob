@@ -480,7 +480,7 @@ pub fn certificate_fingerprint(der: &[u8]) -> Digest32 {
 }
 
 struct NodeRuntime {
-    store: Mutex<NodeShareStore>,
+    store: Arc<Mutex<NodeShareStore>>,
     receipt_signing_key: SigningKey,
     ordering_policy: CommitteePolicy,
     ordering_keys: BTreeMap<u16, VerifyingKey>,
@@ -492,6 +492,7 @@ pub struct NodeRpcServer {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    native_finality: crate::native_finality::NativeFinalityHandle,
 }
 
 impl NodeRpcServer {
@@ -550,8 +551,10 @@ impl NodeRpcServer {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let active = Arc::new(AtomicUsize::new(0));
+        let store = Arc::new(Mutex::new(store));
+        let native_finality = crate::native_finality::NativeFinalityHandle::new(Arc::clone(&store));
         let runtime = Arc::new(NodeRuntime {
-            store: Mutex::new(store),
+            store,
             receipt_signing_key,
             ordering_policy,
             ordering_keys,
@@ -599,11 +602,16 @@ impl NodeRpcServer {
             address,
             stop,
             handle: Some(handle),
+            native_finality,
         })
     }
 
     pub const fn address(&self) -> SocketAddr {
         self.address
+    }
+
+    pub fn native_finality_handle(&self) -> crate::native_finality::NativeFinalityHandle {
+        self.native_finality.clone()
     }
 }
 

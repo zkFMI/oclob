@@ -36,6 +36,10 @@ struct ProofLoadGuard {
     party: u16,
     receipt_signer: Digest32,
     native_trust: Option<NativeReservationTrust>,
+    native_finality: Option<(
+        oclob_settlement::pretrade::PrivateAdmissionClient,
+        crate::native_finality::NativeFinalityHandle,
+    )>,
 }
 
 impl ProofLoadGuard {
@@ -54,6 +58,7 @@ impl ProofLoadGuard {
             party,
             receipt_signer,
             native_trust,
+            native_finality: None,
         })
     }
 
@@ -178,6 +183,31 @@ impl ProofLoadGuard {
             json!({"authorized": true, "kind": "oclob-native-note-fill", "message": hex::encode(message)}),
         )
     }
+
+    fn confirm_native_finality(&self, params: Value) -> Result<Value, String> {
+        let (client, handle) = self
+            .native_finality
+            .as_ref()
+            .ok_or("node has no configured native canonical reader")?;
+        let trust = self
+            .native_trust
+            .as_ref()
+            .ok_or("native reservation trust is not configured")?;
+        let request: crate::native_finality::NativeFinalityRequest =
+            serde_json::from_value(params).map_err(|_| "native finality request is malformed")?;
+        let authorization = &request.authorization;
+        let job = collaborative_job_id(
+            authorization.round_id,
+            authorization.slot,
+            authorization.fill.mpc_result_digest,
+        )?;
+        let metadata = self.validate(&json!({
+            "persistence": format!("{}/proof-slot-{}/Transactions-P{}.data", hex::encode(authorization.round_id), authorization.slot, self.party),
+            "job_id": hex::encode(job), "quote_digest": hex::encode(authorization.fill.mpc_result_digest),
+        }))?;
+        let verified = crate::native_finality::observe(client, trust, &request, &metadata)?;
+        serde_json::to_value(handle.record(verified)?).map_err(|e| e.to_string())
+    }
 }
 
 fn decode_param_digest(params: &Value, field: &str) -> Result<Digest32, String> {
@@ -232,6 +262,10 @@ pub struct ProofRpcServerConfig {
     pub expected_party: u16,
     pub expected_receipt_signer: Digest32,
     pub native_trust: Option<NativeReservationTrust>,
+    pub native_finality: Option<(
+        oclob_settlement::pretrade::PrivateAdmissionClient,
+        crate::native_finality::NativeFinalityHandle,
+    )>,
     pub max_connections: usize,
     pub timeout: Duration,
 }
@@ -246,6 +280,7 @@ impl ProofRpcServer {
             expected_party,
             expected_receipt_signer,
             native_trust,
+            native_finality,
             max_connections,
             timeout,
         } = config;
@@ -266,12 +301,14 @@ impl ProofRpcServer {
         let thread_stop = Arc::clone(&stop);
         let active = Arc::new(AtomicUsize::new(0));
         let party = Arc::new(Mutex::new(party));
-        let guard = Arc::new(ProofLoadGuard::new(
+        let mut guard = ProofLoadGuard::new(
             persistence_root,
             expected_party,
             expected_receipt_signer,
             native_trust,
-        )?);
+        )?;
+        guard.native_finality = native_finality;
+        let guard = Arc::new(guard);
         let handle = thread::Builder::new()
             .name("oclob-proof-listener".into())
             .spawn(move || {
@@ -375,6 +412,23 @@ fn serve_connection(
                     ok: false,
                     result: None,
                     error: Some(error),
+                },
+            }
+        } else if request.method == "confirm_oclob_native_finality" {
+            // Read-only network observation takes no proof-party lock and
+            // never authorizes, consumes, or regenerates a FROST nonce.
+            match guard.confirm_native_finality(request.params) {
+                Ok(result) => ProofResponse {
+                    id: request.id,
+                    ok: true,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => ProofResponse {
+                    id: request.id,
+                    ok: false,
+                    result: None,
+                    error: Some(error.chars().take(512).collect()),
                 },
             }
         } else if request.method == "authorize_oclob_native_fill" {

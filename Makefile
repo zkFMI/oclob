@@ -8,6 +8,7 @@ REMOTE_TEST_COMMAND ?= cargo test --workspace --release -j $(REMOTE_TEST_CARGO_J
 REMOTE_TEST_EXPORTS ?=
 NATIVE_RECOVERY ?= 0
 NATIVE_WALLET ?= 0
+NATIVE_FINALITY ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -184,6 +185,9 @@ remote-integrated-e2e:
 
 .PHONY: remote-native-e2e
 .PHONY: remote-native-e2e remote-native-recovery-e2e remote-native-wallet-e2e
+.PHONY: remote-native-finality-e2e
+remote-native-finality-e2e:
+	$(MAKE) remote-native-e2e NATIVE_WALLET=1 NATIVE_FINALITY=1
 remote-native-wallet-e2e:
 	$(MAKE) remote-native-e2e NATIVE_WALLET=1
 remote-native-recovery-e2e:
@@ -194,6 +198,7 @@ remote-native-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
 	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WALLET):$(NATIVE_RECOVERY)' in 0:0|0:1|1:0) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
+	@case '$(NATIVE_FINALITY):$(NATIVE_WALLET)' in 0:0|0:1|1:1) ;; *) echo 'native finality acceptance requires wallet reuse' >&2; exit 2 ;; esac
 	@set -eu; \
 	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
 	case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
@@ -208,6 +213,7 @@ remote-native-e2e:
 	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_recovery_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_recovery_001.json; fi; \
 	  export OCLOB_NATIVE_WALLET='$(NATIVE_WALLET)'; \
 	  if [ '$(NATIVE_WALLET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_wallet_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_wallet_003.json; fi; \
+	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_001.json; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -243,7 +249,7 @@ remote-native-e2e:
 	  fi; \
 	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
 	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
-	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; \
+	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; if [ '$(NATIVE_FINALITY)' = 1 ]; then artifact=artifacts/oclob_native_finality.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

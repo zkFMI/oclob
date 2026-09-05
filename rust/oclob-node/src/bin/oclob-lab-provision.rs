@@ -174,11 +174,7 @@ fn provision(root: &Path) -> Result<(), String> {
         &defmi_dir.join("tls.pem"),
         &defmi_tls_cert.to_pem().map_err(err)?,
     )?;
-    write_json(
-        &defmi_dir.join("principals.json"),
-        &serde_json::to_value(&principals).map_err(err)?,
-        0o600,
-    )?;
+    let mut defmi_principals = principals.clone();
     let key = Pedersen::new(b"qomm:defmi:v1");
     let (_, issuer) = oclob_dekyx::deterministic_demo_environment(MARKET).map_err(err)?;
     let mut funding = Vec::new();
@@ -271,6 +267,13 @@ fn provision(root: &Path) -> Result<(), String> {
         let (tls_key, tls_cert) = issue_leaf(&ca_key, &ca_cert, &name, &[&name], true)?;
         let share_key = NodeDecryptionKey::generate().map_err(|error| error.to_string())?;
         let receipt_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        // Each MPC node observes finality with its own certificate. Operator
+        // has read access only; these identities cannot submit chain writes.
+        defmi_principals.push(Principal {
+            certificate_sha256: certificate_fingerprint(&tls_cert.to_der().map_err(err)?),
+            role: PeerRole::Operator,
+            application_key: receipt_key.verifying_key().to_bytes(),
+        });
         write_private(
             &node_dir.join("tls-key.pem"),
             &tls_key.private_key_to_pem_pkcs8().map_err(err)?,
@@ -316,6 +319,7 @@ fn provision(root: &Path) -> Result<(), String> {
             "proof_state_file": "/state/mpc/private-state/proof-state.qps",
             "proof_state_passphrase": "/node/proof-state-passphrase.raw",
             "trusted_defmi_id": hex::encode(trusted_defmi_id),
+            "native_finality_endpoint": { "host": "oclob-defmi", "port": 9443, "server_name": "oclob-defmi" },
             "trusted_reservation_venue_id": hex::encode(trusted_venue_id),
             "trusted_defmi_receipt_public": hex::encode(native_receipt_key.verifying_key().to_bytes())
         });
@@ -331,6 +335,11 @@ fn provision(root: &Path) -> Result<(), String> {
             receipt_verifying_key: receipt_key.verifying_key().to_bytes(),
         });
     }
+    write_json(
+        &defmi_dir.join("principals.json"),
+        &serde_json::to_value(&defmi_principals).map_err(err)?,
+        0o600,
+    )?;
     let public = ClusterPublicConfig {
         version: 3,
         market_id: MARKET.into(),

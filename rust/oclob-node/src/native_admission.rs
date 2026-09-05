@@ -357,9 +357,22 @@ mod tests {
         assert!(authority
             .dispatch(PeerRole::Coordinator, chain("defmivm.issueNote"))
             .is_err());
+        for method in [
+            "defmivm.issueApplicationNoteFill",
+            "defmivm.issueApplicationNoteRelease",
+            "defmivm.issueNoteClaimRedemption",
+            "defmivm.issueApplicationReserveScope",
+        ] {
+            assert!(authority
+                .dispatch(PeerRole::Operator, chain(method))
+                .is_err());
+        }
+        assert!(authority
+            .dispatch(PeerRole::Operator, chain("defmivm.txStatus"))
+            .is_ok());
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["defmivm.applicationNoteReservation"]
+            vec!["defmivm.applicationNoteReservation", "defmivm.txStatus"]
         );
     }
 }

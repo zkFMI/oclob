@@ -49,6 +49,16 @@ struct Config {
     trusted_defmi_id: String,
     trusted_reservation_venue_id: String,
     trusted_defmi_receipt_public: String,
+    #[serde(default)]
+    native_finality_endpoint: Option<NativeFinalityEndpoint>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeFinalityEndpoint {
+    host: String,
+    port: u16,
+    server_name: String,
 }
 
 fn main() {
@@ -160,6 +170,24 @@ fn run() -> Result<(), String> {
         trusted_defmi_receipt_public: Some(trusted_defmi_receipt_public),
         allow_health_signing: false,
     })?;
+    let native_finality = config
+        .native_finality_endpoint
+        .map(|endpoint| {
+            let tls = qomm_transport::node_service::client_ssl_context(
+                &config.tls_certificate,
+                &config.tls_private_key,
+                &config.tls_ca,
+            )?;
+            let client = oclob_settlement::pretrade::PrivateAdmissionClient::new(
+                &endpoint.host,
+                endpoint.port,
+                &endpoint.server_name,
+                tls,
+                Duration::from_secs(15),
+            )?;
+            Ok::<_, String>((client, server.native_finality_handle()))
+        })
+        .transpose()?;
     let proof_server = ProofRpcServer::start(
         ProofRpcServerConfig {
             address: config.proof_listen,
@@ -174,6 +202,7 @@ fn run() -> Result<(), String> {
                 issuer: ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
                     .map_err(|_| "trusted reservation issuer key is malformed")?,
             }),
+            native_finality,
             max_connections: config.max_connections,
             timeout: Duration::from_secs(config.rpc_timeout_seconds),
         },

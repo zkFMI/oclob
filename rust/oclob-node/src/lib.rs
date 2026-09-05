@@ -10,6 +10,7 @@
 pub mod corporate;
 pub mod corporate_journal;
 pub mod native_admission;
+pub mod native_finality;
 pub mod native_wallet;
 
 pub mod edge_client;
@@ -36,7 +37,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 7;
+const STORE_VERSION: u16 = 8;
+const LEGACY_STORE_VERSION_V7: u16 = 7;
 const LEGACY_STORE_VERSION_V6: u16 = 6;
 const LEGACY_STORE_VERSION_V5: u16 = 5;
 const LEGACY_STORE_VERSION_V4: u16 = 4;
@@ -81,6 +83,8 @@ struct StoreState {
     private_heads: BTreeMap<String, PrivateBookStateRef>,
     #[serde(default)]
     finalized_private_rounds: BTreeMap<String, PrivateRoundFinalization>,
+    #[serde(default)]
+    native_finalities: BTreeMap<String, BTreeMap<u16, native_finality::NativeFinalityRecord>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,6 +99,7 @@ struct PrivateBookStateRef {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PrivateRoundFinalization {
+    native_finality_required: bool,
     public_output_sha256: Digest32,
     transition_digest: Digest32,
     canonical_receipt_digest: Digest32,
@@ -732,6 +737,43 @@ impl NodeShareStore {
         Ok(())
     }
 
+    pub(crate) fn record_native_finality(
+        &mut self,
+        record: native_finality::NativeFinalityRecord,
+    ) -> Result<(), NodeError> {
+        let receipt = self
+            .completed_round(record.round_id)
+            .ok_or_else(|| NodeError::PrivateState("MPC round is not complete".into()))?;
+        record.validate(&receipt).map_err(NodeError::PrivateState)?;
+        let key = hex::encode(record.round_id);
+        if let Some(existing) = self
+            .state
+            .native_finalities
+            .get(&key)
+            .and_then(|r| r.get(&record.slot))
+        {
+            return if existing == &record {
+                Ok(())
+            } else {
+                Err(NodeError::Conflict)
+            };
+        }
+        if self.state.finalized_private_rounds.contains_key(&key) {
+            return Err(NodeError::Conflict);
+        }
+        let previous = self.state.clone();
+        self.state
+            .native_finalities
+            .entry(key)
+            .or_default()
+            .insert(record.slot, record);
+        if let Err(error) = self.bump_generation().and_then(|_| self.persist()) {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Advance every order's node-local secret-share head only after the exact
     /// MPC output has canonical DeFMI finality. No order field or share is
     /// supplied by the settlement coordinator.
@@ -755,7 +797,42 @@ impl NodeShareStore {
             ));
         }
         let key = hex::encode(plan.round_id);
+        let native_finality_required =
+            if let Some(existing) = self.state.finalized_private_rounds.get(&key) {
+                // An exact finalized retry must not depend on retaining expired
+                // encrypted inputs; the durable canonical records remain required.
+                existing.native_finality_required
+            } else {
+                plan.resting
+                    .iter()
+                    .chain(std::iter::once(&plan.arriving))
+                    .map(|commitment| {
+                        self.state.records.get(&commitment.hex()).ok_or_else(|| {
+                            NodeError::PrivateState("round order is absent from this node".into())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .iter()
+                    .any(|record| record.manifest.uses_pretrade_reservation())
+            };
+        if native_finality_required {
+            let records = self.state.native_finalities.get(&key).ok_or_else(|| {
+                NodeError::PrivateState(
+                    "native round has no node-observed canonical finality".into(),
+                )
+            })?;
+            native_finality::require_complete(&receipt, records, finality)?;
+            if records.values().any(|record| {
+                plan.resting.get(usize::from(record.slot)).map(|c| c.0) != Some(record.maker_order)
+                    || plan.arriving.0 != record.taker_order
+            }) {
+                return Err(NodeError::PrivateState(
+                    "canonical fill belongs to another ordered pair".into(),
+                ));
+            }
+        }
         let candidate = PrivateRoundFinalization {
+            native_finality_required,
             public_output_sha256: finality.public_output_sha256,
             transition_digest: finality.transition_digest,
             canonical_receipt_digest: finality.canonical_receipt_digest,
@@ -1147,6 +1224,7 @@ fn empty_state(party: u16) -> StoreState {
         reservation_claims: BTreeMap::new(),
         private_heads: BTreeMap::new(),
         finalized_private_rounds: BTreeMap::new(),
+        native_finalities: BTreeMap::new(),
     }
 }
 
@@ -1189,6 +1267,29 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                 .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
             false,
         ),
+        LEGACY_STORE_VERSION_V7 => {
+            if [
+                "private_heads",
+                "finalized_private_rounds",
+                "native_finalities",
+            ]
+            .iter()
+            .any(|field| {
+                value.get(field).is_some_and(|entries| {
+                    entries
+                        .as_object()
+                        .is_none_or(|entries| !entries.is_empty())
+                })
+            }) {
+                return Err(NodeError::State("v7 finalized private state requires explicit canonical reconciliation before upgrade".into()));
+            }
+            let mut legacy: StoreState = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy v7 node store payload is invalid".into()))?;
+            // V7 trusted coordinator assertions. Never bless old heads merely
+            // by upgrading their schema or fabricating an observation record.
+            legacy.version = STORE_VERSION;
+            (legacy, true)
+        }
         LEGACY_STORE_VERSION_V6 | LEGACY_STORE_VERSION_V5 => {
             let mut legacy: StoreState = serde_json::from_value(value)
                 .map_err(|_| NodeError::State("legacy v5 node store payload is invalid".into()))?;
@@ -1257,6 +1358,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                     reservation_claims: BTreeMap::new(),
                     private_heads: BTreeMap::new(),
                     finalized_private_rounds: BTreeMap::new(),
+                    native_finalities: BTreeMap::new(),
                 },
                 true,
             )
@@ -1355,6 +1457,21 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
             ));
         }
     }
+    for (round, records) in &state.native_finalities {
+        let receipt = state
+            .completed_rounds
+            .get(round)
+            .ok_or_else(|| NodeError::State("native finality has no completed round".into()))?;
+        if records.is_empty() {
+            return Err(NodeError::State("empty native observation set".into()));
+        }
+        for (slot, record) in records {
+            if *slot != record.slot {
+                return Err(NodeError::State("native slot index changed".into()));
+            }
+            record.validate(receipt).map_err(NodeError::State)?;
+        }
+    }
     for (round, finalization) in &state.finalized_private_rounds {
         let receipt = state.completed_rounds.get(round);
         if finalization.public_output_sha256 == [0; 32]
@@ -1368,6 +1485,23 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
             return Err(NodeError::State(
                 "node share store contains a misbound private-state finalization".into(),
             ));
+        }
+        if finalization.native_finality_required {
+            let receipt = receipt.expect("checked completed receipt");
+            let records = state.native_finalities.get(round).ok_or_else(|| {
+                NodeError::State("native finalized round lacks independent observations".into())
+            })?;
+            native_finality::require_complete(
+                receipt,
+                records,
+                &PrivateStateFinality {
+                    round_id: receipt.round_id,
+                    public_output_sha256: finalization.public_output_sha256,
+                    transition_digest: finalization.transition_digest,
+                    canonical_receipt_digest: finalization.canonical_receipt_digest,
+                    canonical_height: finalization.canonical_height,
+                },
+            )?;
         }
     }
     Ok((state, migrated))

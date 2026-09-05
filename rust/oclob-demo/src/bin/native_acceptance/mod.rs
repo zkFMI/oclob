@@ -34,7 +34,12 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
         || !matches!(
             manifest["contract_id"].as_str(),
-            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1" | "oclob-native-wallet-v1")
+            Some(
+                "oclob-native-notes-v1"
+                    | "oclob-native-recovery-v1"
+                    | "oclob-native-wallet-v1"
+                    | "oclob-native-finality-v1"
+            )
         )
     {
         return Err(failure(
@@ -178,6 +183,15 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     let result: Value = read_json_limited(Path::new("/handoff/native-result.json"))?;
     if result["native_note_settlement"] != true {
         return Err(failure("native settlement result is incomplete"));
+    }
+    if manifest["contract_id"] == "oclob-native-finality-v1"
+        && (result["node_observed_canonical_finality"] != 7
+            || result["unsettled_and_unobserved_finality_rejected_by_all_nodes"] != true
+            || result["substituted_canonical_fill_rejected_by_all_nodes"] != true
+            || result["canonical_observation_retry_unchanged"] != true
+            || result["recovered_note_funded_next_order"] != true)
+    {
+        return Err(failure("native finality/reuse acceptance is incomplete"));
     }
     let expected: [u8; 32] = hex::decode(
         result["native_after_root"]

@@ -7,8 +7,12 @@ use oclob_node::edge_client::{
     finalize_agreed_private_state, EdgeAdmissionReceipt,
 };
 use oclob_node::executor::RoundPlan;
+use oclob_node::native_finality::{
+    aggregate_finality, NativeFinalityRecord, NativeFinalityRequest,
+};
 use oclob_node::network::{
-    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
+    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig, NetworkError,
+    NodeRpcClient,
 };
 use oclob_node::PrivateStateFinality;
 use oclob_settlement::collaborative::{
@@ -55,7 +59,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if manifest["contract_sha256"] != contract_hash
         || !matches!(
             manifest["contract_id"].as_str(),
-            Some("oclob-native-notes-v1" | "oclob-native-recovery-v1" | "oclob-native-wallet-v1")
+            Some(
+                "oclob-native-notes-v1"
+                    | "oclob-native-recovery-v1"
+                    | "oclob-native-wallet-v1"
+                    | "oclob-native-finality-v1"
+            )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
     {
@@ -289,6 +298,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("resident node signed a substituted MPC result".into());
     }
     let signed = certify_native_fill(&mut parties, &request)?;
+    let claimed = PrivateStateFinality {
+        round_id: plan.round_id,
+        public_output_sha256: output,
+        transition_digest: signed.signing_message()?,
+        canonical_receipt_digest: signed.signing_message()?,
+        canonical_height: 1,
+    };
+    let reject_unobserved =
+        |finality: &PrivateStateFinality| -> Result<(), Box<dyn std::error::Error>> {
+            for (node, receipt) in cluster.nodes.iter().zip(&execution.receipts) {
+                let reader =
+                    NodeRpcClient::new(node.endpoint(), tls.clone(), Duration::from_secs(30))?;
+                let writer = NodeRpcClient::new(
+                    node.endpoint(),
+                    settlement_tls.clone(),
+                    Duration::from_secs(30),
+                )?;
+                let before = reader.status()?;
+                match writer.finalize_private_state(plan.clone(), finality.clone(), receipt) {
+                    Err(NetworkError::Remote(code)) if code == "state_unavailable" => {}
+                    _ => {
+                        return Err(
+                            "node did not explicitly reject an unobserved canonical finality"
+                                .into(),
+                        )
+                    }
+                }
+                if reader.status()? != before {
+                    return Err("rejected finality changed node state".into());
+                }
+            }
+            Ok(())
+        };
+    reject_unobserved(&claimed)?;
     let accepted = bridge.settle_application(&signed)?;
     let after_maker = client.application_reservation_snapshot(maker_head.binding.hold_id)?;
     let after_taker = client.application_reservation_snapshot(taker_head.binding.hold_id)?;
@@ -312,7 +355,71 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         canonical_receipt_digest: accepted.statement,
         canonical_height: accepted.height,
     };
-    finalize_agreed_private_state(
+    // Even a true coordinator assertion is insufficient until this particular
+    // node has independently read and bound the configured canonical record.
+    reject_unobserved(&finality)?;
+    let confirmation = NativeFinalityRequest {
+        authorization: NativeFillAuthorizationRequest {
+            fill: signed.clone(),
+            ..request.clone()
+        },
+        transaction_id: accepted.tx_id.clone(),
+    };
+    let mut confirmed = Vec::new();
+    for (index, party) in parties.iter_mut().enumerate() {
+        let reader = NodeRpcClient::new(
+            cluster.nodes[index].endpoint(),
+            tls.clone(),
+            Duration::from_secs(30),
+        )?;
+        let before = reader.status()?;
+        let mut substituted = confirmation.clone();
+        substituted.authorization.fill.before_root[0] ^= 1;
+        match party.call(
+            "confirm_oclob_native_finality",
+            serde_json::to_value(&substituted)?,
+        ) {
+            Err(error)
+                if error.contains("configured DeFMI has not confirmed this exact native fill") => {}
+            _ => return Err("node did not reject substituted canonical transaction bytes".into()),
+        }
+        if reader.status()? != before {
+            return Err("rejected canonical observation changed node state".into());
+        }
+        let record: NativeFinalityRecord = serde_json::from_value(party.call(
+            "confirm_oclob_native_finality",
+            serde_json::to_value(&confirmation)?,
+        )?)?;
+        if record.transaction_id != accepted.tx_id
+            || record.before_root != accepted.before_root
+            || record.after_root != accepted.after_root
+            || record.block_id != accepted.block_id
+            || aggregate_finality(&BTreeMap::from([(record.slot, record.clone())]))? != finality
+        {
+            return Err("nodes observed inconsistent native canonical evidence".into());
+        }
+        let once = reader.status()?;
+        let again: NativeFinalityRecord = serde_json::from_value(party.call(
+            "confirm_oclob_native_finality",
+            serde_json::to_value(&confirmation)?,
+        )?)?;
+        if again != record || reader.status()? != once {
+            return Err("repeated canonical observation changed node state".into());
+        }
+        confirmed.push(record);
+    }
+    let mut wrong_height = finality.clone();
+    wrong_height.canonical_height += 1;
+    reject_unobserved(&wrong_height)?;
+    let finalized = finalize_agreed_private_state(
+        &cluster,
+        &settlement_tls,
+        &plan,
+        &execution,
+        finality.clone(),
+        Duration::from_secs(30),
+    )?;
+    let repeated = finalize_agreed_private_state(
         &cluster,
         &settlement_tls,
         &plan,
@@ -320,12 +427,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         finality,
         Duration::from_secs(30),
     )?;
+    if repeated != finalized {
+        return Err("exact private-head finalization retry changed signed state receipts".into());
+    }
     let result = json!({"native_note_settlement": true, "contract_sha256": contract_hash,
         "manifest_id": manifest["manifest_id"], "verdict": "smoke_only", "mpc_nodes": 7,
         "post_match_participant_signatures": 0, "raw_order_capability_opened": false,
         "canonical_transaction": accepted.tx_id, "canonical_height": accepted.height,
         "exact_retry_did_not_apply_twice": true, "native_after_root": hex::encode(accepted.after_root),
         "substituted_mpc_output_rejected_by_resident_node": true,
+        "node_observed_canonical_finality": confirmed.len(),
+        "unsettled_and_unobserved_finality_rejected_by_all_nodes": true,
+        "substituted_canonical_fill_rejected_by_all_nodes": true,
+        "canonical_observation_retry_unchanged": true,
+        "observed_finality_height_substitution_rejected_by_all_nodes": true,
+        "private_finalization_retry_unchanged": true,
         "trade_price": execution.result.slots[0].trade_price,
         "trade_quantity": execution.result.slots[0].trade_quantity,
         "pretrade_facility_sequences": reserve_sequences,

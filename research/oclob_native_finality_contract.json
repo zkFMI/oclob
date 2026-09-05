@@ -1,0 +1,23 @@
+{
+  "contract_id": "oclob-native-finality-v1",
+  "objective": "Each of seven MPC nodes independently checks its exact executed fill against the configured canonical DeFMI service before advancing its secret book; the existing native corporate wallet/reuse journey still completes.",
+  "base_contract": "oclob-native-wallet-v1",
+  "base_contract_sha256": "94b1b10c1bc2c9db3336a48cb43556cf428e6ee827af693727346380c0ac4273",
+  "primary_metric": "node_observed_canonical_finality",
+  "hard_constraints": [
+    "All seven actual nodes reject an unsubmitted finality assertion and the later true but not independently observed assertion; status remains unchanged after each rejection.",
+    "All seven actual nodes reject a fill with altered parent bytes against the real accepted transaction; status remains unchanged.",
+    "Each node uses its own read-only mTLS identity and operator-configured endpoint. No caller-selected endpoint or claimed receipt is accepted.",
+    "Signed local round/slot/output/pair, full committee-signed fill, canonical statement/parent/after-root/transaction/block/height are checked before an atomic persistent observation. Exact observation repeat changes no state or signing nonce.",
+    "All matched slots must have observations before the round advances. The whole lab scenario has one fill; multi-fill coverage is separately deterministic unit evidence, not an executed multi-fill claim.",
+    "Original 40-at-100 trade, three claim redemptions/repeats, facility witnesses 2/2, exact refund-funded next order and seven admissions with facility 2/3 must still pass, then five equal roots and an actual validator restart.",
+    "No local compilation, tests or Docker. Use Softbank or Omen. No participant signature after matching to authorize the original settlement."
+  ],
+  "truth_provider": "Node-local signed MPC sidecars and persistent observations, read-only mTLS canonical txStatus RPC, exact signed zkPI and five live Avalanche validators, corporate proof-serial checks.",
+  "non_claims": [
+    "The configured DeFMI read service remains a trust boundary, not a validator light-client proof or independent operator deployment.",
+    "Retrospective proof verification uses the signed deadline as an in-range anchor, not a claimed block timestamp; the actual VM enforces execution-time validity.",
+    "No second match, native multi-fill/cancellation/expiry acceptance, WAN/performance/economic confirmation, product/UI acceptance, HSM/HA or cryptographic audit.",
+    "V7 finalized private heads are rejected until explicit canonical reconciliation; no old store is erased or silently trusted."
+  ]
+}
