@@ -1,0 +1,19 @@
+{
+  "contract_id": "oclob-native-expiry-v1",
+  "objective": "While all seven real MPC containers are stopped, automatically reconcile one expired never-submitted reservation and one committed native reservation whose response was lost; survive an actual process stop after canonical expiry before local result storage, recover corporate funds and consume the exact unlocked note in a fresh seven-node-admitted order.",
+  "primary_metric": "reconciled_expired_requests",
+  "truth_provider": "Actual encrypted corporate journals/outbox, five live native Avalanche validators, actual expired signed mandates and canonical credit-facility sequences, canonical release receipt and node-signed acknowledgement of the refund-funded new order.",
+  "hard_constraints": [
+    "Never classify any failed/malformed/stale network read as absent. Non-application requires unchanged original canonical facility sequence and all three commitments after the signed reserve deadline, under the pinned VM's atomic monotonic non-resettable facility semantics.",
+    "All seven real MPC containers must be stopped during both expiry cases. Expiry reconciliation must precede MPC health calls.",
+    "Save the exact unsigned time-based release before sending; actual VM expiry and head checks remain mandatory. Participant ingress permits only time-based expiry, not discretionary cancellation, fill or governance.",
+    "Actual process exits75 after canonical reserve before admission journal and after canonical expiry before resolution journal. A normal resident worker resumes, canonical release applies once, funds and queue states recover and restart unchanged.",
+    "Two finalized expired requests: one AbortedBeforeReserve with no synthetic financial receipt and one Released with a real canonical receipt. Exact returned5-unit note must fund another real reservation and receive signed acknowledgements from all7 nodes.",
+    "Five validator roots and actual validator restart agree; all builds/tests/Docker stay onSoftbank/Omen. No raw order, wallet secret, proof witness or encrypted corporate queue files published."
+  ],
+  "non_claims": [
+    "One-host deterministic functional smoke only, not production/independent operators/WAN or performance/economic confirmation.",
+    "The fresh refund-funded order is admitted, not matched/settled in this scenario. Existing native match/lifecycle regression must be separately rerun after updating the DeFMI pin.",
+    "Concurrent stale-parent refresh, changed-facility absence reconciliation, externally initiated release receipt discovery and partially delivered encrypted-order cleanup remain fail-closed unresolved paths; no inference of their completion."
+  ]
+}

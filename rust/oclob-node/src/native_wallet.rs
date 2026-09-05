@@ -23,6 +23,7 @@ pub struct RecoveredCorporateWallet {
     pub notes: Vec<NoteOutput>,
     pub own_asset_refund: Option<[u8; 32]>,
     pub unfilled_releases_recovered: usize,
+    pub unfilled_release_notes: Vec<NoteOutput>,
     pub after_root: [u8; 32],
 }
 
@@ -136,7 +137,11 @@ pub fn recover_wallet(
     // The convenience funding ID must name an actually spendable positive note.
     let own_asset_refund = refund_ids.into_iter().find(|id| available.contains_key(id));
     let mut unfilled_releases_recovered = 0;
+    let mut unfilled_release_notes = Vec::new();
     for prepared in journal.reservations()? {
+        if journal.was_never_reserved(&prepared)? {
+            continue;
+        }
         let head = client.application_reservation_snapshot(prepared.request.mandate.hold_id)?;
         if head.state_root != root {
             return Err("released-note recovery crossed canonical generations".into());
@@ -157,6 +162,7 @@ pub fn recover_wallet(
             }
             if available.contains_key(&unlocked.note_id) {
                 unfilled_releases_recovered += 1;
+                unfilled_release_notes.push(unlocked);
             }
         }
     }
@@ -169,6 +175,7 @@ pub fn recover_wallet(
         notes,
         own_asset_refund,
         unfilled_releases_recovered,
+        unfilled_release_notes,
         after_root: client.state_root()?,
     })
 }
@@ -234,6 +241,9 @@ pub fn recover_facility<C: AvalancheClient>(
     let root = client.state_root()?;
     for prepared in reserves {
         prepared.validate(config)?;
+        if journal.was_never_reserved(&prepared)? {
+            continue;
+        }
         let head = client.application_reservation_snapshot(prepared.request.mandate.hold_id)?;
         if head.state_root != root || head.binding != prepared.request.mandate.binding()? {
             return Err("native reserve recovery crossed or changed canonical context".into());

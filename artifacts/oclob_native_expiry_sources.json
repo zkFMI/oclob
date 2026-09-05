@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-09-05T15:58:27Z",
+  "recorded_at": "2026-09-05T15:55:08Z",
   "verdict": "smoke_only",
-  "contract_id": "oclob-native-worker-v1",
-  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
-  "manifest": "research/manifests/oclob_native_worker_004.json",
-  "manifest_sha256": "2830ece3ee2abe774d26cc070b764d068214218b244e335e52f5b98e9828689e",
-  "artifact": "artifacts/oclob_native_worker.json",
-  "artifact_sha256": "30c81f44f628973cba4cbf08d71950564080f644f760de29a184ed5c46979902",
+  "contract_id": "oclob-native-expiry-v2",
+  "contract_sha256": "c2e175e7dea340ea7242c3d4c928c69d38de319398a651efb9330fee050c1cf1",
+  "manifest": "research/manifests/oclob_native_expiry_002.json",
+  "manifest_sha256": "88cf7ed40003e44f10a03ee7afe2f7f2ec0fe26e4060d53a7a8a4bfa32173d0b",
+  "artifact": "artifacts/oclob_native_expiry.json",
+  "artifact_sha256": "eafd578c934ee9c4b462127fc0e8021deefef0e65d7c76489da58cfb0e1f8063",
   "dependency_commit": "5dd1f68d43da3f81e640c6eae25749d358e6680f",
   "remote_host": "softbank-l40s",
-  "remote_snapshot": "/tmp/oclob-native.myFYX4/oclob",
+  "remote_snapshot": "/tmp/oclob-native.F9nDao/oclob",
   "code_gate": {
     "command": "make remote-test REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_REUSE_IMAGE=1; cargo fmt --all -- --check; cargo test --locked --workspace --release -j16; cargo clippy --locked --workspace --all-targets --release -j16 -- -D warnings",
     "exit_code": 0,
@@ -19,27 +19,22 @@
     "log_sha256": "c01e11e9d4bbc9dad71158b5a7a13fb95bfd347235b8cce5ca934146c2ab1027"
   },
   "whole_run": {
-    "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
+    "command": "make remote-native-expiry-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'",
     "exit_code": 0,
-    "log": "/tmp/oclob-native-worker-expiry-regression-004-20260906.log",
-    "log_sha256": "ac2397f676c8501ae4cfcff0096df29d9e0fd63c985ed1806c836a949ce6f241",
-    "completed_dispatches": 1,
-    "actual_node_outage": true,
-    "reserve_response_loss_recovered": true,
-    "node_response_loss_recovered": true,
-    "worker_lock_exclusion": true,
-    "corporate_worker_restart_unchanged": true,
-    "completed_native_rounds": 2,
-    "total_native_fills": 3,
-    "completed_native_releases": 2,
-    "recipient_claims_redeemed": 9,
-    "final_facility_sequences": [
-      8,
-      5
-    ],
-    "node_restart_state_preserved": true,
+    "log": "/tmp/oclob-native-expiry-fenced-002-20260906.log",
+    "log_sha256": "f6f2a5be36feb0728c23fe8bfc127cd637775e3561b8b12d771fa338f49dad38",
+    "reconciled_expired_requests": 2,
+    "never_reserved": 1,
+    "completed_native_releases": 1,
+    "mpc_nodes_down_during_each_reconciliation": 7,
+    "actual_post_reserve_and_post_release_process_stops": true,
+    "exact_released_note_reused": true,
+    "next_order_admitted_nodes": 7,
+    "next_order_matched": false,
+    "final_maker_facility_sequence": 3,
+    "worker_restart_unchanged": true,
     "validator_restart_recovered": true,
-    "final_canonical_root": "c50faea9a1f39ed7e37f128abb3026ac6adbcfc99b23a762e6be88ece222784d"
+    "final_canonical_root": "a85b5e0a007c97bb54da6ba69282d74ebbd2b708b6baf35580fb1fc98cd36da9"
   },
   "exact_source_files": {
     "Cargo.lock": "572188815297c945451640fc735b970d80dbe089bac35f9ffdaaa3fd4dd87eb4",
@@ -110,10 +105,10 @@
     "rust/oclob-settlement/tests/pretrade.rs": "9c30b4420f66eab69950b43d6b9145a87f3b40ad68ff48f11167b611897dd5ae"
   },
   "limitations": [
-    "One host functional smoke only. No independent operator/WAN, performance/economic confirmation or product promotion.",
-    "MpcAdmitted means seven-node receipt, not settlement. Nine claims are cumulative materializations including subsequently spent notes.",
-    "R12 queued expiry uses separate fenced002 evidence. Deferred funding preparation, ambiguous absent-head sends, concurrent facility writers, partially delivered order cleanup, market-side unattended coordination and authenticated native API/UI remain unresolved.",
-    "Corporate encrypted journals, raw orders and secret runtime directories stay private on the remote host. Configured canonical-read service remains trusted. No local build/test/Docker or UI changes.",
-    "Previous worker003/4b07c2b evidence remains in commit9647cc53e4ea78ff8f12f36468a1a6aca789c05a; this is an explicit new full regression receipt against the pinned5dd1f68 dependency and atomic send/expiry fence."
+    "One-host functional smoke only. No production, independent operator/WAN, performance/economic confirmation or independent cryptographic audit.",
+    "Never-reserved classification requires an atomic first-write-wins corporate unsent fence as well as unchanged canonical original capacity. Local expiry or an absent RPC response alone is insufficient. Legacy/ambiguous sends are not inferred absent.",
+    "Partial MPC delivery cleanup, concurrent facility/stale-parent refresh, externally initiated release receipt discovery and sends with no canonical head remain fail-closed pending paths.",
+    "New refund-funded order admitted, not matched here. Full native worker/matching/lifecycle regression uses separate manifest004 and artifact.",
+    "Corporate encrypted journals, raw orders, wallet secrets and proof witnesses stay private. Configured canonical-read service and corporate storage remain trusted. No local build/test/Docker or UI changes."
   ]
 }

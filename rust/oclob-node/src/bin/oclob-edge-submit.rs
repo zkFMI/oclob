@@ -339,6 +339,7 @@ fn run_native(
             eligibility_commitment: hidden_eligibility_commitment(&order),
             accepted_at: unix_seconds()?,
             expires_at: order.expires_at(),
+            reserve_send_tracking: true,
         };
         journal.save_intent(&request_id, &intent)?
     };
@@ -400,6 +401,7 @@ fn run_native(
             recovery_test_stop(match point {
             oclob_node::corporate_submission::SubmissionCheckpoint::ReserveObservedBeforeJournal => "after-reserve-before-journal",
             oclob_node::corporate_submission::SubmissionCheckpoint::NodesAcknowledgedBeforeJournal => "after-node-admission-before-journal",
+            oclob_node::corporate_submission::SubmissionCheckpoint::ExpiryObservedBeforeJournal => "after-expiry-before-journal",
         })
         },
     )?;
@@ -438,6 +440,35 @@ fn recover_native_wallet(
     // Fixed financial assertions and next-order construction are explicitly
     // confined to the opt-in lab acceptance, not the reusable recovery API.
     let acceptance = std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE").unwrap_or_default();
+    if acceptance == "queued-expiry" {
+        if !matches!(scenario, Scenario::Maker)
+            || recovered.facility.sequence != 2
+            || recovered.facility.values != config.facility_values
+            || recovered.unfilled_release_notes.len() != 1
+            || !recovered.notes.is_empty()
+        {
+            return Err("queued expiry did not restore the original corporate funds".into());
+        }
+        let instruction = NativeOrderInstruction {
+            side: Side::Sell,
+            limit_price: 102,
+            quantity: 5,
+            time_in_force: TimeInForce::GoodTilCancelled,
+            valid_for_seconds: 600,
+            source_note: Some(hex::encode(recovered.unfilled_release_notes[0].note_id)),
+        };
+        publish_unchanged(
+            Path::new("/corporate/queued-expiry-reuse.json"),
+            &instruction,
+        )?;
+        publish_unchanged(
+            &handoff.with_extension("wallet.json"),
+            &json!({"wallet_recovered":true, "facility_sequence":2,
+                "expected_private_balances_verified":true, "unfilled_releases_recovered":1,
+                "after_root":hex::encode(recovered.after_root)}),
+        )?;
+        return Ok(());
+    }
     if !matches!(
         acceptance.as_str(),
         "1" | "cycle-first" | "cycle-final" | "cancel-final" | "expiry-final"

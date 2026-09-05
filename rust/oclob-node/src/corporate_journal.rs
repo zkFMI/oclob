@@ -24,6 +24,17 @@ pub struct StoredCorporateIntent {
     pub eligibility_commitment: [u8; 32],
     pub accepted_at: u64,
     pub expires_at: u64,
+    /// Old journals cannot prove that no untracked request was sent.
+    #[serde(default)]
+    pub reserve_send_tracking: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReserveSendDecision {
+    intent_digest: [u8; 32],
+    reserve_digest: [u8; 32],
+    may_send: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -140,9 +151,19 @@ impl NativeCorporateJournal {
     pub fn require_turn(&self, id: &str) -> Result<(), String> {
         let target = record_id("intent", id)?;
         let records = self.outbox.summaries()?;
+        if records
+            .iter()
+            .any(|r| r.request_id == format!("resolved:{id}"))
+        {
+            return Err("corporate request already ended after expiry".into());
+        }
         let completed: BTreeSet<_> = records
             .iter()
-            .filter_map(|r| r.request_id.strip_prefix("receipt:"))
+            .filter_map(|r| {
+                r.request_id
+                    .strip_prefix("receipt:")
+                    .or_else(|| r.request_id.strip_prefix("resolved:"))
+            })
             .collect();
         if completed.contains(id) {
             return Ok(());
@@ -161,6 +182,201 @@ impl NativeCorporateJournal {
 
     pub fn stage<T: DeserializeOwned>(&self, id: &str, stage: &str) -> Result<Option<T>, String> {
         self.get(&record_id(stage, id)?)
+    }
+
+    fn choose_reserve_send(
+        &self,
+        id: &str,
+        reserve_digest: [u8; 32],
+        may_send: bool,
+        at: u64,
+    ) -> Result<bool, String> {
+        let intent = self
+            .intent(id)?
+            .ok_or("reserve send has no durable intent")?;
+        let decision: ReserveSendDecision = self.put_first(
+            &record_id("reserve-send", id)?,
+            &ReserveSendDecision {
+                intent_digest: intent.input_digest,
+                reserve_digest,
+                may_send,
+            },
+            at,
+            u64::MAX,
+        )?;
+        if decision.intent_digest != intent.input_digest
+            || decision.reserve_digest != reserve_digest
+        {
+            return Err("reserve send decision differs from the original request".into());
+        }
+        Ok(decision.may_send)
+    }
+
+    pub(crate) fn mark_reserve_send_started(
+        &self,
+        id: &str,
+        digest: [u8; 32],
+        at: u64,
+    ) -> Result<(), String> {
+        if !self.choose_reserve_send(id, digest, true, at)? {
+            return Err("unsent expiry fence prevents this reserve send".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn seal_never_dispatched(
+        &self,
+        id: &str,
+        digest: [u8; 32],
+        at: u64,
+    ) -> Result<bool, String> {
+        let intent = self.intent(id)?.ok_or("unsent expiry has no intent")?;
+        if !intent.reserve_send_tracking || at <= intent.expires_at {
+            return Ok(false);
+        }
+        for stage in ["admission", "delivery", "receipt"] {
+            if self.stage::<serde_json::Value>(id, stage)?.is_some() {
+                return Ok(false);
+            }
+        }
+        // One first-write-wins record decides between sending and ending
+        // unsent, including when a separate corporate CLI races the worker.
+        Ok(!self.choose_reserve_send(id, digest, false, at)?)
+    }
+
+    pub(crate) fn expiry_release(
+        &self,
+        id: &str,
+    ) -> Result<Option<qomm_defmi::application_settlement::ApplicationNoteRelease>, String> {
+        self.get(&record_id("expiry", id)?)
+    }
+
+    pub(crate) fn save_expiry_release(
+        &self,
+        id: &str,
+        release: &qomm_defmi::application_settlement::ApplicationNoteRelease,
+        prepared: &PreparedCorporateReserve,
+        now: u64,
+    ) -> Result<qomm_defmi::application_settlement::ApplicationNoteRelease, String> {
+        crate::corporate_expiry::validate_expiry_release(release, prepared, now)?;
+        let saved = self.put_first(&record_id("expiry", id)?, release, now, u64::MAX)?;
+        crate::corporate_expiry::validate_expiry_release(&saved, prepared, now)?;
+        Ok(saved)
+    }
+
+    fn verify_unsent_resolution(
+        &self,
+        value: &crate::corporate_expiry::NativeExpiryResolution,
+    ) -> Result<(), String> {
+        if matches!(
+            value.outcome,
+            crate::corporate_expiry::ExpiryOutcome::NeverReserved { .. }
+        ) {
+            let intent = self
+                .intent(&value.request_id)?
+                .ok_or("absence record lost its intent")?;
+            let decision: ReserveSendDecision = self
+                .get(&record_id("reserve-send", &value.request_id)?)?
+                .ok_or("absence record has no atomic unsent fence")?;
+            if !intent.reserve_send_tracking
+                || decision.may_send
+                || decision.intent_digest != intent.input_digest
+                || decision.reserve_digest != value.reserve_digest
+            {
+                return Err("absence record cannot exclude an ambiguous or legacy send".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn expiry_resolution(
+        &self,
+        prepared: &PreparedCorporateReserve,
+    ) -> Result<Option<crate::corporate_expiry::NativeExpiryResolution>, String> {
+        let value: Option<crate::corporate_expiry::NativeExpiryResolution> = self.get(&format!(
+            "expiry-result:{}",
+            hex::encode(prepared.request.mandate.hold_id)
+        ))?;
+        if let Some(value) = &value {
+            value.validate(prepared)?;
+            self.verify_unsent_resolution(value)?;
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn was_never_reserved(
+        &self,
+        prepared: &PreparedCorporateReserve,
+    ) -> Result<bool, String> {
+        Ok(self.expiry_resolution(prepared)?.is_some_and(|value| {
+            matches!(
+                value.outcome,
+                crate::corporate_expiry::ExpiryOutcome::NeverReserved { .. }
+            )
+        }))
+    }
+
+    pub(crate) fn save_expiry_resolution(
+        &self,
+        value: &crate::corporate_expiry::NativeExpiryResolution,
+        prepared: &PreparedCorporateReserve,
+    ) -> Result<crate::corporate_expiry::NativeExpiryResolution, String> {
+        value.validate(prepared)?;
+        self.verify_unsent_resolution(value)?;
+        let stored: crate::corporate_expiry::NativeExpiryResolution = self.put_first(
+            &format!(
+                "expiry-result:{}",
+                hex::encode(prepared.request.mandate.hold_id)
+            ),
+            value,
+            value.checked_at,
+            u64::MAX,
+        )?;
+        stored.validate(prepared)?;
+        if stored != *value {
+            return Err("expiry result conflicts with earlier canonical evidence".into());
+        }
+        Ok(stored)
+    }
+
+    pub(crate) fn complete_expiry(
+        &self,
+        value: &crate::corporate_expiry::NativeExpiryResolution,
+        prepared: &PreparedCorporateReserve,
+    ) -> Result<(), String> {
+        value.validate(prepared)?;
+        if self.expiry_resolution(prepared)?.as_ref() != Some(value) {
+            return Err("expiry completion has no durable canonical evidence".into());
+        }
+        let stored: crate::corporate_expiry::NativeExpiryResolution = self.put_first(
+            &record_id("resolved", &value.request_id)?,
+            value,
+            value.checked_at,
+            u64::MAX,
+        )?;
+        if stored != *value {
+            return Err("expiry completion conflicts with saved outcome".into());
+        }
+        Ok(())
+    }
+
+    pub fn completed_expiry(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::corporate_expiry::NativeExpiryResolution>, String> {
+        let value: Option<crate::corporate_expiry::NativeExpiryResolution> =
+            self.get(&record_id("resolved", id)?)?;
+        if let Some(value) = &value {
+            let prepared: PreparedCorporateReserve = self
+                .stage(id, "reserve")?
+                .ok_or("completed expiry lost its reserve")?;
+            value.validate(&prepared)?;
+            if value.request_id != id || self.expiry_resolution(&prepared)?.as_ref() != Some(value)
+            {
+                return Err("completed expiry differs from saved canonical evidence".into());
+            }
+        }
+        Ok(value)
     }
 
     pub fn cancellation(
@@ -409,7 +625,15 @@ fn record_id(stage: &str, id: &str) -> Result<String, String> {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
         || !matches!(
             stage,
-            "intent" | "reserve" | "admission" | "delivery" | "receipt" | "cancel"
+            "intent"
+                | "reserve"
+                | "admission"
+                | "delivery"
+                | "receipt"
+                | "cancel"
+                | "expiry"
+                | "resolved"
+                | "reserve-send"
         )
     {
         return Err("corporate request ID or stage is invalid".into());
@@ -520,7 +744,88 @@ mod tests {
             eligibility_commitment: [15; 32],
             accepted_at: 100,
             expires_at: 1000,
+            reserve_send_tracking: true,
         }
+    }
+
+    #[test]
+    fn unsent_expiry_fence_prevents_future_send_and_survives_restart() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        journal.save_intent("fenced-001", &intent(21)).unwrap();
+        assert!(!journal
+            .seal_never_dispatched("fenced-001", [31; 32], 1000)
+            .unwrap());
+        assert!(journal
+            .seal_never_dispatched("fenced-001", [31; 32], 1001)
+            .unwrap());
+        assert!(journal
+            .mark_reserve_send_started("fenced-001", [31; 32], 1002)
+            .is_err());
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        assert!(reopened
+            .seal_never_dispatched("fenced-001", [31; 32], 1003)
+            .unwrap());
+        assert!(reopened
+            .mark_reserve_send_started("fenced-001", [32; 32], 1004)
+            .is_err());
+    }
+
+    #[test]
+    fn legacy_or_ambiguous_send_cannot_be_reclassified_as_never_reserved() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let mut legacy = intent(21);
+        legacy.reserve_send_tracking = false;
+        journal.save_intent("legacy-001", &legacy).unwrap();
+        assert!(!journal
+            .seal_never_dispatched("legacy-001", [31; 32], 1001)
+            .unwrap());
+        journal.save_intent("ambiguous-001", &intent(22)).unwrap();
+        journal
+            .mark_reserve_send_started("ambiguous-001", [32; 32], 999)
+            .unwrap();
+        assert!(!journal
+            .seal_never_dispatched("ambiguous-001", [32; 32], 1001)
+            .unwrap());
+    }
+
+    #[test]
+    fn concurrent_send_and_unsent_expiry_have_only_one_durable_winner() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        journal.save_intent("racing-001", &intent(21)).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let (sent, fenced) = std::thread::scope(|scope| {
+            let sending = scope.spawn(|| {
+                barrier.wait();
+                journal
+                    .mark_reserve_send_started("racing-001", [31; 32], 999)
+                    .is_ok()
+            });
+            let ending = scope.spawn(|| {
+                barrier.wait();
+                journal
+                    .seal_never_dispatched("racing-001", [31; 32], 1001)
+                    .unwrap()
+            });
+            (sending.join().unwrap(), ending.join().unwrap())
+        });
+        assert_ne!(sent, fenced);
+        assert_eq!(
+            journal
+                .seal_never_dispatched("racing-001", [31; 32], 1002)
+                .unwrap(),
+            fenced
+        );
     }
 
     #[test]

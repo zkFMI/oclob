@@ -50,6 +50,13 @@ pub enum DispatchProgress {
     ManualReviewRequired {
         request_id: String,
     },
+    ReservationReleased {
+        request_id: String,
+        transaction_id: String,
+    },
+    NeverReserved {
+        request_id: String,
+    },
 }
 
 pub struct NativeCorporateDispatch {
@@ -184,6 +191,90 @@ impl NativeCorporateDispatch {
         })
     }
 
+    fn verified_request(
+        &self,
+        journal: &NativeCorporateJournal,
+        request_id: &str,
+        request_digest: [u8; 32],
+    ) -> Result<DispatchRequest, String> {
+        let bytes = self.outbox.signed_request(request_id, request_digest)?;
+        let request: DispatchRequest =
+            serde_json::from_slice(&bytes).map_err(|_| "malformed encrypted dispatch payload")?;
+        let intent = journal
+            .intent(request_id)?
+            .ok_or("dispatch intent disappeared")?;
+        let prepared: PreparedCorporateReserve = journal
+            .stage(request_id, "reserve")?
+            .ok_or("dispatch reserve disappeared")?;
+        if request.version != 1
+            || request.journal_context != journal.context_digest()
+            || request.request_id != request_id
+            || request.intent_digest != intent.input_digest
+            || request.reserve_digest != reserve_digest(&prepared)?
+        {
+            return Err("dispatch payload does not match its corporate journal".into());
+        }
+        Ok(request)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_expiry(
+        &self,
+        config: &CorporateNativeConfig,
+        identity: &ClientIdentityConfig,
+        journal: &NativeCorporateJournal,
+        request_id: String,
+        request_digest: [u8; 32],
+        now: u64,
+        observe: impl FnMut(SubmissionCheckpoint) -> Result<(), String>,
+    ) -> Result<DispatchProgress, String> {
+        self.verified_request(journal, &request_id, request_digest)?;
+        self.outbox
+            .mark_release_pending(&request_id, request_digest, now)?;
+        let result = match crate::corporate_expiry::reconcile_expired_submission(
+            config,
+            identity,
+            journal,
+            &request_id,
+            now,
+            observe,
+        ) {
+            Ok(result) => result,
+            Err(_) => return Ok(DispatchProgress::ReleaseReconciliationRequired { request_id }),
+        };
+        match result.outcome {
+            crate::corporate_expiry::ExpiryOutcome::NeverReserved { .. } => {
+                self.outbox.record_pre_reserve_abort(
+                    &request_id,
+                    request_digest,
+                    result.checked_at,
+                )?;
+                Ok(DispatchProgress::NeverReserved { request_id })
+            }
+            crate::corporate_expiry::ExpiryOutcome::Released {
+                transaction_id,
+                height,
+                ..
+            } => {
+                self.outbox.record_release(
+                    &request_id,
+                    request_digest,
+                    zkpi_defmi_sdk::corporate::CanonicalReceipt {
+                        defmi_network_id: hex::encode(config.defmi_id),
+                        transaction_id: transaction_id.clone(),
+                        ledger_height: height,
+                        request_digest,
+                        finalized_at: result.checked_at,
+                    },
+                )?;
+                Ok(DispatchProgress::ReservationReleased {
+                    request_id,
+                    transaction_id,
+                })
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn pump(
         &self,
@@ -197,6 +288,24 @@ impl NativeCorporateDispatch {
     ) -> Result<DispatchProgress, String> {
         if !(1..=300).contains(&retry_after_seconds) {
             return Err("dispatch retry interval outside1..300 seconds".into());
+        }
+        // Expiry reconciliation must not wait for any MPC node or even start
+        // its health connections: canonical funds can be recovered while all
+        // MPC endpoints are unreachable.
+        if let Some(QueueAction::Expire {
+            request_id,
+            request_digest,
+        }) = self.outbox.claim_next(now, false, retry_after_seconds)?
+        {
+            return self.reconcile_expiry(
+                config,
+                identity,
+                journal,
+                request_id,
+                request_digest,
+                now,
+                &mut observe,
+            );
         }
         let tls = client_tls_context(
             &identity.tls_certificate,
@@ -228,30 +337,20 @@ impl NativeCorporateDispatch {
                 request_id,
                 request_digest,
             } => {
-                // Never call this a local abort: the reserve may have committed
-                // before a response was lost. Preserve it for canonical release.
-                self.outbox
-                    .mark_release_pending(&request_id, request_digest, now)?;
-                return Ok(DispatchProgress::ReleaseReconciliationRequired { request_id });
+                return self.reconcile_expiry(
+                    config,
+                    identity,
+                    journal,
+                    request_id,
+                    request_digest,
+                    now,
+                    &mut observe,
+                );
             }
             QueueAction::Dispatch(claimed) => claimed,
         };
-        let request: DispatchRequest = serde_json::from_slice(&claimed.signed_request)
-            .map_err(|_| "malformed encrypted dispatch payload")?;
-        let intent = journal
-            .intent(&claimed.request_id)?
-            .ok_or("dispatch intent disappeared")?;
-        let prepared: PreparedCorporateReserve = journal
-            .stage(&claimed.request_id, "reserve")?
-            .ok_or("dispatch reserve disappeared")?;
-        if request.version != 1
-            || request.journal_context != journal.context_digest()
-            || request.request_id != claimed.request_id
-            || request.intent_digest != intent.input_digest
-            || request.reserve_digest != reserve_digest(&prepared)?
-        {
-            return Err("dispatch payload does not match its corporate journal".into());
-        }
+        let request =
+            self.verified_request(journal, &claimed.request_id, claimed.request_digest)?;
         let completed = match complete_native_submission(
             config,
             identity,

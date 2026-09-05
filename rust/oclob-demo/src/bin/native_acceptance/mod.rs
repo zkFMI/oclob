@@ -43,6 +43,8 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
                     | "oclob-native-worker-v1"
+                    | "oclob-native-expiry-v1"
+                    | "oclob-native-expiry-v2"
             )
         )
     {
@@ -200,7 +202,23 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         thread::sleep(Duration::from_millis(250));
     }
     let result: Value = read_json_limited(Path::new("/handoff/native-result.json"))?;
-    if result["native_note_settlement"] != true {
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-expiry-v1" | "oclob-native-expiry-v2")
+    ) {
+        if result["reconciled_expired_requests"] != 2
+            || result["never_reserved"] != 1
+            || result["completed_native_releases"] != 1
+            || result["mpc_nodes_down_during_reconciliation"] != 7
+            || result["next_order_admitted_nodes"] != 7
+            || result["exact_released_note_reused"] != true
+            || result["worker_restart_unchanged"] != true
+            || result["release_response_loss_recovered"] != true
+            || result["contract_sha256"] != contract_hash
+        {
+            return Err(failure("native queued expiry acceptance is incomplete"));
+        }
+    } else if result["native_note_settlement"] != true {
         return Err(failure("native settlement result is incomplete"));
     }
     if manifest["contract_id"] == "oclob-native-finality-v1"

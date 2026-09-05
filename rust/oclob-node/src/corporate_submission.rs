@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub enum SubmissionCheckpoint {
     ReserveObservedBeforeJournal,
     NodesAcknowledgedBeforeJournal,
+    ExpiryObservedBeforeJournal,
 }
 
 pub struct CompletedNativeSubmission {
@@ -71,6 +72,7 @@ pub fn complete_native_submission(
             } else {
                 // The reserve endpoint reconciles the exact hold before verifying
                 // a repeated request. Never create new proof/random bytes here.
+                journal.mark_reserve_send_started(request_id, digest, now()?)?;
                 let finalized = finalize_reservation(config, identity, &prepared, now()?)?;
                 observe(SubmissionCheckpoint::ReserveObservedBeforeJournal)?;
                 journal.save_stage(request_id, "admission", &finalized, &intent)?

@@ -1,0 +1,21 @@
+{
+  "contract_id": "oclob-native-expiry-v2",
+  "objective": "While all seven real MPC containers are stopped, automatically reconcile one provably never-dispatched expired reservation and one committed native reservation whose response was lost; survive an actual process stop after canonical expiry before local result storage, recover corporate funds and consume the exact unlocked note in a fresh seven-node-admitted order.",
+  "primary_metric": "reconciled_expired_requests",
+  "truth_provider": "Actual encrypted corporate journals/outbox with an atomic send-or-end-unsent decision, five live native Avalanche validators, expired signed mandates and canonical credit-facility sequences, canonical release receipt and node-signed acknowledgement of the refund-funded new order.",
+  "hard_constraints": [
+    "Never classify any failed/malformed/stale network read as absent. Unchanged canonical capacity and a local deadline are insufficient. A new-format corporate intent must have a durable first-write-wins unsent fence mutually exclusive with reserve-send-started; the original canonical facility sequence and all three commitments must also be unchanged.",
+    "Persist send-started before every first reserve RPC. The same atomic journal decision prevents a separate CLI from sending after an unsent expiry. Legacy journals and ambiguous sends must not be classified as never reserved; unresolvable cases remain pending without synthetic receipts or new financial proof bytes.",
+    "All seven real MPC containers must be stopped during both expiry cases. Expiry reconciliation must precede MPC health calls.",
+    "Save the exact unsigned time-based release before sending; actual VM expiry and head checks remain mandatory. Participant ingress permits only time-based expiry, not discretionary cancellation, fill or governance.",
+    "Actual process exits75 after canonical reserve before admission journal and after canonical expiry before resolution journal. A normal resident worker resumes, canonical release applies once, funds and queue states recover and restart unchanged.",
+    "Two finalized expired requests: one AbortedBeforeReserve with no synthetic financial receipt and one Released with a real canonical receipt. Exact returned5-unit note must fund another real reservation and receive signed acknowledgements from all7 nodes.",
+    "Five validator roots and actual validator restart agree; all builds/tests/Docker stay onSoftbank/Omen. No raw order, wallet secret, proof witness or encrypted corporate queue files published."
+  ],
+  "non_claims": [
+    "One-host deterministic functional smoke only, not production/independent operators/WAN or performance/economic confirmation.",
+    "The fresh refund-funded order is admitted, not matched/settled in this scenario. Existing native match/lifecycle regression must be separately rerun after updating the DeFMI pin.",
+    "Ambiguous send with no canonical head, concurrent stale-parent refresh, changed-facility absence reconciliation, externally initiated release receipt discovery and partially delivered encrypted-order cleanup remain fail-closed unresolved paths.",
+    "The corporate module and configured canonical-read service remain trusted. The unsent fence is local crash-durable evidence, not a proof against a malicious corporate operator or full-disk rollback."
+  ]
+}

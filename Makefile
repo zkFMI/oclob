@@ -13,6 +13,7 @@ NATIVE_MULTIFILL ?= 0
 NATIVE_CYCLE ?= 0
 NATIVE_LIFECYCLE ?= 0
 NATIVE_WORKER ?= 0
+NATIVE_EXPIRY ?= 0
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -204,6 +205,9 @@ remote-native-lifecycle-e2e:
 .PHONY: remote-native-worker-e2e
 remote-native-worker-e2e:
 	$(MAKE) remote-native-e2e NATIVE_MULTIFILL=1 NATIVE_WALLET=1 NATIVE_CYCLE=1 NATIVE_LIFECYCLE=1 NATIVE_WORKER=1
+.PHONY: remote-native-expiry-e2e
+remote-native-expiry-e2e:
+	$(MAKE) remote-native-e2e NATIVE_EXPIRY=1
 remote-native-wallet-e2e:
 	$(MAKE) remote-native-e2e NATIVE_WALLET=1
 remote-native-recovery-e2e:
@@ -217,6 +221,7 @@ remote-native-e2e:
 	@case '$(NATIVE_FINALITY):$(NATIVE_WALLET)' in 0:0|0:1|1:1) ;; *) echo 'native finality acceptance requires wallet reuse' >&2; exit 2 ;; esac
 	@case '$(NATIVE_LIFECYCLE):$(NATIVE_CYCLE)' in 0:*|1:1) ;; *) echo 'lifecycle requires the continuing cycle' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WORKER):$(NATIVE_LIFECYCLE)' in 0:*|1:1) ;; *) echo 'worker requires the full lifecycle' >&2; exit 2 ;; esac
+	@case '$(NATIVE_EXPIRY):$(NATIVE_RECOVERY):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_WORKER)' in 0:*|1:0:0:0:0) ;; *) echo 'queued expiry uses its separate acceptance contract' >&2; exit 2 ;; esac
 	@case '$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_RECOVERY):$(NATIVE_FINALITY):$(NATIVE_CYCLE)' in 0:*:*:*:0|1:0:0:0:0|1:1:0:0:1) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
 	@set -eu; \
 	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
@@ -236,7 +241,8 @@ remote-native-e2e:
 	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_002.json; fi; \
 	  if [ '$(NATIVE_CYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_cycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_cycle_006.json; fi; \
 	  if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_lifecycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_lifecycle_004.json; fi; \
-	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_worker_003.json; fi; \
+	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_worker_004.json; fi; \
+	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_expiry_fenced_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_expiry_002.json; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -248,6 +254,33 @@ remote-native-e2e:
 	  \$$compose run --rm native-bootstrap; \
 	  \$$compose up -d --wait --wait-timeout 600 defmi; \
 	  defmi_container=\$$(\$$compose ps -q defmi); [ -n \"\$$defmi_container\" ]; \
+	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then \
+	    nodes='node-0 node-1 node-2 node-3 node-4 node-5 node-6'; \
+	    \$$compose stop \$$nodes; \
+	    docker inspect --format '{{.State.Running}}' \$$(\$$compose ps -a -q \$$nodes) > \"\$$runtime/handoff/expiry-absent-nodes.txt\"; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=1 -e OCLOB_CORPORATE_REQUEST_ID=native-expiry-absent-001 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/queued-expiry-order.json maker; \
+	    \$$compose up -d maker-worker; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-reconciled native-expiry-absent-001 > \"\$$runtime/handoff/expiry-absent.json\"; \
+	    \$$compose stop maker-worker; \
+	    \$$compose up -d --wait --wait-timeout 180 \$$nodes; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=1 -e OCLOB_CORPORATE_REQUEST_ID=native-expiry-release-002 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/queued-expiry-order.json maker; \
+	    stopped=0; timeout 240 \$$compose run --rm -e OCLOB_NATIVE_RECOVERY_TEST_STOP=after-reserve-before-journal maker oclob-corporate-worker || stopped=\$$?; \
+	    [ \"\$$stopped\" = 75 ] || { echo 'expiry trial did not stop after real reserve' >&2; exit 1; }; \
+	    \$$compose stop \$$nodes; \
+	    docker inspect --format '{{.State.Running}}' \$$(\$$compose ps -a -q \$$nodes) > \"\$$runtime/handoff/expiry-release-nodes.txt\"; \
+	    stopped=0; timeout 240 \$$compose run --rm -e OCLOB_NATIVE_RECOVERY_TEST_STOP=after-expiry-before-journal maker oclob-corporate-worker > \"\$$runtime/handoff/expiry-release-stop.jsonl\" || stopped=\$$?; \
+	    [ \"\$$stopped\" = 75 ] || { echo 'expiry trial did not stop after real release' >&2; exit 1; }; \
+	    \$$compose up -d maker-worker; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-reconciled native-expiry-release-002 > \"\$$runtime/handoff/expiry-released.json\"; \
+	    \$$compose run --rm maker oclob-corporate-worker --status > \"\$$runtime/handoff/expiry-before-restart.json\"; \
+	    \$$compose restart maker-worker; \
+	    \$$compose run --rm maker oclob-corporate-worker --wait-reconciled native-expiry-release-002; \
+	    \$$compose run --rm maker oclob-corporate-worker --status > \"\$$runtime/handoff/expiry-after-restart.json\"; \
+	    \$$compose run --rm -e OCLOB_NATIVE_RECOVER_WALLET=1 -e OCLOB_NATIVE_WALLET_ACCEPTANCE=queued-expiry maker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/queued-expiry-recovery.json --settlement-handoff /handoff/unused.json --scenario maker; \
+	    \$$compose up -d --wait --wait-timeout 180 \$$nodes; \
+	    \$$compose run --rm -e OCLOB_CORPORATE_REQUEST_ID=native-expiry-next-003 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/queued-expiry-reuse.json maker oclob-edge-submit --cluster /public/cluster.json --identity /identity/client.json --handoff /handoff/queued-expiry-next.json --settlement-handoff /handoff/queued-expiry-next-authority.json --scenario maker; \
+	    \$$compose run --rm native-coordinator; \
+	  else \
 	  if [ '$(NATIVE_WORKER)' = 1 ]; then \
 	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=1 maker; \
 	    \$$compose stop node-6; \
@@ -318,11 +351,13 @@ remote-native-e2e:
 	  fi; \
 	  if [ '$(NATIVE_LIFECYCLE)' = 0 ]; then \$$compose run --rm -e OCLOB_NATIVE_WALLET_FINALIZE=1 native-coordinator; fi; \
 	  fi; \
+	  fi; \
 	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
 	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
 	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; if [ '$(NATIVE_FINALITY)' = 1 ]; then artifact=artifacts/oclob_native_finality.json; fi; if [ '$(NATIVE_MULTIFILL)' = 1 ]; then artifact=artifacts/oclob_native_multifill.json; fi; if [ '$(NATIVE_CYCLE)' = 1 ]; then artifact=artifacts/oclob_native_cycle.json; fi; \
 	if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then artifact=artifacts/oclob_native_lifecycle.json; fi; \
 	if [ '$(NATIVE_WORKER)' = 1 ]; then artifact=artifacts/oclob_native_worker.json; fi; \
+	if [ '$(NATIVE_EXPIRY)' = 1 ]; then artifact=artifacts/oclob_native_expiry.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

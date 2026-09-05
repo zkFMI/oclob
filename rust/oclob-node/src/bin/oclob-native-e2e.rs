@@ -40,6 +40,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "native_expiry_acceptance/mod.rs"]
+mod expiry_acceptance;
 #[path = "native_lifecycle_acceptance/mod.rs"]
 mod lifecycle_acceptance;
 
@@ -72,6 +74,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
                     | "oclob-native-worker-v1"
+                    | "oclob-native-expiry-v1"
+                    | "oclob-native-expiry-v2"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -82,6 +86,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     cluster.validate()?;
     let coordinator: ClientIdentityConfig = read("/identity/client.json")?;
     coordinator.validate()?;
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-expiry-v1" | "oclob-native-expiry-v2")
+    ) {
+        return expiry_acceptance::run(&cluster, &coordinator, &manifest, &contract_hash);
+    }
     let settlement: ClientIdentityConfig = read("/settlement/client.json")?;
     settlement.validate()?;
     let lifecycle = matches!(

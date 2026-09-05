@@ -9,6 +9,7 @@
 
 pub mod corporate;
 pub mod corporate_dispatch;
+pub mod corporate_expiry;
 pub mod corporate_journal;
 pub mod corporate_submission;
 pub mod native_admission;

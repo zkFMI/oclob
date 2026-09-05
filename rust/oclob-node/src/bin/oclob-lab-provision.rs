@@ -228,6 +228,12 @@ fn provision(root: &Path) -> Result<(), String> {
         write_private(&directory.join("outbox-key.raw"), &journal_key)?;
         create_private_dir(directory.join("queue"))?;
         write_json(
+            &directory.join("queue/queued-expiry-order.json"),
+            &json!({"side": "sell", "limit_price": 102, "quantity": 5,
+                "time_in_force": "good_til_cancelled", "valid_for_seconds": 45}),
+            0o600,
+        )?;
+        write_json(
             &directory.join("queue/cycle-order.json"),
             &json!({
                 "side": "buy", "limit_price": 104, "quantity": 90,

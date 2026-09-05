@@ -21,10 +21,10 @@ fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(args.is_empty()
         || args.len() == 1 && matches!(args[0].as_str(), "--once" | "--status" | "--initialize")
-        || args.len() == 2 && args[0] == "--wait-admitted")
+        || args.len() == 2 && matches!(args[0].as_str(), "--wait-admitted" | "--wait-reconciled"))
     {
         return Err(
-            "usage: oclob-corporate-worker [--once|--status|--initialize|--wait-admitted ID]"
+            "usage: oclob-corporate-worker [--once|--status|--initialize|--wait-admitted ID|--wait-reconciled ID]"
                 .into(),
         );
     }
@@ -49,6 +49,59 @@ fn run() -> Result<(), String> {
             serde_json::to_string(&queue.summaries()?).map_err(|e| e.to_string())?
         );
         return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "--wait-reconciled") {
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        loop {
+            if let Some(entry) = queue
+                .summaries()?
+                .into_iter()
+                .find(|entry| entry.request_id == args[1])
+            {
+                if let Some(result) = journal.completed_expiry(&args[1])? {
+                    use oclob_node::corporate_expiry::ExpiryOutcome;
+                    use zkpi_defmi_sdk::corporate::OutboxState;
+                    let report = match (result.outcome, entry.state) {
+                        (
+                            ExpiryOutcome::NeverReserved { state_root },
+                            OutboxState::AbortedBeforeReserve { .. },
+                        ) => Some(
+                            serde_json::json!({"status":"never_reserved", "state_root":hex::encode(state_root)}),
+                        ),
+                        (
+                            ExpiryOutcome::Released {
+                                release,
+                                transaction_id,
+                                block_id,
+                                height,
+                                after_root,
+                            },
+                            OutboxState::Released { receipt },
+                        ) if receipt.transaction_id == transaction_id
+                            && receipt.ledger_height == height
+                            && receipt.request_digest == entry.request_digest =>
+                        {
+                            Some(
+                                serde_json::json!({"status":"released", "transaction_id":transaction_id,
+                                "block_id":block_id, "height":height, "hold_id":hex::encode(release.hold_id),
+                                "statement":hex::encode(release.signing_message()?),
+                                "before_root":hex::encode(release.before_root), "after_root":hex::encode(after_root)}),
+                            )
+                        }
+                        _ => None,
+                    };
+                    if let Some(mut report) = report {
+                        report["request_id"] = serde_json::json!(args[1]);
+                        println!("{report}");
+                        return Ok(());
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("timed out waiting for canonical expiry reconciliation".into());
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
     }
     if args.first().is_some_and(|arg| arg == "--wait-admitted") {
         let deadline = std::time::Instant::now() + Duration::from_secs(180);
@@ -97,6 +150,7 @@ fn run() -> Result<(), String> {
                 SubmissionCheckpoint::NodesAcknowledgedBeforeJournal => {
                     "after-node-admission-before-journal"
                 }
+                SubmissionCheckpoint::ExpiryObservedBeforeJournal => "after-expiry-before-journal",
             };
             // Explicit lab process fault only, not a remote dispatch/RPC field.
             if std::env::var("OCLOB_NATIVE_RECOVERY_TEST_STOP")
