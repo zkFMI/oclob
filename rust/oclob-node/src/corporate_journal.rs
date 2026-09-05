@@ -160,6 +160,48 @@ impl NativeCorporateJournal {
         self.get(&record_id(stage, id)?)
     }
 
+    pub fn cancellation(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::native_lifecycle::LifecycleCommand>, String> {
+        self.get(&record_id("cancel", id)?)
+    }
+
+    pub fn save_cancellation(
+        &self,
+        id: &str,
+        command: &crate::native_lifecycle::LifecycleCommand,
+    ) -> Result<crate::native_lifecycle::LifecycleCommand, String> {
+        let intent = self
+            .intent(id)?
+            .ok_or("cancel has no saved corporate intent")?;
+        let receipt: EdgeAdmissionReceipt = self
+            .stage(id, "receipt")?
+            .ok_or("cancel has no admitted order")?;
+        let delivery: StoredCorporateDelivery = self
+            .stage(id, "delivery")?
+            .ok_or("cancel has no saved delivery")?;
+        if delivery.delivery.manifest != receipt.manifest
+            || ed25519_dalek::SigningKey::from_bytes(&intent.signing_key)
+                .verifying_key()
+                .to_bytes()
+                != receipt.manifest.signer
+            || command.reason
+                != qomm_defmi::application_settlement::ApplicationReleaseReason::Cancelled
+        {
+            return Err("cancel does not belong to the originally admitted corporate order".into());
+        }
+        command.verify(&receipt.manifest, command.issued_at)?;
+        let saved: crate::native_lifecycle::LifecycleCommand = self.put_first(
+            &record_id("cancel", id)?,
+            command,
+            command.issued_at,
+            command.expires_at,
+        )?;
+        saved.verify(&receipt.manifest, saved.issued_at)?;
+        Ok(saved)
+    }
+
     pub fn save_stage<T: Serialize + DeserializeOwned>(
         &self,
         id: &str,
@@ -364,7 +406,7 @@ fn record_id(stage: &str, id: &str) -> Result<String, String> {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
         || !matches!(
             stage,
-            "intent" | "reserve" | "admission" | "delivery" | "receipt"
+            "intent" | "reserve" | "admission" | "delivery" | "receipt" | "cancel"
         )
     {
         return Err("corporate request ID or stage is invalid".into());
@@ -476,6 +518,19 @@ mod tests {
             accepted_at: 100,
             expires_at: 1000,
         }
+    }
+
+    #[test]
+    fn cancellation_has_a_typed_namespace_not_a_generic_completion_shortcut() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[71; 32], &config, &cluster).unwrap();
+        assert_eq!(record_id("cancel", "first").unwrap(), "cancel:first");
+        assert!(journal.cancellation("first").unwrap().is_none());
+        assert!(journal
+            .save_stage("first", "cancel", &serde_json::json!({}), &intent(20))
+            .is_err());
     }
 
     #[test]

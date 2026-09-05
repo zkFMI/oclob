@@ -32,7 +32,7 @@ pub struct NativeFinalityRequest {
 /// for inserting a purported canonical record.
 #[derive(Clone)]
 pub struct NativeFinalityHandle {
-    store: Arc<Mutex<NodeShareStore>>,
+    pub(crate) store: Arc<Mutex<NodeShareStore>>,
 }
 
 impl NativeFinalityHandle {
@@ -223,7 +223,7 @@ pub(crate) fn observe(
 
 // Matches the pinned AvalancheNoteBridge receipt invariants. Do not require
 // current state_root == after_root: unrelated later transactions are legal.
-fn validate_accepted(
+pub(crate) fn validate_accepted(
     tx: &str,
     statement: Digest32,
     before: Digest32,
@@ -507,9 +507,24 @@ mod tests {
         let key = oclob_edge::NodeDecryptionKey::generate().unwrap();
         let mut store = NodeShareStore::open(&path, 0, key.clone()).unwrap();
         store.state.version = 7;
-        store.persist().unwrap();
+        let write_v7 = |store: &NodeShareStore| {
+            let mut value = serde_json::to_value(&store.state).unwrap();
+            // A real V7 file predates the required V9 lifecycle map. Do not
+            // accidentally test a modern file with its version relabelled.
+            value.as_object_mut().unwrap().remove("lifecycle");
+            let body = serde_json::to_vec(&value).unwrap();
+            let bytes = [
+                crate::STORE_MAGIC.as_slice(),
+                &(body.len() as u64).to_be_bytes(),
+                &body,
+                Sha256::digest(&body).as_slice(),
+            ]
+            .concat();
+            std::fs::write(&path, bytes).unwrap();
+        };
+        write_v7(&store);
         let migrated = NodeShareStore::open(&path, 0, key.clone()).unwrap();
-        assert_eq!(migrated.state.version, 8);
+        assert_eq!(migrated.state.version, crate::STORE_VERSION);
         drop(migrated);
         store.state.finalized_private_rounds.insert(
             hex::encode([1; 32]),
@@ -521,7 +536,7 @@ mod tests {
                 canonical_height: 1,
             },
         );
-        store.persist().unwrap();
+        write_v7(&store);
         let before = std::fs::read(&path).unwrap();
         assert!(NodeShareStore::open(&path, 0, key).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);

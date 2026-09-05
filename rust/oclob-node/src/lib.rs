@@ -11,6 +11,7 @@ pub mod corporate;
 pub mod corporate_journal;
 pub mod native_admission;
 pub mod native_finality;
+pub mod native_lifecycle;
 pub mod native_wallet;
 
 pub mod edge_client;
@@ -37,7 +38,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 8;
+const STORE_VERSION: u16 = 9;
+const LEGACY_STORE_VERSION_V8: u16 = 8;
 const LEGACY_STORE_VERSION_V7: u16 = 7;
 const LEGACY_STORE_VERSION_V6: u16 = 6;
 const LEGACY_STORE_VERSION_V5: u16 = 5;
@@ -85,6 +87,8 @@ struct StoreState {
     finalized_private_rounds: BTreeMap<String, PrivateRoundFinalization>,
     #[serde(default)]
     native_finalities: BTreeMap<String, BTreeMap<u16, native_finality::NativeFinalityRecord>>,
+    /// Required in V9; a missing terminal history must never resurrect orders.
+    lifecycle: BTreeMap<String, native_lifecycle::StoredLifecycle>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -364,6 +368,11 @@ impl NodeShareStore {
         sealed_capability_key_share: SealedCapabilityKeyShare,
         now: u64,
     ) -> Result<IngestOutcome, NodeError> {
+        if self.lifecycle_blocks(manifest.commitment) {
+            return Err(NodeError::Admission(
+                "order has an ordered terminal command".into(),
+            ));
+        }
         let opened = sealed
             .open(&self.key, &manifest, self.state.party, now)
             .map_err(|error| NodeError::Admission(error.to_string()))?;
@@ -455,18 +464,17 @@ impl NodeShareStore {
             .ordering_sequence
             .checked_add(1)
             .ok_or(NodeError::Generation)?;
-        let record = self
-            .state
-            .records
-            .get(&commitment.hex())
-            .ok_or(NodeError::UnknownOrder)?;
+        if !self.state.lifecycle.contains_key(&commitment.hex()) {
+            self.require_lifecycle_barrier()?;
+        }
+        let (admitted_market, admitted_deadline) = self.ordering_admission(commitment, now)?;
         if market_id.is_empty()
             || market_id.len() > 64
             || sequence != expected_sequence
             || previous_certificate != self.state.ordering_head
             || now > expires_at
-            || record.manifest.market_id != market_id
-            || expires_at > record.manifest.retention_deadline
+            || admitted_market != market_id
+            || expires_at > admitted_deadline
             || self.state.ordered_commitments.contains(&commitment.hex())
         {
             return Err(NodeError::Ordering(
@@ -540,11 +548,11 @@ impl NodeShareStore {
             .ordering_sequence
             .checked_add(1)
             .ok_or(NodeError::Generation)?;
-        let record = self
-            .state
-            .records
-            .get(&commitment_key)
-            .ok_or(NodeError::UnknownOrder)?;
+        if !self.state.lifecycle.contains_key(&commitment_key) {
+            self.require_lifecycle_barrier()?;
+        }
+        let (admitted_market, admitted_deadline) =
+            self.ordering_admission(certificate.commitment, now)?;
         let statement = vote_digest(
             &certificate.market_id,
             certificate.sequence,
@@ -554,8 +562,8 @@ impl NodeShareStore {
         );
         if certificate.sequence != expected_sequence
             || certificate.previous_certificate != self.state.ordering_head
-            || record.manifest.market_id != certificate.market_id
-            || certificate.expires_at > record.manifest.retention_deadline
+            || admitted_market != certificate.market_id
+            || certificate.expires_at > admitted_deadline
             || self.state.ordered_commitments.contains(&commitment_key)
             || self
                 .state
@@ -568,6 +576,9 @@ impl NodeShareStore {
             ));
         }
         let previous = self.state.clone();
+        if let Some(control) = self.state.lifecycle.get_mut(&commitment_key) {
+            control.certificate = Some(certificate.clone());
+        }
         self.state.ordering_sequence = certificate.sequence;
         self.state.ordering_head = digest;
         self.state.ordered_commitments.insert(commitment_key);
@@ -593,6 +604,7 @@ impl NodeShareStore {
         arriving: OrderCommitment,
         now: u64,
     ) -> Result<PreparedPartyInput, NodeError> {
+        self.require_lifecycle_barrier()?;
         let mut unique = resting.to_vec();
         unique.sort_unstable();
         unique.dedup();
@@ -668,6 +680,16 @@ impl NodeShareStore {
 
     pub fn remove_terminal(&mut self, commitment: OrderCommitment) -> Result<bool, NodeError> {
         let key = commitment.hex();
+        if self
+            .state
+            .records
+            .get(&key)
+            .is_some_and(|record| record.manifest.uses_pretrade_reservation())
+        {
+            return Err(NodeError::PrivateState(
+                "native shares require node-observed canonical release".into(),
+            ));
+        }
         if !self.state.records.contains_key(&key) {
             return Ok(false);
         }
@@ -972,7 +994,9 @@ impl NodeShareStore {
             .records
             .iter()
             .filter_map(|(key, record)| {
-                (record.manifest.retention_deadline < now).then_some(key.clone())
+                (record.manifest.retention_deadline < now
+                    && !record.manifest.uses_pretrade_reservation())
+                .then_some(key.clone())
             })
             .collect::<Vec<_>>();
         if expired.is_empty() {
@@ -1000,6 +1024,9 @@ impl NodeShareStore {
         market_id: &str,
         now: u64,
     ) -> Result<oclob_edge::PartyOrderShare, NodeError> {
+        if self.lifecycle_blocks(commitment) {
+            return Err(NodeError::UnknownOrder);
+        }
         let record = self
             .state
             .records
@@ -1225,6 +1252,7 @@ fn empty_state(party: u16) -> StoreState {
         private_heads: BTreeMap::new(),
         finalized_private_rounds: BTreeMap::new(),
         native_finalities: BTreeMap::new(),
+        lifecycle: BTreeMap::new(),
     }
 }
 
@@ -1254,19 +1282,33 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
     if encoded[end..] != expected {
         return Err(NodeError::State("node share store checksum failed".into()));
     }
-    let value: serde_json::Value = serde_json::from_slice(&encoded[16..end])
+    let mut value: serde_json::Value = serde_json::from_slice(&encoded[16..end])
         .map_err(|_| NodeError::State("node share store payload is invalid".into()))?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| NodeError::State("node share store version is invalid".into()))?;
+    if (LEGACY_STORE_VERSION_V2..=LEGACY_STORE_VERSION_V8).contains(&version) {
+        if value.get("lifecycle").is_some() {
+            return Err(NodeError::State(
+                "legacy node store unexpectedly contains lifecycle history".into(),
+            ));
+        }
+        value["lifecycle"] = serde_json::json!({});
+    }
     let (state, migrated) = match version {
         STORE_VERSION => (
             serde_json::from_value(value)
                 .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
             false,
         ),
+        LEGACY_STORE_VERSION_V8 => {
+            let mut legacy: StoreState = serde_json::from_value(value)
+                .map_err(|_| NodeError::State("legacy v8 node store payload is invalid".into()))?;
+            legacy.version = STORE_VERSION;
+            (legacy, true)
+        }
         LEGACY_STORE_VERSION_V7 => {
             if [
                 "private_heads",
@@ -1359,6 +1401,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                     private_heads: BTreeMap::new(),
                     finalized_private_rounds: BTreeMap::new(),
                     native_finalities: BTreeMap::new(),
+                    lifecycle: BTreeMap::new(),
                 },
                 true,
             )
@@ -1399,6 +1442,44 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
         {
             return Err(NodeError::State(
                 "node share store contains a misbound record".into(),
+            ));
+        }
+    }
+    for (id, entry) in &state.lifecycle {
+        entry
+            .command
+            .verify(&entry.manifest, entry.command.issued_at)
+            .map_err(NodeError::State)?;
+        let digest = entry.command.digest().map_err(NodeError::State)?;
+        if *id != hex::encode(digest)
+            || entry.certificate.is_some() != state.ordered_commitments.contains(id)
+            || entry.certificate.as_ref().is_some_and(|certificate| {
+                certificate.commitment.0 != digest
+                    || certificate.market_id != entry.command.market_id
+                    || certificate.sequence == 0
+                    || certificate.sequence > state.ordering_sequence
+                    || certificate.expires_at > entry.command.expires_at
+            })
+            || entry.finality.as_ref().is_some_and(|finality| {
+                entry.certificate.is_none()
+                    || finality.command != digest
+                    || finality.target != entry.command.target
+                    || finality.height == 0
+                    || finality.released_sequence == 0
+                    || finality.statement == [0; 32]
+                    || finality.before_root == [0; 32]
+                    || finality.after_root == [0; 32]
+                    || finality.before_root == finality.after_root
+                    || finality.transaction_id.is_empty()
+                    || finality.block_id.is_empty()
+                    || state.records.contains_key(&entry.command.target.hex())
+                    || state
+                        .private_heads
+                        .contains_key(&entry.command.target.hex())
+            })
+        {
+            return Err(NodeError::State(
+                "native lifecycle history is inconsistent".into(),
             ));
         }
     }
@@ -1577,6 +1658,9 @@ pub enum NodeError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod native_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1858,7 +1942,9 @@ mod tests {
         reopened
             .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.verifying_key())
             .unwrap();
-        assert_eq!(reopened.status().unwrap().record_count, 0);
+        // Native authority shares survive deadline until the node itself has
+        // observed canonical release; pruning cannot bypass that requirement.
+        assert_eq!(reopened.status().unwrap().record_count, 1);
         assert!(reopened
             .ingest(
                 second_manifest,

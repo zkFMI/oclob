@@ -295,6 +295,21 @@ pub struct ThresholdCapabilityRelease {
 }
 
 impl ThresholdCapabilityRelease {
+    /// All responses must already be verified against the same locally
+    /// accepted lifecycle certificate. No caller-supplied threshold override.
+    pub(crate) fn from_lifecycle(
+        manifest: &EdgeOrderManifest,
+        releases: Vec<NodeCapabilityRelease>,
+    ) -> Result<Self, EdgeClientError> {
+        let shares = releases
+            .iter()
+            .map(|r| r.capability_key_share.clone())
+            .collect::<Vec<_>>();
+        let key =
+            reconstruct_settlement_capability_key(manifest, &shares, manifest.retention_deadline)
+                .map_err(|_| EdgeClientError::SettlementThreshold)?;
+        Ok(Self { releases, key })
+    }
     /// Open only the confidential canonical-note authority after the same
     /// threshold release checks used for settlement. This path contains no
     /// plaintext order, price, quantity, or original order blinding.

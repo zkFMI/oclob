@@ -11,6 +11,7 @@ use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::{
     CapabilityKeyShare, EdgeOrderManifest, SealedCapabilityKeyShare, SealedPartyShare,
 };
+use oclob_ordering::OrderCertificate;
 use oclob_ordering::{vote_digest, CommitteePolicy, OrderVote};
 use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
@@ -97,6 +98,12 @@ enum NodeRequest {
         plan: Box<RoundPlan>,
         finality: PrivateStateFinality,
     },
+    StageLifecycle {
+        command: crate::native_lifecycle::LifecycleCommand,
+    },
+    ApplyLifecycle {
+        certificate: OrderCertificate,
+    },
     Status,
 }
 
@@ -117,6 +124,9 @@ enum NodeResponse {
     },
     PrivateStateFinalized {
         receipt: Box<NodePrivateStateReceipt>,
+    },
+    LifecycleStaged {
+        digest: Digest32,
     },
     Status {
         status: NodeStoreStatus,
@@ -261,6 +271,24 @@ impl NodeCapabilityRelease {
         capability_key_share: CapabilityKeyShare,
         key: &SigningKey,
     ) -> Result<Self, NetworkError> {
+        Self::sign_context(
+            party,
+            order_commitment,
+            plan.round_id,
+            public_output_sha256,
+            capability_key_share,
+            key,
+        )
+    }
+
+    fn sign_context(
+        party: u16,
+        order_commitment: OrderCommitment,
+        context: Digest32,
+        public_output_sha256: Digest32,
+        capability_key_share: CapabilityKeyShare,
+        key: &SigningKey,
+    ) -> Result<Self, NetworkError> {
         if usize::from(party) >= oclob_edge::MPC_PARTIES
             || capability_key_share.party() != party
             || capability_key_share.order_commitment() != order_commitment
@@ -272,7 +300,7 @@ impl NodeCapabilityRelease {
             version: RECORD_VERSION,
             party,
             order_commitment,
-            round_id: plan.round_id,
+            round_id: context,
             public_output_sha256,
             capability_key_share,
             signer: key.verifying_key().to_bytes(),
@@ -291,10 +319,29 @@ impl NodeCapabilityRelease {
         expected_signer: &VerifyingKey,
         now: u64,
     ) -> Result<(), NetworkError> {
+        self.verify_context(
+            manifest,
+            plan.round_id,
+            expected_output,
+            expected_party,
+            expected_signer,
+            now,
+        )
+    }
+
+    pub(crate) fn verify_context(
+        &self,
+        manifest: &EdgeOrderManifest,
+        context: Digest32,
+        expected_output: Digest32,
+        expected_party: u16,
+        expected_signer: &VerifyingKey,
+        now: u64,
+    ) -> Result<(), NetworkError> {
         if self.version != RECORD_VERSION
             || self.party != expected_party
             || self.order_commitment != manifest.commitment
-            || self.round_id != plan.round_id
+            || self.round_id != context
             || self.public_output_sha256 != expected_output
             || self.public_output_sha256 == [0; 32]
             || self.signer != expected_signer.to_bytes()
@@ -754,6 +801,43 @@ pub struct NodeRpcClient {
 }
 
 impl NodeRpcClient {
+    pub fn stage_lifecycle(
+        &self,
+        command: crate::native_lifecycle::LifecycleCommand,
+    ) -> Result<(), NetworkError> {
+        let expected = command.digest().map_err(|_| NetworkError::Protocol)?;
+        match self.call(NodeRequest::StageLifecycle { command })? {
+            NodeResponse::LifecycleStaged { digest } if digest == expected => Ok(()),
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
+    pub fn apply_lifecycle(
+        &self,
+        manifest: &EdgeOrderManifest,
+        certificate: OrderCertificate,
+    ) -> Result<NodeCapabilityRelease, NetworkError> {
+        let context = certificate.commitment.0;
+        let output = certificate.digest();
+        match self.call(NodeRequest::ApplyLifecycle { certificate })? {
+            NodeResponse::Released { release } => {
+                release.verify_context(
+                    manifest,
+                    context,
+                    output,
+                    self.endpoint.party,
+                    &VerifyingKey::from_bytes(&self.endpoint.receipt_verifying_key)
+                        .map_err(|_| NetworkError::Protocol)?,
+                    manifest.retention_deadline,
+                )?;
+                Ok(*release)
+            }
+            NodeResponse::Rejected { code } => Err(NetworkError::Remote(code)),
+            _ => Err(NetworkError::Protocol),
+        }
+    }
+
     pub fn new(
         endpoint: NodeEndpoint,
         tls: ClientTlsConfig,
@@ -1046,6 +1130,10 @@ fn dispatch_checked(
             expires_at,
         } => {
             require_role(principal, PeerRole::Coordinator)?;
+            let _guard = runtime
+                .execute_lock
+                .lock()
+                .map_err(|_| NetworkError::State)?;
             let (statement_digest, node_id) = {
                 let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
                 let statement_digest = store
@@ -1203,6 +1291,62 @@ fn dispatch_checked(
             )?;
             Ok(NodeResponse::PrivateStateFinalized {
                 receipt: Box::new(receipt),
+            })
+        }
+        NodeRequest::StageLifecycle { command } => {
+            require_role(principal, PeerRole::Coordinator)?;
+            let _guard = runtime
+                .execute_lock
+                .lock()
+                .map_err(|_| NetworkError::State)?;
+            let digest = runtime
+                .store
+                .lock()
+                .map_err(|_| NetworkError::State)?
+                .register_lifecycle(command, now)
+                .map_err(|_| NetworkError::Ordering)?;
+            Ok(NodeResponse::LifecycleStaged { digest })
+        }
+        NodeRequest::ApplyLifecycle { certificate } => {
+            require_role(principal, PeerRole::Settlement)?;
+            let _guard = runtime
+                .execute_lock
+                .lock()
+                .map_err(|_| NetworkError::State)?;
+            let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
+            // Restrict this method to a locally owner-validated control. A
+            // regular order certificate must still execute actual matching.
+            if !store
+                .state
+                .lifecycle
+                .contains_key(&certificate.commitment.hex())
+            {
+                return Err(NetworkError::Ordering);
+            }
+            store
+                .accept_order_certificate(
+                    &certificate,
+                    runtime.ordering_policy,
+                    &runtime.ordering_keys,
+                    now,
+                )
+                .map_err(|_| NetworkError::Ordering)?;
+            let entry = store
+                .lifecycle_entry(certificate.commitment.0)
+                .map_err(|_| NetworkError::Ordering)?;
+            let share = store
+                .lifecycle_share(certificate.commitment.0)
+                .map_err(|_| NetworkError::Release)?;
+            let release = NodeCapabilityRelease::sign_context(
+                store.state.party,
+                entry.command.target,
+                certificate.commitment.0,
+                certificate.digest(),
+                share,
+                &runtime.receipt_signing_key,
+            )?;
+            Ok(NodeResponse::Released {
+                release: Box::new(release),
             })
         }
         NodeRequest::Status => {

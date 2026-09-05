@@ -1,0 +1,44 @@
+{
+  "manifest_id": "oclob-native-lifecycle-001",
+  "contract_id": "oclob-native-lifecycle-v1",
+  "contract_path": "research/oclob_native_lifecycle_contract.json",
+  "contract_sha256": "233e378ace5575d3950a3a355d38126041374c13fc0616d4c6603e7c25ea8d0f",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "R9 verifies continuing native settlement but resident ordering/termination does not yet release and recover cancelled or expired native reservations.",
+  "causal_hypothesis": "Owner-authenticated terminal commands in the same quorum ordering chain, a barrier behind unsettled matching and node-owned canonical release observations preserve no-opt-out semantics and recover exactly the unspent remainder.",
+  "single_intended_change": "Connect existing native DeFMI release to ordered resident OCLOB controls and corporate wallet recovery using pinned typed FROST application control authorization.",
+  "baseline": "OCLOB f8010fe R9 two-round/three-fill/eight-claim native cycle; DeFMI release VM already exists at33d0c97. Typed transport addition at4b07c2b has124 real-signature/unit tests.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_releases": 2,
+    "completed_native_rounds": 2,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ]
+  },
+  "most_likely_prediction_error": "Expiry may expose a stale authority/time assumption or unfilled-note recovery mismatch; a failed gate rejects the whole run without fake time, replacement funds or relaxed signing checks.",
+  "rejection_rules": [
+    "stale contract hash",
+    "no actual full target execution",
+    "cancel overtakes unfinished matching",
+    "wrong or stale reservation head signed",
+    "missing exact29-refund serial consumption",
+    "expiry before actual deadline",
+    "incomplete seven-node canonical observation",
+    "incorrect corporate balances/unlocked note",
+    "five roots or restart disagree"
+  ],
+  "promotion_rules": [
+    "smoke_only after all hard constraints, never performance/economic/operator/product promotion"
+  ],
+  "command": "make remote-native-lifecycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

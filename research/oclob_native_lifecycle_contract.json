@@ -1,0 +1,20 @@
+{
+  "contract_id": "oclob-native-lifecycle-v1",
+  "objective": "After two actual native settlement rounds, cancel the maker's carried remainder through the same ordering chain, recover the released assets, fund another actual MPC order from that exact refund, expire it by real time and recover the original escrow note.",
+  "primary_metric": "completed_native_releases",
+  "truth_provider": "Seven resident node stores and real FROST signing parties; corporate-only wallet decryption and exact selected-source serial; native DeFMI reservation/facility/note readbacks on five actual Avalanche validators and validator restart.",
+  "hard_constraints": [
+    "Keep R9's actual2-round/3-fill/8-claim cycle and original carried maker reserve; do not substitute a new maker order for the cancellation target.",
+    "The owner signs with its original one-time manifest key. Every node rejects a cancellation that tries to overtake the second unsettled matching result, with unchanged status. No coordinator key or fake completed payment proof can authorize cancellation.",
+    "Cancel the exact maker reserve head sequence2 with remaining29 using the existing5-of-7 ordering chain and3-of-7 native committee signature. Every node observes the exact canonical release before removing its active record. Repeat does not change state.",
+    "Corporate recovery verifies maker facility[29,0,91]sequence6 and four cumulative recipient claims. The positive unspent29-unit refund funds the new sell5-at102; verify its actual serial consumption.",
+    "Execute another real7-party no-fill GTC order, wait past its actual60-second validity, and release without a discretionary signature. Recover the exact original escrow note with5 units and maker facility[29,0,91]sequence8.",
+    "Reject wrong owner, stale cancellation head and altered canonical release. Both releases have7 node-owned observations; five final validator roots agree across a real validator restart.",
+    "Only Omen or Softbank may build/test/run Docker. No corporate keys, raw orders, shares, original note openings or full private runtime directory in public artifacts."
+  ],
+  "non_claims": [
+    "This is a one-host deterministic protocol smoke scenario, not independent operators/WAN, economic or performance confirmation, or production promotion.",
+    "Canonical read services remain configured trust anchors, not validator light clients. Node-disk rollback, HA/key rotation and generalized unattended concurrent queue recovery remain separate gates.",
+    "Nine claims are cumulative, including spent or zero refunds. They are not nine spendable account balances."
+  ]
+}

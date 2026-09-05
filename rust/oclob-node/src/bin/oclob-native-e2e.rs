@@ -40,6 +40,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "native_lifecycle_acceptance/mod.rs"]
+mod lifecycle_acceptance;
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("native settlement failed: {error}");
@@ -67,6 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-finality-v1"
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
+                    | "oclob-native-lifecycle-v1"
             )
         )
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
@@ -79,7 +83,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     coordinator.validate()?;
     let settlement: ClientIdentityConfig = read("/settlement/client.json")?;
     settlement.validate()?;
-    let cycle = manifest["contract_id"] == "oclob-native-cycle-v1";
+    let lifecycle = manifest["contract_id"] == "oclob-native-lifecycle-v1";
+    if let Ok(phase) = std::env::var("OCLOB_NATIVE_LIFECYCLE_PHASE") {
+        if !lifecycle {
+            return Err("lifecycle execution needs its bound contract".into());
+        }
+        return lifecycle_acceptance::run(&phase, &contract_hash);
+    }
+    let cycle = manifest["contract_id"] == "oclob-native-cycle-v1" || lifecycle;
     let next_match = std::env::var("OCLOB_NATIVE_NEXT_MATCH").ok().as_deref() == Some("1");
     if next_match && !cycle {
         return Err("next-match mode needs its cycle contract".into());
@@ -428,6 +439,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let signed = &requests[0].fill;
+    if lifecycle && next_match {
+        let command: oclob_node::native_lifecycle::LifecycleCommand =
+            read("/handoff/maker-cancel.json")?;
+        for node in &cluster.nodes {
+            let rpc = NodeRpcClient::new(node.endpoint(), tls.clone(), Duration::from_secs(30))?;
+            let before = rpc.status()?;
+            match rpc.stage_lifecycle(command.clone()) {
+                Err(NetworkError::Remote(code)) if code == "ordering_rejected" => {}
+                _ => {
+                    return Err("node allowed a cancellation to overtake unsettled matching".into())
+                }
+            }
+            if rpc.status()? != before {
+                return Err("refused early cancellation changed the store".into());
+            }
+        }
+    }
     let batch = multifill.then(|| ApplicationNoteFillBatch {
         version: 1,
         fills: requests
@@ -647,6 +675,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "/handoff/native-first-certificate.json",
         )?;
     }
+    if lifecycle && next_match {
+        publish_result(
+            &serde_json::to_value(&taker_certificate)?,
+            "/handoff/native-second-certificate.json",
+        )?;
+    }
     let target = if next_match {
         "/handoff/native-next-match-result.json"
     } else if std::env::var("OCLOB_NATIVE_WALLET").ok().as_deref() == Some("1") {
@@ -759,7 +793,15 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
     first["next_order_matched"] = json!(true);
     first["next_order_mpc_nodes"] = json!(7);
     first["final_facility_sequences"] = json!([5, 5]);
-    publish_result(&first, "/handoff/native-result.json")?;
+    let target = if std::env::var("OCLOB_RESEARCH_CONTRACT")
+        .unwrap_or_default()
+        .ends_with("oclob_native_lifecycle_contract.json")
+    {
+        "/handoff/native-cycle-complete.json"
+    } else {
+        "/handoff/native-result.json"
+    };
+    publish_result(&first, target)?;
     println!("{}", first);
     Ok(())
 }

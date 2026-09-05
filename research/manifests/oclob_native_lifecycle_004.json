@@ -1,0 +1,49 @@
+{
+  "manifest_id": "oclob-native-lifecycle-final-004",
+  "contract_id": "oclob-native-lifecycle-v1",
+  "contract_path": "research/oclob_native_lifecycle_contract.json",
+  "contract_sha256": "233e378ace5575d3950a3a355d38126041374c13fc0616d4c6603e7c25ea8d0f",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Run003 completed the real releases and corporate recovery, then failed its added restart gate because it incorrectly expected zero private heads; the saved pre-restart checkpoint already has one finalized head for the fully filled first maker.",
+  "causal_hypothesis": "The durable terminal commands and canonical release observations survive actual seven-node restart unchanged; keeping an encrypted zero-remainder resting head is existing finalization behavior, not cancelled-order resurrection.",
+  "single_intended_change": "Correct only the acceptance harness's retained-head expectation from zero to one, keep exact full-status/digest equality across restart, and add a unit regression rejecting changed digests, resurrected records and missing nodes. No protocol relaxation.",
+  "baseline": "Run003 /tmp/oclob-native.b4qpl0; whole log SHA256 f96ba7c0c98323cbe8d4d65b4259c352a6146ffbdab4492ccfddfa2fc5f16e94. All seven saved checkpoints have three records and one private head. finalize_private_state retains all resting slots, including zero remainders.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_releases": 2,
+    "completed_native_rounds": 2,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ],
+    "node_restart_state_preserved": true,
+    "retained_input_records_per_node": 3,
+    "retained_finalized_private_heads_per_node": 1
+  },
+  "most_likely_prediction_error": "The new exact restart comparison may expose a genuine state change previously masked by the incorrect count. Reject the full run if any node digest, ordering state or generation differs.",
+  "rejection_rules": [
+    "stale contract hash",
+    "no actual full target execution",
+    "cancel overtakes unfinished matching",
+    "wrong or stale reservation head signed",
+    "missing exact refund serial consumption",
+    "expiry before actual deadline",
+    "incomplete seven-node canonical observation",
+    "incorrect corporate balances/unlocked note",
+    "five roots or validator restart disagree",
+    "any node status or durable state digest differs after actual process restart",
+    "unexpected terminal retained-record count"
+  ],
+  "promotion_rules": [
+    "smoke_only after every hard constraint; no performance, economic, operator or production promotion"
+  ],
+  "command": "make remote-native-lifecycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}

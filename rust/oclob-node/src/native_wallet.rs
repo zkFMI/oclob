@@ -22,6 +22,7 @@ pub struct RecoveredCorporateWallet {
     pub facility: FacilityWitness,
     pub notes: Vec<NoteOutput>,
     pub own_asset_refund: Option<[u8; 32]>,
+    pub unfilled_releases_recovered: usize,
     pub after_root: [u8; 32],
 }
 
@@ -51,7 +52,7 @@ pub fn recover_wallet(
     let key = Pedersen::new(b"qomm:defmi:v1");
     let claims = recipient_claims(&client, wallet.address.view.compress().to_bytes())?;
     let mut notes = Vec::new();
-    let mut own_asset_refund = None;
+    let mut refund_ids = std::collections::BTreeSet::new();
     for snapshot in &claims {
         let claim = snapshot.claim()?;
         let redemption = match journal.claim_redemption(claim.claim_id)? {
@@ -107,16 +108,67 @@ pub fn recover_wallet(
             return Err("claim redemption did not produce the exact canonical wallet note".into());
         }
         if claim.asset_id == config.asset_id && claim.kind == NoteClaimKind::Refund {
-            own_asset_refund = Some(note.output.note_id);
+            refund_ids.insert(note.output.note_id);
         }
         notes.push(note.output);
     }
     let facility = recover_facility(config, &client, journal)?;
+    let (root, ledger, outputs) = bridge.note_ledger(config.asset_id, key.clone(), 32, 4096)?;
+    let mut available = BTreeMap::new();
+    let mut owned = BTreeMap::new();
+    for (index, opening) in ledger.scan(&wallet, &key) {
+        owned.insert(outputs[index].note_id, opening.value);
+        if outputs[index].lock_id != [0; 32] || opening.value == 0 {
+            continue;
+        }
+        let serial = qomm_defmi::notes::note_nullifier(&opening.serial)
+            .compress()
+            .to_bytes();
+        let status = bridge.note_serial(serial)?;
+        if status.state_root != root {
+            return Err("refund selection crossed canonical generations".into());
+        }
+        if !status.spent {
+            available.insert(outputs[index].note_id, opening.value);
+        }
+    }
+    // Cumulative claim history contains zero and already-spent refunds too.
+    // The convenience funding ID must name an actually spendable positive note.
+    let own_asset_refund = refund_ids.into_iter().find(|id| available.contains_key(id));
+    let mut unfilled_releases_recovered = 0;
+    for prepared in journal.reservations()? {
+        let head = client.application_reservation_snapshot(prepared.request.mandate.hold_id)?;
+        if head.state_root != root {
+            return Err("released-note recovery crossed canonical generations".into());
+        }
+        if head.status == "released" && head.sequence == 1 {
+            let mut unlocked = client.note_snapshot(head.escrow_note_id)?.output;
+            unlocked.lock_id = [0; 32];
+            unlocked.note_id = unlocked.derived_id()?;
+            let note = client.note_snapshot(unlocked.note_id)?;
+            let original =
+                oclob_core::SecretOrder::from_secret_wire(&prepared.order_wire).map_err(err)?;
+            if note.output != unlocked
+                || owned.get(&unlocked.note_id) != Some(&original.reservation_limit())
+            {
+                return Err(
+                    "unfilled reservation did not return its exact spendable corporate note".into(),
+                );
+            }
+            if available.contains_key(&unlocked.note_id) {
+                unfilled_releases_recovered += 1;
+            }
+        }
+    }
+    if client.state_root()? != root {
+        return Err("corporate recovery changed before completion".into());
+    }
     journal.save_funding_witness(&facility)?;
     Ok(RecoveredCorporateWallet {
         facility,
         notes,
         own_asset_refund,
+        unfilled_releases_recovered,
         after_root: client.state_root()?,
     })
 }

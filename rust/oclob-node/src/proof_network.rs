@@ -217,6 +217,47 @@ impl ProofLoadGuard {
             crate::native_finality::observe(client, trust, &request, &metadata, &matched_slots)?;
         serde_json::to_value(handle.record(verified)?).map_err(|e| e.to_string())
     }
+
+    fn authorize_native_release(
+        &self,
+        params: Value,
+        party: &mut ProofParty,
+    ) -> Result<Value, String> {
+        let (client, handle) = self
+            .native_finality
+            .as_ref()
+            .ok_or("node has no canonical reader")?;
+        let trust = self
+            .native_trust
+            .as_ref()
+            .ok_or("native reservation trust is not configured")?;
+        let request: crate::native_lifecycle::NativeReleaseRequest =
+            serde_json::from_value(params).map_err(|_| "native release request is malformed")?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "invalid system clock")?
+            .as_secs();
+        let message = handle.authorize_release(client, trust, &request, party, now)?;
+        Ok(
+            json!({"authorized": true, "kind": "oclob-native-release", "message": hex::encode(message)}),
+        )
+    }
+
+    fn confirm_native_release(&self, params: Value) -> Result<Value, String> {
+        let (client, handle) = self
+            .native_finality
+            .as_ref()
+            .ok_or("node has no canonical reader")?;
+        let trust = self
+            .native_trust
+            .as_ref()
+            .ok_or("native reservation trust is not configured")?;
+        let request: crate::native_lifecycle::NativeReleaseConfirmation =
+            serde_json::from_value(params)
+                .map_err(|_| "native release confirmation is malformed")?;
+        serde_json::to_value(handle.confirm_release(client, trust, &request)?)
+            .map_err(|e| e.to_string())
+    }
 }
 
 fn decode_param_digest(params: &Value, field: &str) -> Result<Digest32, String> {
@@ -423,10 +464,18 @@ fn serve_connection(
                     error: Some(error),
                 },
             }
-        } else if request.method == "confirm_oclob_native_finality" {
+        } else if matches!(
+            request.method.as_str(),
+            "confirm_oclob_native_finality" | "confirm_oclob_native_release"
+        ) {
             // Read-only network observation takes no proof-party lock and
             // never authorizes, consumes, or regenerates a FROST nonce.
-            match guard.confirm_native_finality(request.params) {
+            let result = if request.method == "confirm_oclob_native_release" {
+                guard.confirm_native_release(request.params)
+            } else {
+                guard.confirm_native_finality(request.params)
+            };
+            match result {
                 Ok(result) => ProofResponse {
                     id: request.id,
                     ok: true,
@@ -440,11 +489,19 @@ fn serve_connection(
                     error: Some(error.chars().take(512).collect()),
                 },
             }
-        } else if request.method == "authorize_oclob_native_fill" {
+        } else if matches!(
+            request.method.as_str(),
+            "authorize_oclob_native_fill" | "authorize_oclob_native_release"
+        ) {
             let mut party = party
                 .lock()
                 .map_err(|_| "proof-party state lock is poisoned".to_owned())?;
-            match guard.authorize_native_fill(request.params, &mut party) {
+            let result = if request.method == "authorize_oclob_native_release" {
+                guard.authorize_native_release(request.params, &mut party)
+            } else {
+                guard.authorize_native_fill(request.params, &mut party)
+            };
+            match result {
                 Ok(result) => ProofResponse {
                     id: request.id,
                     ok: true,

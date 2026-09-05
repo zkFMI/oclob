@@ -219,6 +219,39 @@ fn run_native(
     let secret = load_secret_32(PathBuf::from(journal_key)).map_err(|e| e.to_string())?;
     let journal =
         NativeCorporateJournal::open(PathBuf::from(journal_path), &secret, config, cluster)?;
+    if std::env::var("OCLOB_NATIVE_CANCEL_ORDER").ok().as_deref() == Some("1") {
+        let intent = journal
+            .intent(&request_id)?
+            .ok_or("cancel has no original corporate intent")?;
+        let delivery: StoredCorporateDelivery = journal
+            .stage(&request_id, "delivery")?
+            .ok_or("cancel has no admitted delivery")?;
+        let receipt: EdgeAdmissionReceipt = journal
+            .stage(&request_id, "receipt")?
+            .ok_or("cancel has no admission receipt")?;
+        if delivery.delivery.manifest.commitment != receipt.commitment() {
+            return Err("cancel journal delivery differs from its receipt".into());
+        }
+        let command = if let Some(saved) = journal.cancellation(&request_id)? {
+            saved
+        } else {
+            let now = unix_seconds()?;
+            let command = oclob_node::native_lifecycle::LifecycleCommand::cancel(
+                &receipt.manifest,
+                now,
+                (now + 900).min(receipt.manifest.retention_deadline),
+                random_digest(),
+                &SigningKey::from_bytes(&intent.signing_key),
+            )?;
+            journal.save_cancellation(&request_id, &command)?
+        };
+        publish_unchanged(handoff, &command)?;
+        println!(
+            "{}",
+            json!({"status": "cancellation_signed", "order_commitment": receipt.commitment().hex()})
+        );
+        return Ok(());
+    }
     if std::env::var("OCLOB_NATIVE_RECOVER_WALLET").ok().as_deref() == Some("1") {
         return recover_native_wallet(config, identity, &journal, handoff, scenario);
     }
@@ -454,7 +487,10 @@ fn recover_native_wallet(
     // Fixed financial assertions and next-order construction are explicitly
     // confined to the opt-in lab acceptance, not the reusable recovery API.
     let acceptance = std::env::var("OCLOB_NATIVE_WALLET_ACCEPTANCE").unwrap_or_default();
-    if !matches!(acceptance.as_str(), "1" | "cycle-first" | "cycle-final") {
+    if !matches!(
+        acceptance.as_str(),
+        "1" | "cycle-first" | "cycle-final" | "cancel-final" | "expiry-final"
+    ) {
         println!(
             "{}",
             json!({"status": "wallet_recovered", "notes": recovered.notes.len(),
@@ -467,6 +503,8 @@ fn recover_native_wallet(
         ("cycle-first", Scenario::Taker) => ([970, 0, 9030], 3, 3),
         ("cycle-final", Scenario::Maker) => ([0, 29, 91], 5, 3),
         ("cycle-final", Scenario::Taker) => ([869, 0, 9131], 5, 5),
+        ("cancel-final", Scenario::Maker) => ([29, 0, 91], 6, 4),
+        ("expiry-final", Scenario::Maker) => ([29, 0, 91], 8, 4),
         (_, Scenario::Maker) => ([60, 20, 40], 2, 1),
         (_, Scenario::Taker) => ([6000, 0, 4000], 2, 2),
     };
@@ -476,7 +514,21 @@ fn recover_native_wallet(
     {
         return Err("lab wallet recovery differs from the executed native fill".into());
     }
-    if matches!(scenario, Scenario::Taker) && acceptance != "cycle-final" {
+    if acceptance == "cancel-final" {
+        let note = recovered
+            .own_asset_refund
+            .ok_or("cancellation refund is absent")?;
+        let instruction = NativeOrderInstruction {
+            side: Side::Sell,
+            limit_price: 102,
+            quantity: 5,
+            time_in_force: TimeInForce::GoodTilCancelled,
+            valid_for_seconds: 60,
+            source_note: Some(hex::encode(note)),
+        };
+        publish_unchanged(Path::new("/corporate/expiry-order.json"), &instruction)?;
+    }
+    if matches!(scenario, Scenario::Taker) && matches!(acceptance.as_str(), "1" | "cycle-first") {
         let note = recovered
             .own_asset_refund
             .ok_or("actual cash refund note was not recovered")?;
@@ -498,6 +550,7 @@ fn recover_native_wallet(
         )?;
     }
     let report = json!({"wallet_recovered": true, "notes": recovered.notes.len(),
+        "unfilled_releases_recovered": recovered.unfilled_releases_recovered,
         "facility_sequence": recovered.facility.sequence, "facility_id": hex::encode(config.facility_id),
         "expected_private_balances_verified": true, "after_root": hex::encode(recovered.after_root),
         "canonical_notes": recovered.notes.iter().map(|n| hex::encode(n.note_id)).collect::<Vec<_>>()});

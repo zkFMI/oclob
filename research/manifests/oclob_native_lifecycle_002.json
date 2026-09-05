@@ -1,0 +1,44 @@
+{
+  "manifest_id": "oclob-native-lifecycle-002",
+  "contract_id": "oclob-native-lifecycle-v1",
+  "contract_path": "research/oclob_native_lifecycle_contract.json",
+  "contract_sha256": "233e378ace5575d3950a3a355d38126041374c13fc0616d4c6603e7c25ea8d0f",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Run001 completed the first actual settlement/recovery and admitted the refund-funded next order, then the corporate journal rejected the new cancel stage before the second match. Zero native releases.",
+  "causal_hypothesis": "Owner-authenticated terminal commands in the same quorum ordering chain, a barrier behind unsettled matching and node-owned canonical release observations preserve no-opt-out semantics and recover exactly the unspent remainder.",
+  "single_intended_change": "Add a typed corporate cancellation journal method bound to the original saved intent/admitted manifest, retaining immutable first-write recovery and disallowing generic submission-stage completion. Include finalV9 persisted-history validation and corrected historicalV7 fixture verified by95 tests.",
+  "baseline": "Run001 Softbank/tmp/oclob-native.OWe7NB; whole log SHA2563662eb2a1e60f30abfdccfdddd94a5e6405d7842f7a19ea1ec1cecf7ca4012b0. Code00295tests+Clippy SHA256dc84c38d634ec7167566e6f3294d7e9468a4d249f0f6dfe233688f79a250616b.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_containers": 2,
+    "mpc_containers": 7,
+    "live_validators": 5,
+    "scenario_count": 1
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_releases": 2,
+    "completed_native_rounds": 2,
+    "recipient_claims_redeemed": 9,
+    "final_facility_sequences": [
+      8,
+      5
+    ]
+  },
+  "most_likely_prediction_error": "Expiry may expose a stale authority/time assumption or unfilled-note recovery mismatch; a failed gate rejects the whole run without fake time, replacement funds or relaxed signing checks.",
+  "rejection_rules": [
+    "stale contract hash",
+    "no actual full target execution",
+    "cancel overtakes unfinished matching",
+    "wrong or stale reservation head signed",
+    "missing exact29-refund serial consumption",
+    "expiry before actual deadline",
+    "incomplete seven-node canonical observation",
+    "incorrect corporate balances/unlocked note",
+    "five roots or restart disagree"
+  ],
+  "promotion_rules": [
+    "smoke_only after all hard constraints, never performance/economic/operator/product promotion"
+  ],
+  "command": "make remote-native-lifecycle-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'"
+}
