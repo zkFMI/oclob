@@ -5,4 +5,5 @@
 !/artifacts/oclob_distributed_e2e.json
 !/artifacts/oclob_avalanche_acceptance.json
 /oclob_demo/react-flow/node_modules/
+/oclob_demo/react-flow/.test-build/
 .DS_Store

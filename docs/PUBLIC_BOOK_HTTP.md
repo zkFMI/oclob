@@ -33,7 +33,7 @@ The adapter checks the upstream CA, hostname and pinned certificate, then the sn
 |---|---|---|
 | 400 | `invalid_minimum_sequence` | A malformed or unsupported query parameter |
 | 400 | `request_body_not_allowed` | A GET request with a body |
-| 404 | `not_found` | A route other than `/v1/book` |
+| 404 | `not_found` | A route outside `/v1/book`, `/v1/book/view`, `/`, `/react-flow.js`, and `/react-flow.css` |
 | 405 | `method_not_allowed` | A method other than GET; `Allow: GET` is returned |
 | 503 | `verified_book_unavailable` | No finalized book, expired or unverifiable snapshot, unavailable upstream, or a sequence below the requested minimum |
 
@@ -66,7 +66,9 @@ curl --fail --silent --show-error \
   'http://book-api:9880/v1/book?minimum_sequence=4'
 ```
 
-For browser deployment, put a separately configured HTTPS gateway on the same origin as the application and proxy only this public route to `book-api`. Do not expose the cleartext Docker port to the internet. Browser integration, gateway authentication where required, connection limits, request-rate limits, full end-to-end deadlines and public-internet denial-of-service resistance are not yet accepted. The Docker health check tests HTTP liveness, not book availability: a valid 503 response can coexist with a healthy process.
+The [native browser](NATIVE_BROWSER.md) uses `/v1/book/view`, which verifies the same signed feed before projecting public display fields. Integer values are decimal strings to avoid JavaScript rounding. The projection is not independently signed; independent verification uses `/v1/book`. The three static routes serve embedded assets with a restrictive content security policy.
+
+For production browser deployment, put a separately configured HTTPS gateway on the same origin as the application and proxy only these public routes to `book-api`. Do not expose the cleartext Docker port to the internet. A remote-loopback-only Docker override supports bounded browser checks. Gateway authentication where required, connection limits, request-rate limits, full end-to-end deadlines and public-internet denial-of-service resistance are not yet accepted. The Docker health check tests HTTP liveness, not book availability: a valid 503 response can coexist with a healthy process.
 
 HTTP framing and connection handling use [tiny_http 0.12.0](https://docs.rs/tiny_http/0.12.0/tiny_http/struct.Server.html), under [MIT or Apache-2.0](https://github.com/tiny-http/tiny-http). The exact crate archive checksum and transitive dependencies are retained in `Cargo.lock`; no project-owned HTTP parser is introduced.
 
@@ -79,4 +81,4 @@ make remote-native-http-e2e REMOTE_TEST_HOST=softbank-l40s \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
 ```
 
-The final-source run passed with four HTTP snapshots identical to actual TLS snapshots, two atomic fills totaling 7,500, real post-settlement process termination and recovery, and five-validator restart. Six actual failure responses covered no initial book, unknown route, POST, malformed query, future sequence and an actual upstream shutdown. All 127 Rust tests, formatting and all-target Clippy checks passed on Softbank. The result is `artifacts/oclob_native_http.json`; `artifacts/oclob_native_http_sources.json` binds it to 87 exact source files. This is single-host functional evidence, not browser, performance or production acceptance.
+The final browser-source run passed with four HTTP snapshots identical to actual TLS snapshots, two atomic fills totaling 7,500, real post-settlement process termination and recovery, and five-validator restart. Six actual failure responses covered no initial book, unknown route, POST, malformed query, future sequence and an actual upstream shutdown. All 129 Rust tests, formatting and all-target Clippy checks passed on Softbank. The current result is `artifacts/oclob_native_http.json`; `artifacts/oclob_native_browser_sources.json` binds this R17 result to 165 exact source files and separate browser evidence. The older `oclob_native_http_sources.json` records R16 at its stated artifact hash, not this newer result. This is single-host functional evidence, not performance or production acceptance.

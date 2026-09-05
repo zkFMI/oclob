@@ -17,6 +17,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './network.css';
+import { startNativeApp } from './native';
 
 type GraphMetric = {
   label: string;
@@ -297,3 +298,4 @@ declare global {
 }
 
 window.OclobNetworkGraph = { render };
+startNativeApp(FlowCanvas);

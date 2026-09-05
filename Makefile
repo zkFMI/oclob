@@ -18,6 +18,7 @@ NATIVE_DEFERRED ?= 0
 NATIVE_MARKET ?= 0
 NATIVE_DEPTH ?= 0
 NATIVE_HTTP ?= 0
+NATIVE_BROWSER ?= 0
 NATIVE_HTTP_MANIFEST ?= /research/manifests/oclob_native_http_001.json
 NATIVE_DEPTH_MANIFEST ?= /research/manifests/oclob_native_depth_001.json
 NATIVE_WORKER_MANIFEST ?= /research/manifests/oclob_native_worker_006.json
@@ -246,6 +247,7 @@ remote-native-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
 	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
 	@case '$(NATIVE_HTTP):$(NATIVE_DEPTH)' in 0:*|1:1) ;; *) echo 'HTTP depth requires native depth' >&2; exit 2 ;; esac
+	@case '$(NATIVE_BROWSER):$(NATIVE_HTTP)' in 0:*|1:1) ;; *) echo 'native browser requires HTTP depth' >&2; exit 2 ;; esac
 	@case '$(NATIVE_DEPTH):$(NATIVE_MARKET)' in 0:*|1:1) ;; *) echo 'public depth requires native market' >&2; exit 2 ;; esac
 	@case '$(NATIVE_MARKET):$(NATIVE_RECOVERY):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_EXPIRY):$(NATIVE_DEFERRED)' in 0:*|1:0:0:0:0:0) ;; *) echo 'resident market uses its separate acceptance contract' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WALLET):$(NATIVE_RECOVERY)' in 0:0|0:1|1:0) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
@@ -280,6 +282,7 @@ remote-native-e2e:
 	  if [ '$(NATIVE_DEPTH)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_depth_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_DEPTH_MANIFEST)'; fi; \
 	  if [ '$(NATIVE_HTTP)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_http_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_HTTP_MANIFEST)'; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
+	  if [ '$(NATIVE_BROWSER)' = 1 ]; then compose=\"\$$compose -f $$remote_dir/oclob/deploy/docker-compose.native-browser.yml\"; fi; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
 	  docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-cluster -t \"\$$OCLOB_CLUSTER_IMAGE\" '$$remote_dir/oclob'; \
@@ -295,6 +298,7 @@ remote-native-e2e:
 	    export OCLOB_MARKET_CRASH_AFTER_CANONICAL=1; \
 	    \$$compose up -d market-worker maker-worker taker-worker public-book; \
 	    if [ '$(NATIVE_HTTP)' = 1 ]; then \$$compose up -d --wait book-api; \$$compose run --rm book-reader curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\\n' http://book-api:9880/v1/book > \"\$$runtime/handoff/http-statuses.txt\"; fi; \
+	    if [ '$(NATIVE_BROWSER)' = 1 ]; then printf 'BROWSER_EMPTY_READY %s\\n' '$$remote_dir'; for browser_wait in \$$(seq 1 90); do [ ! -f '$$remote_dir/browser-empty-continue' ] || break; sleep 1; done; fi; \
 	    first_market=\$$(\$$compose ps -q market-worker); [ -n \"\$$first_market\" ]; \
 	    docker inspect --format '{{.Id}}' \"\$$first_market\" > \"\$$runtime/handoff/market-processes.txt\"; \
 	    high=market-high-order.json; low=market-low-order.json; buy=multifill-order.json; total=3; \
@@ -319,6 +323,7 @@ remote-native-e2e:
 	    docker inspect --format '{{.Id}}' \$$(\$$compose ps -q market-worker) >> \"\$$runtime/handoff/market-processes.txt\"; \
 	    \$$compose run --rm market-worker oclob-market-worker --wait-rounds \$$total > \"\$$runtime/handoff/market-before-restart.json\"; \
 	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 4 > \"\$$runtime/handoff/depth-final.json\"; if [ '$(NATIVE_HTTP)' = 1 ]; then \$$compose run --rm book-reader curl --fail --silent --show-error --max-time 10 'http://book-api:9880/v1/book?minimum_sequence=4' > \"\$$runtime/handoff/http-depth-final.json\"; cmp \"\$$runtime/handoff/depth-final.json\" \"\$$runtime/handoff/http-depth-final.json\"; fi; fi; \
+	    if [ '$(NATIVE_BROWSER)' = 1 ]; then printf 'BROWSER_SETTLED_READY %s\\n' '$$remote_dir'; for browser_wait in \$$(seq 1 120); do [ ! -f '$$remote_dir/browser-settled-continue' ] || break; sleep 1; done; fi; \
 	    \$$compose up -d --force-recreate market-worker; \
 	    docker inspect --format '{{.Id}}' \$$(\$$compose ps -q market-worker) >> \"\$$runtime/handoff/market-processes.txt\"; \
 	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 4 > \"\$$runtime/handoff/depth-after-restart.json\"; if [ '$(NATIVE_HTTP)' = 1 ]; then \$$compose run --rm book-reader curl --fail --silent --show-error --max-time 10 'http://book-api:9880/v1/book?minimum_sequence=4' > \"\$$runtime/handoff/http-depth-after-restart.json\"; cmp \"\$$runtime/handoff/depth-after-restart.json\" \"\$$runtime/handoff/http-depth-after-restart.json\"; fi; fi; \

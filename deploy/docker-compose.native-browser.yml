@@ -1,0 +1,12 @@
+# Opt-in, local/SSH-tunnel browser acceptance. Never expose cleartext on 0.0.0.0.
+services:
+  book-api:
+    networks: [oclob-private, oclob-browser]
+    ports:
+      - "127.0.0.1:19880:9880"
+networks:
+  # Only the already public, keyless reader joins this bridge. MPC, corporate
+  # services and validators remain exclusively on the internal network.
+  # Docker does not publish ports for an internal-only container.
+  oclob-browser:
+    driver: bridge

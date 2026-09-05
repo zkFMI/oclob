@@ -1,0 +1,18 @@
+{
+  "manifest_id": "oclob-native-browser-rough-003",
+  "contract_id": "oclob-native-http-v1",
+  "contract_path": "research/oclob_native_http_contract.json",
+  "contract_sha256": "720c4d2ee16d9412ca30840a3457c88a278d97515909a3521ce91c0b54306a15",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The native HTTP feed is verified but the existing browser displays a different legacy in-process market.",
+  "causal_hypothesis": "A same-origin native React Flow view can display actual seven-node MPC/DeFMI depth without receiving private orders or substituting the legacy financial backend.",
+  "single_intended_change": "Add same-origin native UI and lossless decimal display projection; retain the original native financial sequence, crash recovery and all HTTP acceptance conditions.",
+  "baseline": "R16 final002: 4 verified HTTP snapshots, 6 fail-closed checks, 2 atomic fills, notional7500. Browser integration was absent.",
+  "evaluation_population": { "hosts": 1, "corporate_clients": 2, "mpc_nodes": 7, "validators": 5, "orders": 4, "browser_viewports": ["1440x1000", "390x844"] },
+  "primary_metric": "http_verified_depth_snapshots",
+  "point_prediction": { "http_verified_depth_snapshots": 4, "http_fail_closed_checks": 6, "trade_notional": 7500, "autonomously_settled_fills": 2, "browser_viewports_showing_actual_depth": 2 },
+  "most_likely_prediction_error": "Frontend shape validation or bundle delivery may hide a valid signed snapshot; graph fitting may make the native evidence unreadable at the narrow viewport.",
+  "rejection_rules": ["stale contract hash", "any original HTTP/native gate failure", "browser prices differ from actual TLS book", "browser uses legacy or mocked financial API", "stale price rows remain current during real expiry or upstream outage", "unreadable or clipped native content"],
+  "promotion_rules": ["Native runner outcome is smoke_only. Browser acceptance additionally requires actual same-origin UI interaction, desktop and narrow screenshots, typecheck/build/unit tests and separate evidence; native runner alone does not prove UI acceptance."],
+  "command": "make remote-native-http-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_HTTP_MANIFEST=/research/manifests/oclob_native_http_003.json NATIVE_BROWSER=1"
+}
