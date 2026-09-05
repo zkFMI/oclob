@@ -1,0 +1,44 @@
+# Owner-only services. No published ports and no access to the other company.
+services:
+  maker-api:
+    extends:
+      file: docker-compose.native.yml
+      service: maker-worker
+    networks:
+      oclob-private:
+        aliases: [oclob-maker-api]
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/maker-api.json
+    command: [oclob-corporate-api]
+    healthcheck:
+      test: [CMD, oclob-corporate-api, --ping]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+  taker-api:
+    extends:
+      file: docker-compose.native.yml
+      service: taker-worker
+    networks:
+      oclob-private:
+        aliases: [oclob-taker-api]
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/taker-api.json
+    command: [oclob-corporate-api]
+    healthcheck:
+      test: [CMD, oclob-corporate-api, --ping]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+  maker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker-client:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/maker-client-state:/corporate:rw
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/maker-api.json
+  taker:
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker-client:/identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/taker-client-state:/corporate:rw
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/taker-api.json

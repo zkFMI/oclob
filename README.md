@@ -46,6 +46,12 @@ The final-source native browser run verified four network-fetched snapshots, two
 
 The [native React Flow browser](docs/NATIVE_BROWSER.md) now reads the verified [HTTP feed](docs/PUBLIC_BOOK_HTTP.md). It shows aggregate prices, remaining quantities, seven node signatures and the matching settlement record. Desktop and narrow-screen checks used actual MPC/DeFMI results, not mocked responses; see the [visual verification record](docs/NATIVE_BROWSER_AUDIT_20260906.md). This is a **read-only** interface. Native corporate authentication, order actions and private balances remain incomplete. The existing legacy financial demo is a separate path.
 
+### Corporate service API
+
+The [corporate API](docs/CORPORATE_API.md) runs separately for each company. Registered corporate clients use certificate-pinned mutual TLS to queue already-signed orders, inspect their own dispatch state, and read holdings and facility capacity against a consistent DeFMI state. The market coordinator and public-book reader receive no corporate credentials or private wallet snapshots.
+
+Locked quantities follow current reservation remainders rather than the original escrow note values; unredeemed claims are explicitly excluded from spendable balances. The native scenario checks four orders through the API, two actual fills, cross-company queue-access rejection and exact-request retry after API restart. Signing clients have separate encrypted retry outboxes and do not mount the service journal or dispatch queue. This is an internal-system RPC, not browser user authentication: the corporate browser gateway, user roles, browser-owned signing credentials and complete claim-handling interface remain unfinished.
+
 ## Architecture
 
 ```mermaid

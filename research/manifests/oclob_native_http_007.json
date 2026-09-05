@@ -1,0 +1,41 @@
+{
+  "manifest_id": "oclob-corporate-client-007",
+  "contract_id": "oclob-native-http-v1",
+  "contract_path": "research/oclob_native_http_contract.json",
+  "contract_sha256": "720c4d2ee16d9412ca30840a3457c88a278d97515909a3521ce91c0b54306a15",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Native006b used a client that could access the service journal through shared mounts.",
+  "causal_hypothesis": "Separate durable client outboxes and keys preserve exact signed retries while only the corporate API writes server queue state.",
+  "single_intended_change": "Remove service journal and queue mounts from the API signing clients; use their independent encrypted outboxes over existing owner-authenticated RPC.",
+  "baseline": "90561fa native006b: 4 orders, 2 fills/7500, exact replay and locked45/0; shared corporate journal.",
+  "evaluation_population": {
+    "hosts": 1,
+    "corporations": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 4
+  },
+  "primary_metric": "autonomously_settled_fills",
+  "point_prediction": {
+    "autonomously_settled_fills": 2,
+    "trade_notional": 7500,
+    "cross_corporate_reads_rejected": 2,
+    "seller_locked_after": 45,
+    "buyer_locked_after": 0,
+    "client_service_shared_journal_mounts": 0
+  },
+  "most_likely_prediction_error": "Compose merging or a hidden local journal dependency may still require the service queue and prevent the native path.",
+  "rejection_rules": [
+    "Any original native financial/HTTP gate fails",
+    "Cross-corporate queue read succeeds",
+    "Wallet locked value differs from expected canonical remaining amount",
+    "Active escrow ownership cannot be verified",
+    "Source/root mismatch or raw corporate files exported to shared/public mounts",
+    "Client can access service journal/dispatch through any mount",
+    "Client resubmission recreates a new authorization or duplicate trade"
+  ],
+  "promotion_rules": [
+    "smoke_only, source-bound corporate RPC acceptance only; no browser, WAN or production claim"
+  ],
+  "command": "make remote-native-http-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_HTTP_MANIFEST=/research/manifests/oclob_native_http_007.json NATIVE_CORPORATE_API=1"
+}

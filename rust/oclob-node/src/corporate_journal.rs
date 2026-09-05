@@ -1137,6 +1137,173 @@ mod tests {
         (intent, authorization)
     }
 
+    // API state-machine fixtures, not network or financial acceptance.
+    fn api_fixture(files: &Files) -> crate::corporate_api::CorporateApi {
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[81; 32], &config, &cluster).unwrap();
+        let queue = crate::corporate_dispatch::NativeCorporateDispatch::initialize(
+            files.root.join("dispatch.enc"),
+            &[81; 32],
+        )
+        .unwrap();
+        crate::corporate_api::CorporateApi {
+            config,
+            cluster,
+            journal,
+            queue,
+            identity: crate::network::ClientIdentityConfig {
+                version: 1,
+                tls_certificate: "not-used.pem".into(),
+                tls_private_key: "not-used.key".into(),
+                tls_ca: "not-used-ca.pem".into(),
+                application_signing_key: "not-used.raw".into(),
+            },
+        }
+    }
+    fn api_request(
+        api: &crate::corporate_api::CorporateApi,
+        id: &str,
+    ) -> crate::corporate_api::CorporateRequest {
+        let (intent, authorization) = authorized_intent(&api.config, 21);
+        crate::corporate_api::CorporateRequest::Enqueue {
+            request_id: id.into(),
+            intent: Box::new(intent),
+            authorization: Box::new(authorization),
+            source_note: None,
+        }
+    }
+    #[test]
+    fn corporate_api_exact_retry_survives_reopen_and_does_not_reserve() {
+        use crate::corporate_api::{CorporateApi, CorporateRequest, CorporateResponse};
+        let files = Files::new();
+        let api = api_fixture(&files);
+        let request = api_request(&api, "api-order-1");
+        let bytes = serde_json::to_vec(&request).unwrap();
+        assert!(matches!(
+            api.handle(request, 101).unwrap(),
+            CorporateResponse::Queued {
+                already_present: false,
+                ..
+            }
+        ));
+        assert!(api
+            .journal
+            .stage::<PreparedCorporateReserve>("api-order-1", "reserve")
+            .unwrap()
+            .is_none());
+        let reopened = CorporateApi {
+            journal: NativeCorporateJournal::open(
+                files.path(),
+                &[81; 32],
+                &api.config,
+                &api.cluster,
+            )
+            .unwrap(),
+            queue: crate::corporate_dispatch::NativeCorporateDispatch::open(
+                files.root.join("dispatch.enc"),
+                &[81; 32],
+            )
+            .unwrap(),
+            config: api.config,
+            cluster: api.cluster,
+            identity: api.identity,
+        };
+        assert!(matches!(
+            reopened
+                .handle(serde_json::from_slice(&bytes).unwrap(), 1100)
+                .unwrap(),
+            CorporateResponse::Queued {
+                already_present: true,
+                ..
+            }
+        ));
+        assert_eq!(reopened.queue.summaries().unwrap().len(), 1);
+        let mut changed: CorporateRequest = serde_json::from_slice(&bytes).unwrap();
+        if let CorporateRequest::Enqueue { intent, .. } = &mut changed {
+            intent.input_digest[0] ^= 1;
+        }
+        assert!(reopened.handle(changed, 101).is_err());
+        let mut changed: CorporateRequest = serde_json::from_slice(&bytes).unwrap();
+        if let CorporateRequest::Enqueue { source_note, .. } = &mut changed {
+            *source_note = Some([51; 32]);
+        }
+        assert!(reopened.handle(changed, 101).is_err());
+        assert_eq!(reopened.queue.summaries().unwrap().len(), 1);
+    }
+    #[test]
+    fn corporate_api_accepts_separate_client_outbox_and_replays_original_authorization() {
+        use crate::corporate_api::{CorporateRequest, CorporateResponse};
+        let server_files = Files::new();
+        let client_files = Files::new();
+        let api = api_fixture(&server_files);
+        let client = NativeCorporateJournal::initialize(
+            client_files.path(),
+            &[82; 32],
+            &api.config,
+            &api.cluster,
+        )
+        .unwrap();
+        let (intent, authorization) = authorized_intent(&api.config, 21);
+        client.save_intent("external-1", &intent).unwrap();
+        client
+            .save_authorization("external-1", &authorization, &api.config)
+            .unwrap();
+        let client_bytes = fs::read(client_files.path()).unwrap();
+        assert!(api.journal.intent("external-1").unwrap().is_none());
+        let request = || CorporateRequest::Enqueue {
+            request_id: "external-1".into(),
+            intent: Box::new(client.intent("external-1").unwrap().unwrap()),
+            authorization: Box::new(client.authorization("external-1").unwrap().unwrap()),
+            source_note: None,
+        };
+        assert!(matches!(
+            api.handle(request(), 101).unwrap(),
+            CorporateResponse::Queued {
+                already_present: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            api.handle(request(), 1100).unwrap(),
+            CorporateResponse::Queued {
+                already_present: true,
+                ..
+            }
+        ));
+        assert_eq!(api.queue.summaries().unwrap().len(), 1);
+        assert_eq!(client_bytes, fs::read(client_files.path()).unwrap());
+        assert!(!client_files.root.join("dispatch.enc").exists());
+        assert!(client.reservations().unwrap().is_empty());
+        assert!(NativeCorporateJournal::open(
+            server_files.path(),
+            &[82; 32],
+            &api.config,
+            &api.cluster
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn corporate_api_rejects_invalid_or_expired_intake_before_writing() {
+        use crate::corporate_api::CorporateRequest;
+        let files = Files::new();
+        let api = api_fixture(&files);
+        for id in ["bad/path", "has.dot", ""] {
+            assert!(api.handle(api_request(&api, id), 101).is_err());
+        }
+        assert!(api.handle(api_request(&api, "expired"), 1001).is_err());
+        let mut mismatch = api_request(&api, "mismatch");
+        if let CorporateRequest::Enqueue { authorization, .. } = &mut mismatch {
+            authorization.mandate.facility_id = [99; 32];
+        }
+        assert!(api.handle(mismatch, 101).is_err());
+        assert!(api.queue.summaries().unwrap().is_empty());
+        for id in ["expired", "mismatch"] {
+            assert!(api.journal.intent(id).unwrap().is_none());
+        }
+    }
+
     #[test]
     fn original_authorization_checks_terms_identity_signature_scope_and_openings() {
         let (config, _) = fixture();

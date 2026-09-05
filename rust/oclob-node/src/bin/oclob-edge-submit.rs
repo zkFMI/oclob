@@ -378,6 +378,37 @@ fn run_native(
             .map(PathBuf::from)
             .ok_or("corporate journal path is missing")?
             .with_file_name("dispatch.enc");
+        if let Some(api_path) = std::env::var_os("OCLOB_CORPORATE_API_CONFIG") {
+            let api: oclob_node::corporate_api::CorporateApiConfig =
+                read_json(&PathBuf::from(api_path))?;
+            let authorization = journal
+                .authorization(&request_id)?
+                .ok_or("authorization missing")?;
+            // Persist the exact authorization before sending it. With the API
+            // compose profile, this is a client-only outbox, not the server's
+            // journal. The server serializes insertion in its own queue.
+            drop(_intake_guard);
+            let request = oclob_node::corporate_api::CorporateRequest::Enqueue {
+                request_id: request_id.clone(),
+                intent: Box::new(intent),
+                authorization: Box::new(authorization),
+                source_note,
+            };
+            let response = oclob_node::corporate_api::call(&api.endpoint, identity, &request)?;
+            match response {
+                oclob_node::corporate_api::CorporateResponse::Queued {
+                    request_id: id,
+                    already_present,
+                } if id == request_id => {
+                    println!(
+                        "{}",
+                        json!({"status":"authorized_and_queued_via_api","request_id":id,"already_present":already_present})
+                    );
+                    return Ok(());
+                }
+                _ => return Err("corporate API did not acknowledge queue insertion".into()),
+            }
+        }
         let queue =
             oclob_node::corporate_dispatch::NativeCorporateDispatch::open(queue_path, &secret)?;
         let duplicate = queue.enqueue_authorized(&journal, config, &request_id, source_note)?;
