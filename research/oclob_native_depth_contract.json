@@ -1,0 +1,18 @@
+{
+  "contract_id": "oclob-native-depth-v1",
+  "objective": "Make the resident native market publish a canonical, price-level-only order book derived inside the real MPC, fetchable without corporate keys or market journal access. Bind the book to the signed MPC result and expose new post-trade depth only after canonical settlement and all node finality confirmations.",
+  "primary_metric": "canonically_published_depth_snapshots",
+  "truth_provider": "Seven real MPC outputs and signed receipts, actual resident market progress, network-fetched public snapshots, threshold zkPI, five native DeFMI validators and process restart readback.",
+  "hard_constraints": [
+    "No plaintext order sorting or aggregating at coordinator/frontend. Use the pinned official MP-SPDZ oblivious sorting implementation; secret aggregation merges equal-side equal-price remaining quantities before revealing fixed-shape canonical levels.",
+    "Run sell30@101, sell30@100, sell60@100 in that sequence and then buy75@101 IOC. Fund all three sells from the same120-unit facility. Publish level snapshots [101:30], [100:30,101:30], [100:90,101:30], then [100:15,101:30] only after two atomic fills at100 for75 units, notional7500,14 canonical observations and zero post-match financial signatures.",
+    "Actual process exit75 after canonical acceptance and before local completion must leave the network book at the previous90@100 plus30@101 view. Restart must recover exact signed settlement and publish the15@100 plus30@101 view once without another trade. Completed service replacement and validator restart must preserve the final snapshot.",
+    "Public output contains canonical price levels, publication sequence, result binding and finality provenance, never per-order quantities, participant identifiers, reservation authorities, private-state data or source-slot grouping. Reject malformed, duplicated, out-of-order, noncanonical or unsigned depth rather than substitute empty/fabricated data.",
+    "Build/test/Docker only on Softbank or Omen; bind exact runtime source and result hashes. Do not publish private runtime."
+  ],
+  "non_claims": [
+    "One-host bounded-book functional smoke, not performance/economic/WAN/independent-operator or cryptographic promotion.",
+    "Lifecycle automation, full authenticated transaction API and ReactFlow cutover, anonymous transport, unrelated facility writers, mid-proof/stale-plan recovery and old-state rolling upgrades remain explicit work.",
+    "Public exact price-level depth necessarily leaks market information; this is not differential privacy or order-existence secrecy."
+  ]
+}

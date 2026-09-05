@@ -192,7 +192,7 @@ pub(crate) fn receive_connection(
     };
     write_record(&mut stream, &ack, RESPONSE_BYTES)
 }
-fn write_record<T: Serialize>(
+pub(crate) fn write_record<T: Serialize>(
     writer: &mut impl Write,
     value: &T,
     size: usize,
@@ -207,7 +207,7 @@ fn write_record<T: Serialize>(
     writer.write_all(&record).map_err(err)?;
     writer.flush().map_err(err)
 }
-fn read_record<T: serde::de::DeserializeOwned>(
+pub(crate) fn read_record<T: serde::de::DeserializeOwned>(
     reader: &mut impl Read,
     size: usize,
 ) -> Result<T, String> {

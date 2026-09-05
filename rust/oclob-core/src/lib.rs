@@ -589,9 +589,51 @@ pub struct MpcSlotResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MpcPriceLevel {
+    pub side: Side,
+    pub price: u64,
+    pub quantity: u64,
+}
+
+/// Exact public L2 data, canonical bids-descending then asks-ascending.
+/// No source-order position, owner or per-order quantity is encoded here.
+pub fn validate_public_levels(levels: &[MpcPriceLevel]) -> Result<(), String> {
+    if levels.len() > MAX_MATCH_SLOTS + 1 {
+        return Err("public depth exceeds circuit capacity".into());
+    }
+    let mut previous: Option<(u8, u64)> = None;
+    for level in levels {
+        if level.price == 0
+            || level.price > u64::from(u32::MAX)
+            || level.quantity == 0
+            || level.quantity > u64::from(u32::MAX) * (MAX_MATCH_SLOTS as u64 + 1)
+        {
+            return Err("public depth is outside circuit bounds".into());
+        }
+        let key = (
+            level.side.wire(),
+            if level.side == Side::Buy {
+                u64::MAX - level.price
+            } else {
+                level.price
+            },
+        );
+        if previous.is_some_and(|p| p >= key) {
+            return Err("public depth has duplicate or unordered levels".into());
+        }
+        previous = Some(key);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MpcBatchResult {
     pub slots: Vec<MpcSlotResult>,
     pub arriving_remaining: u64,
+    /// Absent only in historical/reference records. Native publication
+    /// requires an explicit depth, including Some(empty) for an empty book.
+    #[serde(default)]
+    pub public_levels: Option<Vec<MpcPriceLevel>>,
 }
 
 /// A cancellation uses the same ordered confidential command stream as an
@@ -1253,13 +1295,47 @@ pub fn expected_batch(batch: &PrivateMatchBatch) -> MpcBatchResult {
             trade_quantity,
         });
     }
+    let remaining = if batch.arriving_can_rest {
+        arriving_remaining
+    } else {
+        0
+    };
+    let mut levels = BTreeMap::<(u8, u64), u64>::new();
+    for (resting, fill) in batch.resting.iter().zip(&slots) {
+        let quantity = resting.quantity - fill.trade_quantity;
+        if quantity > 0 {
+            *levels
+                .entry((resting.side.wire(), resting.price))
+                .or_default() += quantity;
+        }
+    }
+    if remaining > 0 {
+        *levels
+            .entry((batch.arriving_side.wire(), batch.arriving_price))
+            .or_default() += remaining;
+    }
+    let mut public_levels = levels
+        .into_iter()
+        .map(|((side, price), quantity)| MpcPriceLevel {
+            side: if side == 0 { Side::Buy } else { Side::Sell },
+            price,
+            quantity,
+        })
+        .collect::<Vec<_>>();
+    public_levels.sort_by_key(|v| {
+        (
+            v.side.wire(),
+            if v.side == Side::Buy {
+                u64::MAX - v.price
+            } else {
+                v.price
+            },
+        )
+    });
     MpcBatchResult {
         slots,
-        arriving_remaining: if batch.arriving_can_rest {
-            arriving_remaining
-        } else {
-            0
-        },
+        arriving_remaining: remaining,
+        public_levels: Some(public_levels),
     }
 }
 

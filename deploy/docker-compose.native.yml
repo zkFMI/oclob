@@ -103,6 +103,7 @@ services:
       - ${OCLOB_RUNTIME_DIR}/cluster/settlement:/settlement:ro
       - ${OCLOB_RUNTIME_DIR}/cluster/market:/market-identity:ro
       - ${OCLOB_RUNTIME_DIR}/cluster/market/state:/market:rw
+      - ${OCLOB_RUNTIME_DIR}/cluster/market-public:/market-public:rw
       - ${OCLOB_RUNTIME_DIR}/handoff:/handoff:rw
       - ${OCLOB_SOURCE_DIR}/research:/research:ro
     environment:
@@ -110,6 +111,30 @@ services:
       OCLOB_RESEARCH_CONTRACT: ${OCLOB_NATIVE_CONTRACT:-/research/oclob_native_market_contract.json}
       OCLOB_RESEARCH_MANIFEST: ${OCLOB_NATIVE_MANIFEST:-/research/manifests/oclob_native_market_002.json}
     command: [oclob-market-worker]
+  public-book:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks:
+      oclob-private:
+        aliases: [oclob-public-book]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/public-book:/book-identity:ro
+      - ${OCLOB_RUNTIME_DIR}/cluster/market-public:/market-public:ro
+    command: [oclob-public-book]
+  book-reader:
+    image: ${OCLOB_CLUSTER_IMAGE}
+    user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"
+    networks: [oclob-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${OCLOB_RUNTIME_DIR}/cluster/public:/public:ro
+    command: [oclob-public-book, --get, "0"]
   native-coordinator:
     image: ${OCLOB_CLUSTER_IMAGE}
     user: "${OCLOB_UID:-10001}:${OCLOB_GID:-10001}"

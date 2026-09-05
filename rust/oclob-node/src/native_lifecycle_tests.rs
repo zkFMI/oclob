@@ -263,6 +263,7 @@ fn a_completed_unsettled_match_blocks_cancel_before_any_state_change() {
             })
             .collect(),
         arriving_remaining: 0,
+        public_levels: None,
     };
     // Unit-local state fixture. Live acceptance separately executes MP-SPDZ.
     store.state.completed_rounds.insert(
@@ -280,6 +281,7 @@ fn a_completed_unsettled_match_blocks_cancel_before_any_state_change() {
             public_output_sha256: public_output_digest(&result),
             result,
             execution_ms: 1,
+            depth_attestation: None,
             signer: owner.verifying_key().to_bytes(),
             signature: vec![0; 64],
         },

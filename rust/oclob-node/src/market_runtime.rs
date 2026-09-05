@@ -173,6 +173,19 @@ impl NativeMarketRuntime {
                 remaining: execution.result.arriving_remaining,
             });
         }
+        let finality_receipts = if settled.is_some() {
+            self.journal
+                .get(&format!("depth-finality:{id}"))?
+                .ok_or("depth finality not durable")?
+        } else {
+            Vec::new()
+        };
+        let public_snapshot = Some(crate::public_depth::FinalizedPublicBook::from_execution(
+            &self.cluster,
+            &plan,
+            &execution,
+            finality_receipts,
+        )?);
         let done = MarketCompletedRound {
             certificate,
             result: execution.result,
@@ -180,6 +193,7 @@ impl NativeMarketRuntime {
             transaction_id: settled.as_ref().map(|s| s.transaction_id.clone()),
             canonical_root: settled.as_ref().map(|s| s.after_root),
             finality_observations: slots.len() * 7,
+            public_snapshot,
         };
         self.journal
             .put::<MarketCompletedRound>(&format!("done:{id}"), &done, now()?, u64::MAX)?;
@@ -454,7 +468,7 @@ impl NativeMarketRuntime {
                 }
             }
         }
-        finalize_agreed_private_state(
+        let receipts = finalize_agreed_private_state(
             &self.cluster,
             &settlement_tls,
             plan,
@@ -463,6 +477,13 @@ impl NativeMarketRuntime {
             Duration::from_secs(30),
         )
         .map_err(err)?;
+        self.journal
+            .put::<Vec<crate::network::NodePrivateStateReceipt>>(
+                &format!("depth-finality:{id}"),
+                &receipts,
+                now()?,
+                u64::MAX,
+            )?;
         Ok(settled)
     }
 }

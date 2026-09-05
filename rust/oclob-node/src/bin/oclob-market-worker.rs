@@ -74,6 +74,7 @@ fn run() -> Result<(), String> {
         return acceptance(&journal);
     }
     let _lock = journal.acquire_worker()?;
+    reconcile_public_book(&journal, &cluster)?;
     let coordinator: ClientIdentityConfig = read("/identity/client.json")?;
     let settlement: ClientIdentityConfig = read("/settlement/client.json")?;
     coordinator.validate().map_err(err)?;
@@ -112,8 +113,35 @@ fn run() -> Result<(), String> {
                 }
             }
         }
+        if let Err(e) = reconcile_public_book(&engine.journal, &engine.cluster) {
+            eprintln!(
+                "public book retained; error digest {}",
+                hex::encode(Sha256::digest(e.as_bytes()))
+            );
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+fn reconcile_public_book(
+    journal: &MarketJournal,
+    cluster: &ClusterPublicConfig,
+) -> Result<(), String> {
+    if let Some(done) = journal.completed()?.last() {
+        let book = done
+            .public_snapshot
+            .as_ref()
+            .ok_or("historical round lacks native depth; explicit migration required")?;
+        book.verify(
+            cluster,
+            book.attestations
+                .first()
+                .ok_or("depth signatures absent")?
+                .issued_at,
+            book.sequence,
+        )?;
+        oclob_node::public_depth::publish(Path::new("/market-public/current.json"), book)?;
+    }
+    Ok(())
 }
 fn read<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
     let bytes = fs::read(path).map_err(err)?;
@@ -149,18 +177,24 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
     let contract = fs::read(std::env::var("OCLOB_RESEARCH_CONTRACT").map_err(err)?).map_err(err)?;
     let manifest: Value = read(std::env::var("OCLOB_RESEARCH_MANIFEST").map_err(err)?)?;
     let hash = hex::encode(Sha256::digest(&contract));
+    let depth = manifest["contract_id"] == "oclob-native-depth-v1";
     if manifest["contract_sha256"] != hash
-        || manifest["contract_id"] != "oclob-native-market-v1"
+        || (!depth && manifest["contract_id"] != "oclob-native-market-v1")
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
     {
         return Err("resident market acceptance preflight failed".into());
     }
-    wait_rounds(journal, 3)?;
+    let expected_rounds = if depth { 4 } else { 3 };
+    wait_rounds(journal, expected_rounds)?;
     let rounds = journal.completed()?;
-    if rounds.len() != 3 || rounds[..2].iter().any(|r| r.transaction_id.is_some()) {
-        return Err("resident market did not execute three expected rounds".into());
+    if rounds.len() != expected_rounds
+        || rounds[..expected_rounds - 1]
+            .iter()
+            .any(|r| r.transaction_id.is_some())
+    {
+        return Err("resident market did not execute expected rounds".into());
     }
-    let last = &rounds[2];
+    let last = &rounds[expected_rounds - 1];
     let matched = last
         .result
         .slots
@@ -178,13 +212,13 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
             .ok_or("notional overflow")
     })?;
     if matched.len() != 2
-        || matched[0].0 != 0
-        || matched[0].1.trade_price != 101
+        || matched[0].0 != if depth { 1 } else { 0 }
+        || matched[0].1.trade_price != if depth { 100 } else { 101 }
         || matched[0].1.trade_quantity != 30
-        || matched[1].0 != 1
+        || matched[1].0 != if depth { 2 } else { 1 }
         || matched[1].1.trade_price != 100
-        || matched[1].1.trade_quantity != 60
-        || notional != 9030
+        || matched[1].1.trade_quantity != if depth { 45 } else { 60 }
+        || notional != if depth { 7500 } else { 9030 }
         || last.result.arriving_remaining != 0
         || last.finality_observations != 14
     {
@@ -223,13 +257,64 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
     if fault != settled {
         return Err("exact native request retry produced a different canonical receipt".into());
     }
-    let result = json!({"native_note_settlement":true,"contract_sha256":hash,"manifest_id":manifest["manifest_id"],
-        "admitted_orders":3,"completed_market_rounds":rounds.len(),"autonomously_settled_fills":matched.len(),
+    let mut result = json!({"native_note_settlement":true,"contract_sha256":hash,"manifest_id":manifest["manifest_id"],
+        "admitted_orders":expected_rounds,"completed_market_rounds":rounds.len(),"autonomously_settled_fills":matched.len(),
         "trade_notional":notional,"node_finality_observations":last.finality_observations,
         "post_match_participant_signatures":0,"restart_did_not_duplicate_settlement":true,
         "canonical_response_loss_recovered":true,"service_processes":ids,
         "native_transaction_id":last.transaction_id,"native_after_root":hex::encode(last.canonical_root.ok_or("canonical root absent")?),
         "status":"smoke_only","independent_operators":false,"wan_evidence":false});
+    if depth {
+        use oclob_node::public_depth::FinalizedPublicBook;
+        let cluster: ClusterPublicConfig = read("/public/cluster.json")?;
+        let expected = [
+            vec![(101, 30)],
+            vec![(100, 30), (101, 30)],
+            vec![(100, 90), (101, 30)],
+            vec![(100, 15), (101, 30)],
+        ];
+        let paths = [
+            "depth-1.json",
+            "depth-2.json",
+            "depth-3.json",
+            "depth-final.json",
+        ];
+        for (i, (path, levels)) in paths.iter().zip(expected).enumerate() {
+            let public: FinalizedPublicBook = read(Path::new("/handoff").join(path))?;
+            public.verify(&cluster, public.attestations[0].issued_at, (i + 1) as u64)?;
+            if public.sequence != (i + 1) as u64
+                || rounds[i].public_snapshot.as_ref() != Some(&public)
+                || public
+                    .levels
+                    .iter()
+                    .any(|v| v.side != oclob_core::Side::Sell)
+                || public
+                    .levels
+                    .iter()
+                    .map(|v| (v.price, v.quantity))
+                    .collect::<Vec<_>>()
+                    != levels
+            {
+                return Err(
+                    "network public price-level snapshot differs from actual completed MPC".into(),
+                );
+            }
+        }
+        let before: FinalizedPublicBook = read("/handoff/depth-before-finality.json")?;
+        let after: FinalizedPublicBook = read("/handoff/depth-after-restart.json")?;
+        if Some(&before) != rounds[2].public_snapshot.as_ref()
+            || Some(&after) != last.public_snapshot.as_ref()
+        {
+            return Err("public depth changed before finality or during completed restart".into());
+        }
+        result["canonically_published_depth_snapshots"] = json!(4);
+        result["public_depth_stays_old_before_finality"] = json!(true);
+        result["network_reader_requires_no_corporate_keys_or_journal"] = json!(true);
+        result["pretrade_100_quantity"] = json!(90);
+        result["posttrade_100_quantity"] = json!(15);
+        result["posttrade_101_quantity"] = json!(30);
+        result["public_snapshot"] = serde_json::to_value(after).map_err(err)?;
+    }
     publish(Path::new("/handoff/native-result.json"), &result)?;
     println!("{}", result);
     Ok(())

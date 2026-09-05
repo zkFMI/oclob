@@ -89,6 +89,8 @@ fn provision(root: &Path) -> Result<(), String> {
     let defmi_dir = create_private_dir(root.join("defmi"))?;
     let market_dir = create_private_dir(root.join("market"))?;
     create_private_dir(market_dir.join("state"))?;
+    create_private_dir(root.join("market-public"))?;
+    let book_dir = create_private_dir(root.join("public-book"))?;
     let (ca_key, ca_cert) = create_ca()?;
     write_public(&public_dir.join("ca.pem"), &ca_cert.to_pem().map_err(err)?)?;
 
@@ -145,6 +147,29 @@ fn provision(root: &Path) -> Result<(), String> {
         &market_cert.to_pem().map_err(err)?,
     )?;
     let mut market_journal_key = [0u8; 32];
+    let (book_key, book_cert) = issue_leaf(
+        &ca_key,
+        &ca_cert,
+        "oclob-public-book",
+        &["oclob-public-book"],
+        true,
+    )?;
+    write_private(
+        &book_dir.join("tls-key.pem"),
+        &book_key.private_key_to_pem_pkcs8().map_err(err)?,
+    )?;
+    write_public(&book_dir.join("tls.pem"), &book_cert.to_pem().map_err(err)?)?;
+    write_json(
+        &public_dir.join("book-endpoint.json"),
+        &serde_json::to_value(oclob_node::market_network::MarketEndpoint {
+            host: "oclob-public-book".into(),
+            port: 9446,
+            server_name: "oclob-public-book".into(),
+            certificate_sha256: certificate_fingerprint(&book_cert.to_der().map_err(err)?),
+        })
+        .map_err(err)?,
+        0o644,
+    )?;
     rand::rngs::OsRng.fill_bytes(&mut market_journal_key);
     write_private(&market_dir.join("journal-key.raw"), &market_journal_key)?;
     let market_config = oclob_node::market_network::MarketServiceConfig {
@@ -287,6 +312,23 @@ fn provision(root: &Path) -> Result<(), String> {
             0o600,
         )?;
         corporate_journals.push((directory.join("queue/outbox.enc"), journal_key, config));
+        for (name, price, quantity) in if seed == 11 {
+            vec![
+                ("depth-high-order.json", 101, 30),
+                ("depth-low1-order.json", 100, 30),
+                ("depth-low2-order.json", 100, 60),
+            ]
+        } else {
+            vec![("depth-buy-order.json", 101, 75)]
+        } {
+            write_json(
+                &directory.join("queue").join(name),
+                &json!({"side":if seed == 11 {"sell"} else {"buy"},
+                "limit_price":price,"quantity":quantity,"time_in_force":if seed == 11 {"good_til_cancelled"} else {"immediate_or_cancel"},
+                "valid_for_seconds":1200}),
+                0o600,
+            )?;
+        }
         if seed == 11 {
             for (name, price) in [
                 ("market-high-order.json", 101),

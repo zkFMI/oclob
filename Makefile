@@ -16,6 +16,9 @@ NATIVE_WORKER ?= 0
 NATIVE_EXPIRY ?= 0
 NATIVE_DEFERRED ?= 0
 NATIVE_MARKET ?= 0
+NATIVE_DEPTH ?= 0
+NATIVE_DEPTH_MANIFEST ?= /research/manifests/oclob_native_depth_001.json
+NATIVE_WORKER_MANIFEST ?= /research/manifests/oclob_native_worker_006.json
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -216,6 +219,9 @@ remote-native-deferred-e2e:
 .PHONY: remote-native-market-e2e
 remote-native-market-e2e:
 	$(MAKE) remote-native-e2e NATIVE_MARKET=1
+.PHONY: remote-native-depth-e2e
+remote-native-depth-e2e:
+	$(MAKE) remote-native-e2e NATIVE_MARKET=1 NATIVE_DEPTH=1
 remote-native-wallet-e2e:
 	$(MAKE) remote-native-e2e NATIVE_WALLET=1
 remote-native-recovery-e2e:
@@ -225,6 +231,7 @@ remote-native-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
 remote-native-e2e:
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
 	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
+	@case '$(NATIVE_DEPTH):$(NATIVE_MARKET)' in 0:*|1:1) ;; *) echo 'public depth requires native market' >&2; exit 2 ;; esac
 	@case '$(NATIVE_MARKET):$(NATIVE_RECOVERY):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_EXPIRY):$(NATIVE_DEFERRED)' in 0:*|1:0:0:0:0:0) ;; *) echo 'resident market uses its separate acceptance contract' >&2; exit 2 ;; esac
 	@case '$(NATIVE_WALLET):$(NATIVE_RECOVERY)' in 0:0|0:1|1:0) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
 	@case '$(NATIVE_FINALITY):$(NATIVE_WALLET)' in 0:0|0:1|1:1) ;; *) echo 'native finality acceptance requires wallet reuse' >&2; exit 2 ;; esac
@@ -251,10 +258,11 @@ remote-native-e2e:
 	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_002.json; fi; \
 	  if [ '$(NATIVE_CYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_cycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_cycle_006.json; fi; \
 	  if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_lifecycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_lifecycle_004.json; fi; \
-	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_worker_006.json; fi; \
+	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_WORKER_MANIFEST)'; fi; \
 	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_expiry_fenced_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_expiry_003.json; fi; \
 	  if [ '$(NATIVE_DEFERRED)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_deferred_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_deferred_003.json; fi; \
 	  if [ '$(NATIVE_MARKET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_market_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_market_002.json OCLOB_MARKET_CONFIG=/public/market.json; fi; \
+	  if [ '$(NATIVE_DEPTH)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_depth_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_DEPTH_MANIFEST)'; fi; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
@@ -269,22 +277,34 @@ remote-native-e2e:
 	  if [ '$(NATIVE_MARKET)' = 1 ]; then \
 	    \$$compose run --rm market-worker oclob-market-worker --initialize; \
 	    export OCLOB_MARKET_CRASH_AFTER_CANONICAL=1; \
-	    \$$compose up -d market-worker maker-worker taker-worker; \
+	    \$$compose up -d market-worker maker-worker taker-worker public-book; \
 	    first_market=\$$(\$$compose ps -q market-worker); [ -n \"\$$first_market\" ]; \
 	    docker inspect --format '{{.Id}}' \"\$$first_market\" > \"\$$runtime/handoff/market-processes.txt\"; \
-	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-high -e OCLOB_CORPORATE_ORDER_FILE=/corporate/market-high-order.json maker; \
+	    high=market-high-order.json; low=market-low-order.json; buy=multifill-order.json; total=3; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then high=depth-high-order.json; low=depth-low1-order.json; buy=depth-buy-order.json; total=4; fi; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-high -e OCLOB_CORPORATE_ORDER_FILE=/corporate/\$$high maker; \
 	    \$$compose run --rm market-worker oclob-market-worker --wait-rounds 1; \
-	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-low -e OCLOB_CORPORATE_ORDER_FILE=/corporate/market-low-order.json maker; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 1 > \"\$$runtime/handoff/depth-1.json\"; fi; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-low -e OCLOB_CORPORATE_ORDER_FILE=/corporate/\$$low maker; \
 	    \$$compose run --rm market-worker oclob-market-worker --wait-rounds 2; \
-	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-buy -e OCLOB_CORPORATE_ORDER_FILE=/corporate/multifill-order.json taker; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \
+	      \$$compose run --rm book-reader oclob-public-book --get 2 > \"\$$runtime/handoff/depth-2.json\"; \
+	      \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-depth-low2 -e OCLOB_CORPORATE_ORDER_FILE=/corporate/depth-low2-order.json maker; \
+	      \$$compose run --rm market-worker oclob-market-worker --wait-rounds 3; \
+	      \$$compose run --rm book-reader oclob-public-book --get 3 > \"\$$runtime/handoff/depth-3.json\"; \
+	    fi; \
+	    \$$compose run --rm -e OCLOB_NATIVE_ENQUEUE=authorized -e OCLOB_CORPORATE_REQUEST_ID=native-market-buy -e OCLOB_CORPORATE_ORDER_FILE=/corporate/\$$buy taker; \
 	    stopped=\$$(timeout 360 docker wait \"\$$first_market\"); [ \"\$$stopped\" = 75 ]; \
 	    printf '%s\n' \"\$$stopped\" > \"\$$runtime/handoff/market-crash-exit.txt\"; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 3 > \"\$$runtime/handoff/depth-before-finality.json\"; fi; \
 	    export OCLOB_MARKET_CRASH_AFTER_CANONICAL=0; \
 	    \$$compose up -d --force-recreate market-worker; \
 	    docker inspect --format '{{.Id}}' \$$(\$$compose ps -q market-worker) >> \"\$$runtime/handoff/market-processes.txt\"; \
-	    \$$compose run --rm market-worker oclob-market-worker --wait-rounds 3 > \"\$$runtime/handoff/market-before-restart.json\"; \
+	    \$$compose run --rm market-worker oclob-market-worker --wait-rounds \$$total > \"\$$runtime/handoff/market-before-restart.json\"; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 4 > \"\$$runtime/handoff/depth-final.json\"; fi; \
 	    \$$compose up -d --force-recreate market-worker; \
 	    docker inspect --format '{{.Id}}' \$$(\$$compose ps -q market-worker) >> \"\$$runtime/handoff/market-processes.txt\"; \
+	    if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 4 > \"\$$runtime/handoff/depth-after-restart.json\"; fi; \
 	    \$$compose run --rm market-worker oclob-market-worker --acceptance; \
 	  elif [ '$(NATIVE_EXPIRY)' = 1 ]; then \
 	    nodes='node-0 node-1 node-2 node-3 node-4 node-5 node-6'; \
@@ -408,6 +428,7 @@ remote-native-e2e:
 	  fi; \
 	  fi; \
 	  exit_code=\$$(docker wait \"\$$defmi_container\"); [ \"\$$exit_code\" = 0 ]; \
+	  if [ '$(NATIVE_DEPTH)' = 1 ]; then \$$compose run --rm book-reader oclob-public-book --get 4 > \"\$$runtime/handoff/depth-after-validators.json\"; cmp \"\$$runtime/handoff/depth-final.json\" \"\$$runtime/handoff/depth-after-validators.json\"; fi; \
 	  test -s \"\$$runtime/out/oclob_native_notes.json\""; \
 	artifact=artifacts/oclob_native_notes.json; if [ '$(NATIVE_RECOVERY)' = 1 ]; then artifact=artifacts/oclob_native_recovery.json; fi; if [ '$(NATIVE_WALLET)' = 1 ]; then artifact=artifacts/oclob_native_wallet.json; fi; if [ '$(NATIVE_FINALITY)' = 1 ]; then artifact=artifacts/oclob_native_finality.json; fi; if [ '$(NATIVE_MULTIFILL)' = 1 ]; then artifact=artifacts/oclob_native_multifill.json; fi; if [ '$(NATIVE_CYCLE)' = 1 ]; then artifact=artifacts/oclob_native_cycle.json; fi; \
 	if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then artifact=artifacts/oclob_native_lifecycle.json; fi; \
@@ -415,6 +436,7 @@ remote-native-e2e:
 	if [ '$(NATIVE_EXPIRY)' = 1 ]; then artifact=artifacts/oclob_native_expiry.json; fi; \
 	if [ '$(NATIVE_DEFERRED)' = 1 ]; then artifact=artifacts/oclob_native_deferred.json; fi; \
 	if [ '$(NATIVE_MARKET)' = 1 ]; then artifact=artifacts/oclob_native_market.json; fi; \
+	if [ '$(NATIVE_DEPTH)' = 1 ]; then artifact=artifacts/oclob_native_depth.json; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

@@ -395,6 +395,25 @@ pub struct NodePrivateStateReceipt {
 }
 
 impl NodePrivateStateReceipt {
+    pub fn verify_public_signature(&self, key: &VerifyingKey) -> Result<(), NetworkError> {
+        if self.version != RECORD_VERSION
+            || self.party >= 7
+            || self.round_id == [0; 32]
+            || self.private_state_sha256 == [0; 32]
+            || self.transition_digest == [0; 32]
+            || self.canonical_receipt_digest == [0; 32]
+            || self.canonical_height == 0
+            || self.generation == 0
+            || self.state_digest == [0; 32]
+            || self.signer != key.to_bytes()
+        {
+            return Err(NetworkError::Protocol);
+        }
+        let signature =
+            Signature::try_from(self.signature.as_slice()).map_err(|_| NetworkError::Protocol)?;
+        key.verify_strict(&self.signature_body(), &signature)
+            .map_err(|_| NetworkError::Protocol)
+    }
     #[allow(clippy::too_many_arguments)]
     fn sign(
         party: u16,
@@ -1439,7 +1458,7 @@ fn decode_record<T: DeserializeOwned>(magic: &[u8; 8], record: &[u8]) -> Result<
     serde_json::from_slice(payload).map_err(|_| NetworkError::Protocol)
 }
 
-fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, NetworkError> {
+pub(crate) fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, NetworkError> {
     let symlink = fs::symlink_metadata(path)?;
     if symlink.file_type().is_symlink() {
         return Err(NetworkError::UnsafeKey);
@@ -1599,6 +1618,70 @@ mod tests {
     impl Drop for Files {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Transport-only peer: real mutual TLS and the pinned bounded codec,
+    /// Public reader separately proves a CA-only handshake, endpoint pin and
+    /// hostname checks. No fictional market data is used as financial evidence.
+    #[test]
+    fn public_depth_transport_requires_server_trust_but_no_corporate_key() {
+        use crate::public_depth_network::{exchange, fetch, tls_context};
+        let files = tls_files();
+        let other_ca = tls_files();
+        for case in 0..4 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let tls = tls_context(&files.server_cert, &files.server_key).unwrap();
+            let missing_path = files.root.join("no-published-book.json");
+            // No book is read, so no signature verification or financial
+            // execution is claimed by this transport-only test.
+            let cluster = ClusterPublicConfig {
+                version: 3,
+                market_id: "transport-test".into(),
+                program: "test".into(),
+                settlement_release_threshold: 3,
+                nodes: Vec::new(),
+            };
+            let for_server = cluster.clone();
+            let server = thread::spawn(move || {
+                exchange(
+                    listener.accept().unwrap().0,
+                    &tls,
+                    &missing_path,
+                    &for_server,
+                )
+            });
+            let endpoint = crate::market_network::MarketEndpoint {
+                host: "127.0.0.1".into(),
+                port: address.port(),
+                server_name: if case == 2 {
+                    "wrong.invalid"
+                } else {
+                    "localhost"
+                }
+                .into(),
+                certificate_sha256: if case == 1 {
+                    [99; 32]
+                } else {
+                    files.server_fingerprint
+                },
+            };
+            let failure = fetch(
+                &endpoint,
+                if case == 3 { &other_ca.ca } else { &files.ca },
+                &cluster,
+                0,
+            )
+            .unwrap_err();
+            let outcome = server.join().unwrap();
+            if case == 0 {
+                assert_eq!(failure, "no finalized public book yet");
+                outcome.unwrap();
+            } else {
+                assert!(outcome.is_err());
+                assert_ne!(failure, "no finalized public book yet");
+            }
         }
     }
 
@@ -2016,6 +2099,7 @@ mod tests {
                 MAX_MATCH_SLOTS
             ],
             arriving_remaining: 40,
+            public_levels: None,
         };
         let output = public_output_digest(&result);
         let store_path = files.root.join("release-shares.bin");
@@ -2043,6 +2127,7 @@ mod tests {
                 public_output_sha256: output,
                 result,
                 execution_ms: 1,
+                depth_attestation: None,
                 signer: receipt_signer.verifying_key().to_bytes(),
                 signature: vec![62; 64],
             })

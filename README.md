@@ -1,101 +1,116 @@
-# OCLOB — 注文内容を見せずに順番を確定する連続指値市場
+# OCLOB — Sequence orders before revealing their contents
 
-OCLOB は **Oblivious Continuous Limit Order Book** の略です。注文を受け付けた順番が確定し、照合が終わるまで、売買方向・指値・数量・注文者を市場運営者へ見せないことを目指す、非バッチ型の指値市場です。
+OCLOB stands for **Oblivious Continuous Limit Order Book**. It is a non-batch limit-order market designed to keep an order's side, limit price, quantity, and participant hidden from the market coordinator until sequencing and matching are complete.
 
-公開する板は価格帯ごとの合計数量だけです。新しい注文は法人側で7計算ノード向けに分割し、各ノードへ別々に暗号化して送ります。市場の調整役には注文内容を渡しません。7台中5台が署名した受付順に沿って、MPC（複数者で秘密のまま行う計算）で照合します。成立した取引は、利用者に再署名を求めず、事前承認されたzkPI（ゼロ知識証明付き決済指図）としてDeFMIへ渡し、資金と証券を同時に更新する設計です。
+The public book contains aggregate quantities at each price level. Corporate clients split each order into shares for seven computation nodes and encrypt each node's share separately. The coordinator does not receive the plaintext order. Matching runs through multi-party computation (MPC), following an admission sequence certified by five of seven nodes. Executed trades are submitted to DeFMI as preauthorized zkPI instructions—payment instructions accompanied by zero-knowledge proofs—to update cash and securities atomically, without asking participants to sign again after matching.
 
-> **現在の到達点**
-> 研究用MVPです。新しいCLI/Docker経路では、法人2社が注文送信前にDeFMI上の資金・証券を予約し、7つの常駐MPCノードが秘密の注文を照合して共同zkPIを生成します。予約の確認や証明作成に必要な秘密情報は法人側に置き、注文の調整役には注文原文を渡しません。約定後の法人の追加署名は不要です。DeFMIの5つのAvalanche検証ノードが証明全文と予約状態を確認して匿名の保有記録を更新し、再送による二重適用がないことと、1ノードの再起動後も台帳が一致することを確認しました。
+> **Current status**
 >
-> 基本経路は[事前予約から決済までのデモ](docs/NATIVE_PRETRADE_DEMO.md)、受取り後も続ける経路は[連続する2回の取引](docs/NATIVE_CYCLE_JA.md)で再現できます。[残り注文の取消・期限切れと資産回収](docs/NATIVE_LIFECYCLE_JA.md)、[法人側のキューと常駐送信](docs/CORPORATE_WORKER_JA.md)、[MPC全停止中の未受付注文の期限切れ回収](docs/QUEUED_EXPIRY_JA.md)も接続しました。[常駐市場サービス](docs/NATIVE_MARKET_JA.md)では法人キューから認証付き通信で受領証を受け取り、手動で相手を選ばず順序確定・秘密照合・共同証明・実決済へ進めます。単一ホスト・少数注文の機能確認であり、独立事業者による運用や本番性能の保証ではありません。証拠不足の予約の無人復旧、独立した法人記録による同時更新、取消・期限切れまで含む長期無人運転、React Flow画面を含めた製品としての受入れは未完了です。
+> This is a research MVP. In the native CLI/Docker path, two corporate clients reserve cash or securities on DeFMI before submitting orders. Seven resident MPC nodes match confidential orders and jointly produce the proof and threshold-signed zkPI. Reservation witnesses and other private funding information remain on the corporate side; the coordinator does not receive the original order. No additional participant signature is required after matching. Five Avalanche validators running DeFMI verify the complete proofs and reservation state before updating confidential holdings. Acceptance runs check idempotent resubmission and ledger agreement after a validator restart.
+>
+> Start with the [pretrade reservation-to-settlement walkthrough](docs/NATIVE_PRETRADE_DEMO.md), then the [two-trade continuation scenario](docs/NATIVE_CYCLE_JA.md). The native path also includes [cancellation, expiry, and asset recovery](docs/NATIVE_LIFECYCLE_JA.md), [corporate queues and resident delivery](docs/CORPORATE_WORKER_JA.md), and [recovery of expired, unadmitted orders while all MPC nodes are offline](docs/QUEUED_EXPIRY_JA.md). The [resident market service](docs/NATIVE_MARKET_JA.md) receives admission receipts from corporate queues over authenticated connections and performs sequencing, confidential matching, collaborative proving, and actual settlement without manually selecting counterparties.
+>
+> These are small, single-host functional acceptance runs—not evidence of independent operators or production performance. Recovery without sufficient reservation evidence, concurrent updates from independent corporate journals, unattended cancellation and expiry in the resident market, and product-level acceptance of the React Flow interface remain incomplete.
 
-> 決済後の受取り・返金と保証枠を法人側で復元し、返金された保有記録を次の注文の資金に使う[ウォレット経路](docs/CORPORATE_WALLET_JA.md)もあります。新しい継続取引試験では、初回の2約定を一括決済した後、同じ返金を次の予約で消費し、元の売り注文の残りと実際に約定・決済しています。累計8件の受取権と両法人の保証枠を再度復元しました。[支出証明の安全性修正](https://github.com/shukob/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md)に伴う旧形式からの移行、独立した暗号監査は未受入です。実資産を投入しないでください。
+The [corporate wallet path](docs/CORPORATE_WALLET_JA.md) reconstructs settlement receipts, refunds, and facility capacity, then uses a returned holding as funding for the next order. The continuation scenario atomically settles two initial fills, consumes the same returned holding in a subsequent reservation, and matches and settles against the remaining original sell order. It reconstructs eight cumulative claims and both corporate facilities. Migration from the old proof format following the [spend-proof security correction](https://github.com/shukob/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md), and independent cryptographic review, have not passed acceptance. **Do not use real assets.**
 
-> [秘密の板を進める前の決済確認](docs/NATIVE_FINALITY_JA.md)も、各MPCノード自身が行います。調整役の通知だけでは進めず、自分の照合記録と正しい決済指図をDeFMIの確定記録に照合します。現在は設定済みのDeFMI接続サービスを信頼する方式で、検証ノードの合意証明を直接検証する方式ではありません。
+Each MPC node also performs its own [settlement-finality check before advancing the private book](docs/NATIVE_FINALITY_JA.md). It checks its execution record and the exact settlement instruction against DeFMI's canonical record rather than relying solely on the coordinator's notification. This currently trusts the configured DeFMI access service; it does not directly verify a validator consensus proof.
 
-## 何を解決するか
+## What OCLOB addresses
 
-[共有する保証枠と停止中の注文受付](docs/DEFERRED_FUNDING_JA.md)も法人側へ追加しました。注文条件を最初に署名し、資金証明は処理順が来たときに最新の枠から作ります。同じ法人の共有キューへ複数プロセスから依頼でき、枠不足の注文は資産確保前に終了します。独立した複数の法人記録による同時更新や本番APIへの接続とは区別します。
+In a transparent decentralized CLOB, pending orders can become visible to validators, sequencers, or mempool observers before matching. An observer may use that information to insert an advantageous order ahead of another participant or selectively delay an unfavorable order.
 
-[複数約定の一括決済](docs/NATIVE_MULTIFILL_JA.md)も新しい匿名保有記録の経路へ接続しました。同じ法人の売り注文2件と買い注文1件から生じた2約定を、全件まとめて1取引で決済します。署名済み指図を一部だけ取り出す操作を拒否し、全7ノードが両方の確定を確認するまで秘密の板を進めません。別の継続試験では、その後の約定、残り29単位の取消、返却資産による5単位の新規注文、実際の期限切れ、資産回収も確認しています。同時更新や独立運営までの完成を意味しません。
+OCLOB fixes the sequence before confidential matching:
 
-通常の分散型CLOBでは、注文が照合される前にバリデータ、シーケンサ、メモリプール監視者へ見えます。内容を見た者は、より有利な注文を直前へ差し込んだり、不利な注文だけを遅らせたりできます。
+1. Makers reserve inventory or cash before placing an order. Takers preauthorize reservation and execution within their chosen limits when submitting an order.
+2. Clients secret-share order contents and expose an order commitment rather than the original order.
+3. Five of seven ordering nodes certify its sequence number.
+4. Seven MPC nodes perform price-time-priority matching without changing that certified sequence.
+5. Verification binds the execution result to the corresponding book transition.
+6. A threshold-signed zkPI instructs DeFMI to settle cash and securities atomically.
+7. Settlement is treated as final only after checking DeFMI's canonical receipt.
 
-OCLOBは次の順番を固定します。
+The target is **content-informed insertion ahead of an order that has not yet been processed**. This does not prevent ordinary trading based on the public book, inference from post-trade book changes, observation of connection sources or timing, collusion by three or more MPC nodes, or denial of service.
 
-1. Makerは板へ載せる前に最大在庫・資金を予約し、Takerは注文時に許容範囲内の予約と約定を事前承認する。
-2. 注文内容を秘密分散し、公開するのは注文の要約値だけにする。
-3. 7台中5台の署名で受付番号を確定する。
-4. 受付番号を変えずに、7台のMPCで価格・時間優先照合を行う。
-5. 約定と公開板の更新が同じ遷移であることを検証する。
-6. 閾値zkPIを作り、資金と証券をDeFMIで同時決済する。
-7. DeFMIの正本受領証を確認してから、画面を「決済済み」にする。
+### Funding and multiple fills
 
-これにより防ぐ対象は、**未処理注文の内容を見てから、その注文より前へ自分の注文を差し込む行為**です。公開板から相場を予測する通常の取引、約定後の板差分からの推測、通信時刻や送信元の観測、3台以上のMPCノード結託、ネットワーク妨害による停止までは防ぎません。
+[Deferred funding against shared facility capacity](docs/DEFERRED_FUNDING_JA.md) lets clients sign order terms at intake and construct funding proofs from fresh capacity when the request reaches the front of the queue. Multiple processes can submit to one shared corporate queue. An order with insufficient capacity terminates before assets are reserved. This is distinct from concurrent updates across independent corporate journals or integration with a production API.
 
-## 全体像
+[Atomic settlement of multiple fills](docs/NATIVE_MULTIFILL_JA.md) is connected to the confidential-holdings path. Two sell orders from one corporate client and one buy order can produce two fills settled together in one transaction. Extracting and submitting only part of the signed instruction set is rejected. The private book does not advance until all seven nodes confirm both fills. A separate continuation test also exercises a later trade, cancellation of 29 remaining units, a new five-unit order funded with returned assets, actual expiry, and asset recovery. These checks do not establish unrestricted concurrency or independent operation.
+
+### Native public depth
+
+The [native public-depth path](docs/PUBLIC_DEPTH_JA.md) aggregates remaining quantities at equal prices inside the MPC and exports a node-signed, price-level-only snapshot. A separate read-only TLS service serves the snapshot without requiring corporate keys or access to the market journal. A matched round is published only after canonical settlement and all node finality confirmations.
+
+The final-source native run verified four network-fetched snapshots, two fills totaling 7,500, recovery after an actual post-settlement process exit, and validator restart. All 124 Rust tests, formatting checks, and all-target Clippy checks passed on Softbank. The existing corporate-worker, wallet, cancellation, and expiry regression also passed, including actual process failures and node restarts. This feed is not yet the browser API or the React Flow integration.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    CORP["法人参加モジュール\n注文署名・DeKYX・予約"]
-    QUEUE["暗号化耐久キュー\n停止中も順番を保持"]
-    ORDER["受付順委員会\n7台中5台で確定"]
-    MPC["秘密照合\nMP-SPDZ 7プロセス"]
-    PROOF["遷移検証\n受付・板・約定を結合"]
-    ZKPI["閾値zkPI\n成立範囲だけを指図"]
-    DEFMI["DeFMI\n資金と証券を同時更新"]
-    BOOK["公開板\n価格帯別の合計だけ"]
+    CORP["Corporate participant module<br/>Order authorization, DeKYX, reservation"]
+    QUEUE["Encrypted durable queue<br/>Preserve pending work during outages"]
+    ORDER["Ordering committee<br/>5-of-7 certification"]
+    MPC["Confidential matching<br/>Seven MP-SPDZ processes"]
+    PROOF["Execution verification<br/>Bind sequence, book, and fills"]
+    ZKPI["Threshold-signed zkPI<br/>Authorize only the resulting execution"]
+    DEFMI["DeFMI<br/>Atomic cash and securities updates"]
+    FINALITY["Each MPC node confirms finality"]
+    BOOK["Public book<br/>Aggregate price-level quantities"]
 
     CORP --> QUEUE --> ORDER --> MPC --> PROOF --> ZKPI --> DEFMI
-    MPC --> BOOK
-    DEFMI -->|"正本受領証"| CORP
+    DEFMI --> FINALITY --> BOOK
+    MPC -->|"Signed depth; no-fill rounds need no settlement"| BOOK
+    DEFMI -->|"Canonical receipt"| CORP
 ```
 
-依存関係は役割ごとに分離しています。
+Dependencies are separated by responsibility. The following diagram describes the crate-level service/demo composition; the native resident binaries also connect these components directly.
 
 ```mermaid
 flowchart TB
-    DEMO["oclob-demo\n実行例と画面"] --> SERVICE["oclob-service\n失敗時に全体を戻す調整役"]
-    SERVICE --> CORE["oclob-core\n注文と板の基準状態機械"]
-    SERVICE --> ORDERING["oclob-ordering\n5-of-7受付順"]
-    SERVICE --> MPC["oclob-mpc\n秘密照合回路"]
-    SERVICE --> PROOFS["oclob-proofs\n状態遷移の検証"]
-    SERVICE --> SETTLEMENT["oclob-settlement\n予約・zkPI・DvP"]
-    SERVICE --> DEKYX["DeKYX\n匿名の法人参加資格"]
+    DEMO["oclob-demo<br/>Executable scenarios and interface"] --> SERVICE["oclob-service<br/>Transactional coordination"]
+    SERVICE --> CORE["oclob-core<br/>Reference order and book state machine"]
+    SERVICE --> ORDERING["oclob-ordering<br/>5-of-7 sequencing"]
+    SERVICE --> MPC["oclob-mpc<br/>Confidential matching circuit"]
+    SERVICE --> PROOFS["oclob-proofs<br/>State-transition verification"]
+    SERVICE --> SETTLEMENT["oclob-settlement<br/>Reservations, zkPI, and DvP"]
+    SERVICE --> DEKYX["DeKYX<br/>Anonymous corporate credentials"]
     SETTLEMENT --> SDK["zkPI / DeFMI SDK"]
     SDK --> DEFMI["DeFMI"]
 ```
 
-## 実装済みの経路
+## Implemented paths
 
-- 注文: 整数tick/lot、GTC、IOC、Ed25519事前署名、salt付きcommitment、厳格な秘密wire形式。
-- 板: 価格優先、同価格内の受付順、部分約定、最大8件の複数約定、取消、期限切れ、公開価格帯合計。
-- 順序: 7ノード、最大2不正を想定した5-of-7連鎖証明、署名前の投票永続化、各MPCノードによる証明本体の再検証、同一番号への二重投票拒否。
-- 端末からMPCへ: 法人側で検証可能な7分割を作り、各ノードの公開鍵で固定長暗号化し、相互TLSで直接配送。調整役は注文内容を受け取らない。
-- 決済権限: 注文ごとに別の暗号鍵を作り、その鍵を署名付き3-of-7分割として7ノードへ暗号配送。各ノードは正しいMPC結果を永続化した後だけ、決済専用の相互TLS接続へ自分の一片を返す。約定前の単一復号鍵は存在しない。
-- MPC: 公式MP-SPDZコンパイラと `malicious-shamir-party.x` を実行し、1ノードが自分の1分割だけを開いて入力する。平文照合への代替は禁止。
-- 共同証明: 各約定について7ノードが自分の616個の秘密共有だけを読み、金額・価格の範囲、数量×価格、資金・証券・Maker予約の残りが負でないことを共同証明する。証明処理用の相互TLS口は通常の注文受付口と分離する。
-- 参加資格: DeKYXによる匿名法人資格と用途別無効化値。
-- 予約: 新経路ではMaker・Takerの双方が注文送信前に資金・在庫を予約。法人が所有権と予約可能額を証明し、DeFMIでの確定を読み直してから注文を分割配送する。台帳の予約番号は閾値暗号化し、MPC受付へ渡す参加証明から分離する。
-- 決済: 3-of-7共同署名と共同証明を含むzkPI、受取人ごとに暗号化した開示情報をDeFMIへ渡す。新経路では各検証ノードが証明全文と現在の予約状態を検証し、両側の資金・証券を原子的に更新する。同じ決済の再送は同じ確定結果を返し、二重適用しない。
-- 障害時: 暗号化した法人側送信キュー、同じ要求の重複排除、MPC停止時の順序保持、固定間隔のダミー処理。
-- 画面: 運営者・売り手・買い手を切り替え、公開板、自社の資金・在庫・予約、注文、7 MPC処理、zkPI、DeFMI更新をReact Flowで確認。障害ボタンは実ノード停止ではなく待機条件の模擬です。
+Capabilities below span the reference state machine, native acceptance scenarios, resident services, and legacy browser demo. They are not all connected to one production-ready interface.
 
-## まだ本番保証ではないもの
+- **Orders:** integer ticks and lots, good-till-cancelled (GTC) and immediate-or-cancel (IOC) orders, Ed25519 preauthorization, salted commitments, and a strict confidential wire format.
+- **Book:** price priority, certified admission order within a price, partial fills, matching against up to eight resting orders, cancellation, expiry, and aggregate public price levels. Resident lifecycle automation remains incomplete.
+- **Sequencing:** seven nodes, a five-of-seven chained certificate under an assumption of at most two corrupt nodes, durable votes before signing, full certificate verification by every MPC node, and rejection of conflicting votes for the same sequence number.
+- **Client-to-MPC delivery:** corporate clients construct seven verifiable shares, encrypt fixed-size payloads under each node's public key, and deliver them directly over mutual TLS. The coordinator does not receive order contents.
+- **Settlement authority:** each order uses a separate encryption key, distributed as signed three-of-seven shares and encrypted for the seven nodes. A node releases its share only to the settlement-specific mutual-TLS connection after persisting a valid MPC result. There is no single pre-match decryption key held by the coordinator.
+- **MPC:** the official MP-SPDZ compiler and `malicious-shamir-party.x`. Each resident node opens only its own share for input. Falling back to plaintext matching is prohibited.
+- **Collaborative proofs:** for each fill, seven nodes use their respective 616 secret-shared proof wires to jointly prove quantity and price ranges, quantity-times-price consistency, and nonnegative cash, securities, and maker-reservation remainders. The proof endpoint is separate from ordinary order intake.
+- **Eligibility:** anonymous corporate credentials and domain-specific nullifiers supplied by DeKYX.
+- **Reservations:** both maker and taker reserve funds or inventory before native order delivery. The corporate client proves ownership and available capacity, then reads back canonical DeFMI confirmation before distributing order shares. The reservation identifier is threshold-encrypted and separated from the eligibility presentation sent to MPC intake.
+- **Settlement:** zkPI carries a three-of-seven signature, collaborative proofs, and recipient-encrypted disclosures. Each native validator verifies the complete proofs and current reservation state, then updates both legs atomically. Retrying the same settlement returns the same canonical outcome without applying it twice.
+- **Recovery:** encrypted corporate delivery queues, exact-request deduplication, retention of queue order during MPC outages, and fixed-interval dummy-processing support.
+- **Interface:** the legacy React Flow demo provides operator, maker, and taker views of the public book, corporate cash, inventory, reservations, orders, seven MPC processing steps, zkPI, and DeFMI updates. Its outage button simulates a waiting condition; it does not stop real nodes. Native service integration into this interface is not complete.
 
-- 新しい匿名保有記録の経路は、実際の事前予約・秘密照合・共同証明・DeFMI決済まで接続済みです。法人側の常駐処理は、保存済みの署名済み予約と同じノード別暗号文を使って停止後も再開します。実ノードの停止、予約確定後とノード受付後の強制終了、常駐処理の再起動を経た注文で、複数約定、取消・期限切れと資産回収まで確認しました。未受付注文も、未送信の証拠または正本の確保・解放受領証がそろう場合は自動で終了し、資産を復元します。応答不明で証拠がない場合、独立した法人記録の同時更新、部分配送後の清掃、市場側の無人運転は残っています。キューの受付済み表示は決済済みを意味しません。情報の分離は[予約証明の情報分離](docs/RESERVATION_PRIVACY.md)を参照してください。
-- 分散受入経路は1台のホスト上の7コンテナです。7つの運営会社、別々の管理者・鍵保管・障害領域、WANでの機密性と可用性は未受入です。
-- ブラウザ用の単体デモは互換性のため従来の中央調整経路を使い、調整サービスが注文を一時的にメモリへ持ちます。CLI/Dockerの統合受入経路は調整役へ平文注文を渡しませんが、ブラウザと本番APIの切替は未完了です。
-- 新経路の事前予約証明は法人側で作ります。決済時に開くのは予約を特定する権限であり、注文原文や残高の秘密値ではありません。ただし、接続元・時刻の観測、公開板の差分からの推測、MPCノード間の結託に対する条件は残ります。
-- Avalanche受入は1ホスト上の5検証ノードです。新経路では口座番号を指定せず、匿名の保有記録と予約状態を更新します。独立運営、WAN、再編、HSMでの鍵保管は未受入です。
-- 新経路のRust VMは共同証明全文を検証します。MPC側も設定済みDeFMIへの読み取りで全約定の確定を確認してから秘密の板を進めます。ただし、この接続サービスへの信頼、悪意のあるノードが送る暗号化断片の検証、複雑な障害下での受取権回復には、別途確認・強化が必要です。支出証明には固定した外部の実験用実装を使っており、独立した暗号監査の合格を主張しません。従来の口座差分方式も互換性試験として残しており、新経路の証明と混同しません。
-- デモ用の委員会鍵、参加者、残高は起動時生成です。外部KMS/HSM、鍵交代、バックアップ復旧は未受入です。
-- 性能値は一件の粗い実行結果であり、スループット保証ではありません。
-- 安全性定義、通信漏洩、選択的停止を含む形式証明は論文作業として残っています。
+## Limits and non-production guarantees
 
-## 再現方法
+- The native confidential-holdings path connects real pretrade reservation, confidential matching, collaborative proofs, and DeFMI settlement. Corporate workers resume using the same saved signed reservation and node-specific ciphertexts. Acceptance scenarios cover actual node outages, process termination after reservation confirmation and node admission, worker restart, multiple fills, cancellation, expiry, and recovery. An unadmitted request can terminate automatically when there is evidence that it was never sent or sufficient canonical reservation/release receipts. Ambiguous outcomes without evidence, independent corporate-journal writers, partial-delivery cleanup, and unattended resident-market lifecycle handling remain open. **Queue admission is not settlement.** See [reservation information separation](docs/RESERVATION_PRIVACY.md).
+- Distributed acceptance currently runs seven node containers on one host. It does not establish seven independent operators, separate administrators, independent key custody or failure domains, or WAN confidentiality and availability.
+- The standalone browser demo retains the older centralized coordinator for compatibility and temporarily holds plaintext orders in that service's memory. The native CLI/Docker path does not send plaintext orders to the coordinator. Browser and production-API cutover remains incomplete.
+- Corporate clients create native reservation proofs. Settlement opens authority identifying the reservation, not the original order or private balance witnesses. Connection metadata, public-book inference, and the MPC corruption threshold remain relevant.
+- Avalanche acceptance uses five validators on one host. The native path updates confidential holdings and reservations without specifying account numbers. Independent operation, WAN behavior, reorganizations, and HSM-backed key custody have not passed acceptance.
+- The Rust VM verifies the complete collaborative proofs. MPC nodes confirm every fill through the configured DeFMI service before advancing private state. Trust in that read service, validation of encrypted fragments from malicious nodes, and claim recovery under complex failures require further work. The spend-proof dependency is a pinned experimental implementation, not an independently audited production system. The older account-delta path remains for compatibility tests and must not be confused with the native proof path.
+- Demo committee keys, participants, and balances are generated at startup. External KMS/HSM integration, key rotation, and backup recovery have not passed acceptance.
+- Reported measurements are individual rough runs, not throughput guarantees.
+- Formal security definitions and proofs covering communication leakage and selective abort remain research work.
 
-開発用Macではビルドやテストを行いません。リポジトリのソースを一時領域へ転送し、OmenXまたはSoftBank上のLinuxコンテナだけで実行します。
+## Reproduce the results
+
+**Do not build or test on the development Mac.** The Make targets transfer source to a temporary directory and run only in Linux containers on the approved OmenX or Softbank hosts.
 
 ```bash
 make release-gate \
@@ -103,7 +118,7 @@ make release-gate \
   REMOTE_TEST_REUSE_IMAGE=0
 ```
 
-2回目以降、同じ固定イメージを再利用する場合:
+Reuse the same pinned test image on subsequent runs:
 
 ```bash
 make release-gate \
@@ -111,9 +126,9 @@ make release-gate \
   REMOTE_TEST_REUSE_IMAGE=1
 ```
 
-このゲートはRust整形、Clippy、全crateテスト、React Flow型検査・ビルド、実MP-SPDZ、zkPI、DeFMI DvP、正本読戻し、二重決済拒否を一続きで実行します。結果は `artifacts/oclob_rough_e2e.json` に保存します。
+This gate runs Rust formatting, Clippy, workspace tests, React Flow type checking/build, and an end-to-end path through real MP-SPDZ, zkPI, DeFMI DvP, canonical readback, and duplicate-settlement rejection. Its result is written to `artifacts/oclob_rough_e2e.json`. It does not replace acceptance of the separate native resident path.
 
-法人の事前予約から、7つの常駐MPCノード、匿名の保有記録を更新するDeFMI決済までを確認する新経路:
+### Native pretrade reservation and settlement
 
 ```bash
 make remote-native-e2e \
@@ -121,36 +136,52 @@ make remote-native-e2e \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
 ```
 
-結果は `artifacts/oclob_native_notes.json` です。DeFMIの起動、共同鍵の生成、法人の事前予約、秘密照合・共同証明、5検証ノードの台帳一致、再送、1検証ノードの再起動までを確認します。鍵の配置と制約は[実行手順](docs/NATIVE_PRETRADE_DEMO.md)を参照してください。以下の従来経路は互換性・部品ごとの確認用であり、新経路の受入れの代わりにはなりません。
+The result is `artifacts/oclob_native_notes.json`. This scenario covers DeFMI startup, distributed committee-key generation, corporate pretrade reservations, confidential matching and collaborative proving, agreement across five validators, idempotent resubmission, and restart of a validator. See the [native walkthrough](docs/NATIVE_PRETRADE_DEMO.md) for key placement and limitations.
 
-法人側で注文を分割し、7つの独立コンテナへ直接送る経路は次で確認します。
+### Resident market and native public depth
+
+```bash
+make remote-native-depth-e2e \
+  REMOTE_TEST_HOST=softbank-l40s \
+  REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
+```
+
+The result is `artifacts/oclob_native_depth.json`. This scenario uses the resident market rather than a coordinator that manually selects orders. It retrieves public depth over the read-only network feed and tests the publication boundary around canonical settlement and process recovery. See [public depth](docs/PUBLIC_DEPTH_JA.md) and the [resident market service](docs/NATIVE_MARKET_JA.md).
+
+### Component and compatibility scenarios
+
+These paths remain useful, but are not substitutes for native acceptance.
+
+Direct delivery of corporate-generated shares to seven separate MPC containers:
 
 ```bash
 make remote-distributed-e2e \
   REMOTE_TEST_HOST=omenx_ubuntu_zerotier
 ```
 
-結果は `artifacts/oclob_distributed_e2e.json` に保存されます。この成果物は1ホスト上のコンテナ分離を示すもので、7社の独立運用や実Avalanche決済を示すものではありません。
+Result: `artifacts/oclob_distributed_e2e.json`. It demonstrates container separation on one host, not independent corporate operation or actual Avalanche settlement.
 
-法人側の分割から7 MPCノード、Maker予約、Taker予約とDvP、5検証者の確定、再送拒否、再起動復旧までを同じ注文要約値で一続きに確認する経路は次です。
+A continuous compatibility scenario binding corporate sharing, seven MPC nodes, maker and taker reservations, DvP, five-validator confirmation, duplicate rejection, and restart recovery to the same order commitment:
 
 ```bash
 make remote-integrated-e2e \
   REMOTE_TEST_HOST=omenx_ubuntu_zerotier
 ```
 
-結果は `artifacts/oclob_distributed_avalanche_acceptance.json` に保存されます。この成果物は、注文別3-of-7鍵解放を含む一続きの機能確認です。ただし、1ホスト構成、約定後に一つの研究用決済プロセスへ復元する構成、デモ鍵という制限を明記しています。
+Result: `artifacts/oclob_distributed_avalanche_acceptance.json`. This includes per-order three-of-seven key release, with explicit limits: a single host, post-match reconstruction in one research settlement process, and demo keys.
 
-非EVMのDeFMI Avalanche L1で、Maker予約、Taker予約とDvP、全検証者readback、再送拒否、再起動復旧を確認する経路は次です。
+Maker reservation, taker reservation and DvP, validator readback, duplicate rejection, and restart recovery on the non-EVM DeFMI Avalanche L1:
 
 ```bash
 make remote-avalanche-e2e \
   REMOTE_TEST_HOST=omenx_ubuntu_zerotier
 ```
 
-結果は `artifacts/oclob_avalanche_acceptance.json` に保存されます。この成果物も1ホスト上の5検証者であり、独立validator運営や、分散MPCとL1を一つに結んだ受入ではありません。
+Result: `artifacts/oclob_avalanche_acceptance.json`. This also uses five validators on one host; it is not evidence of independent validator operation or a combined distributed-MPC-to-L1 acceptance path.
 
-Linux上で画面だけを起動する場合:
+### Start the standalone browser demo
+
+Run these commands on an approved Linux host:
 
 ```bash
 docker build -f docker/Dockerfile --target oclob-server -t oclob-server:local .
@@ -160,26 +191,30 @@ docker run --rm -p 18800:18800 \
   oclob-server:local
 ```
 
-ブラウザで `http://127.0.0.1:18800/` を開きます。これは研究デモであり、実資産を入れないでください。
+Open `http://127.0.0.1:18800/` through an appropriate local connection or port forward. This is a research demo. Do not deposit real assets.
 
-## 文書
+## Documentation
 
-- [法人の事前予約からDeFMI決済までの実行手順](docs/NATIVE_PRETRADE_DEMO.md)
-- [法人側の注文保存と停止後の再開](docs/CORPORATE_RECOVERY_JA.md)
-- [決済後の受取り・返金を次の注文に使う](docs/CORPORATE_WALLET_JA.md)
-- [受取り後、元の板の残りと次の取引を決済する](docs/NATIVE_CYCLE_JA.md)
-- [残り注文を取り消し、期限切れの予約からも資産を回収する](docs/NATIVE_LIFECYCLE_JA.md)
-- [法人側のキュー・常駐送信と、停止後の自動再開](docs/CORPORATE_WORKER_JA.md)
-- [停止中の注文受付と、共有保証枠に合わせた資金証明の作成](docs/DEFERRED_FUNDING_JA.md)
-- [MPC全停止中の期限切れ注文と、確保した資産の回収](docs/QUEUED_EXPIRY_JA.md)
-- [設計と処理の流れ](docs/ARCHITECTURE.md)
-- [守るもの・守らないもの](docs/THREAT_MODEL.md)
-- [既存研究・既存プロダクトとの差分](docs/RELATED_WORK.md)
-- [企業PoC導入手順](docs/POC_GUIDE_JA.md)
-- [APIと状態の意味](docs/API.md)
-- [実装状況と受入条件](docs/STATUS.md)
-- [詳細な実装計画](doc/ja/OCLOB_IMPLEMENTATION_PLAN.md)
+The README is in English. Several detailed operational guides below are currently in Japanese.
 
-## ライセンス
+- [Corporate pretrade reservation through native DeFMI settlement](docs/NATIVE_PRETRADE_DEMO.md)
+- [Corporate order persistence and restart recovery](docs/CORPORATE_RECOVERY_JA.md)
+- [Reuse settlement receipts and refunds for the next order](docs/CORPORATE_WALLET_JA.md)
+- [Continue trading against the remaining original book](docs/NATIVE_CYCLE_JA.md)
+- [Cancel remaining orders and recover assets after expiry](docs/NATIVE_LIFECYCLE_JA.md)
+- [Corporate queues, resident delivery, and automatic restart](docs/CORPORATE_WORKER_JA.md)
+- [Offline intake and deferred funding against shared capacity](docs/DEFERRED_FUNDING_JA.md)
+- [Recover expired orders while all MPC nodes are offline](docs/QUEUED_EXPIRY_JA.md)
+- [Resident native market service](docs/NATIVE_MARKET_JA.md)
+- [MPC-derived public price-level depth](docs/PUBLIC_DEPTH_JA.md)
+- [Architecture and processing flow](docs/ARCHITECTURE.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Related research and products](docs/RELATED_WORK.md)
+- [Enterprise PoC setup guide](docs/POC_GUIDE_JA.md)
+- [API and state semantics](docs/API.md)
+- [Implementation status and acceptance criteria](docs/STATUS.md)
+- [Detailed implementation plan](doc/ja/OCLOB_IMPLEMENTATION_PLAN.md)
 
-MIT。MP-SPDZ、DeKYX、QOMM/zkPI/DeFMIおよび各Rust依存には、それぞれのライセンスが適用されます。
+## License
+
+MIT. MP-SPDZ, DeKYX, QOMM/zkPI/DeFMI, and individual Rust dependencies retain their respective licenses.

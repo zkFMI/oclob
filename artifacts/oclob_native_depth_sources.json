@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-09-05T19:41:58.814Z",
+  "recorded_at": "2026-09-05T19:37:37.705Z",
   "verdict": "smoke_only",
   "remote_host": "softbank-l40s",
-  "remote_snapshot": "/tmp/oclob-native.yvxgxM/oclob",
+  "remote_snapshot": "/tmp/oclob-native.onTah9/oclob",
   "dependency_commit": "5dd1f68d43da3f81e640c6eae25749d358e6680f",
-  "contract_id": "oclob-native-worker-v1",
-  "contract_sha256": "bb025519b67dfc70091e3802c5c7c524ef22814d6b5d0fc3a5cbebefdbd87fed",
-  "manifest": "research/manifests/oclob_native_worker_007.json",
-  "manifest_sha256": "d201b2f221e28105ae4692a1aa0e5c894d1fe87332473e3a4a84f3f439e69ea5",
-  "artifact": "artifacts/oclob_native_worker.json",
-  "artifact_sha256": "02ba648cc469277333dcf65e66f11a0550aee42803cb79ca17c1c2c258e85e12",
+  "contract_id": "oclob-native-depth-v1",
+  "contract_sha256": "1030b5be06d8e851b8e6674c22f227fc38371cb1cff2dd423db9a27b1ca879be",
+  "manifest": "research/manifests/oclob_native_depth_002.json",
+  "manifest_sha256": "b59a3c3bfb576bbdfb4fca30468c4196a518dd64a385cb540e0c1b7691768187",
+  "artifact": "artifacts/oclob_native_depth.json",
+  "artifact_sha256": "0037062e7299a0d9fa6c5652bf59ae73869bdf7fda8b03bf76b8ac3341933f75",
   "code_gate": {
     "command": "make remote-test REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' REMOTE_TEST_REUSE_IMAGE=1 REMOTE_TEST_COMMAND='MP_SPDZ_ROOT=/opt/MP-SPDZ cargo test --workspace --release -j 16 && cargo fmt --all -- --check && MP_SPDZ_ROOT=/opt/MP-SPDZ cargo clippy --workspace --all-targets -- -D warnings'",
     "exit_code": 0,
@@ -19,24 +19,23 @@
     "log_sha256": "3acaddb702dc2bc3cee1b80bb6739195a1cdaeef0c486d7d95396bf28f5344ae"
   },
   "whole_run": {
-    "command": "make remote-native-worker-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_WORKER_MANIFEST=/research/manifests/oclob_native_worker_007.json",
+    "command": "make remote-native-depth-e2e REMOTE_TEST_HOST=softbank-l40s REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none' NATIVE_DEPTH_MANIFEST=/research/manifests/oclob_native_depth_002.json",
     "exit_code": 0,
-    "log": "/tmp/oclob-native-worker-depth-007-20260906.log",
-    "log_sha256": "3195b1b8023d8e871e863f1b9e2df9045fb9af9ab05f6247d37580a46df201fe",
-    "completed_native_rounds": 2,
-    "total_native_fills": 3,
-    "completed_native_releases": 2,
-    "recipient_claims_redeemed": 9,
-    "final_facility_sequences": [
-      8,
-      5
-    ],
-    "completed_dispatches": 1,
-    "actual_reserve_and_admission_process_exits": 75,
-    "corporate_worker_restart_unchanged": true,
-    "exact_requests_preserved": true,
-    "node_restart_state_preserved": true,
-    "validator_restart_recovered": true
+    "log": "/tmp/oclob-native-depth-final-002-20260906.log",
+    "log_sha256": "e8e3c118eba391fcf0fd5af3c2b8b9d3382103a5b37af87287fe59bb1aedb500",
+    "canonically_published_depth_snapshots": 4,
+    "admitted_orders": 4,
+    "completed_market_rounds": 4,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 7500,
+    "node_finality_observations": 14,
+    "post_match_participant_signatures": 0,
+    "actual_post_canonical_process_exit": 75,
+    "distinct_market_processes": 3,
+    "public_depth_stays_old_before_finality": true,
+    "exact_canonical_transaction_recovered": true,
+    "validator_restart_recovered": true,
+    "reader_requires_no_corporate_keys_or_journal": true
   },
   "exact_source_files": {
     "Cargo.lock": "572188815297c945451640fc735b970d80dbe089bac35f9ffdaaa3fd4dd87eb4",
@@ -124,8 +123,9 @@
     "rust/oclob-settlement/tests/pretrade.rs": "9c30b4420f66eab69950b43d6b9145a87f3b40ad68ff48f11167b611897dd5ae"
   },
   "limitations": [
-    "Unchanged prepared corporate-worker, wallet, cancellation and expiry scenario on final public-depth source. Separate from resident-market lifecycle automation.",
-    "Single-host functional smoke only; no independent-operator, WAN, performance, economic or production promotion.",
-    "Only public results and exact source hashes exported; no private runtime, journals or keys."
+    "Single-host eight-resting-slot functional smoke only; not WAN, independent-operator, economic, performance or production evidence.",
+    "MPC-node signatures and canonical observations, not a new full-MPC zero-knowledge proof. Configured DeFMI read service remains trusted.",
+    "Read-only TLS feed, not HTTP/API or React Flow integration. No idle freshness heartbeat, anonymous network transport, load-control, resident lifecycle or old-program migration acceptance.",
+    "Exported only redacted public results and source hashes; no private runtime, journals or corporate credentials."
   ]
 }

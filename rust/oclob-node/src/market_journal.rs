@@ -26,6 +26,8 @@ pub struct MarketCompletedRound {
     pub transaction_id: Option<String>,
     pub canonical_root: Option<[u8; 32]>,
     pub finality_observations: usize,
+    #[serde(default)]
+    pub public_snapshot: Option<crate::public_depth::FinalizedPublicBook>,
 }
 
 #[derive(Deserialize, Serialize)]
