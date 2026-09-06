@@ -252,7 +252,7 @@ dependencies = [
 [[package]]
 name = "dekyx-core"
 version = "0.1.0"
-source = "git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
+source = "git+https://github.com/zkFMI/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
@@ -664,7 +664,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "oclob-core",
- "qomm-mpc 0.1.0 (git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64)",
+ "qomm-mpc 0.1.0 (git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca)",
  "rand",
  "serde",
  "sha2",
@@ -687,7 +687,7 @@ dependencies = [
  "oclob-settlement",
  "openssl",
  "qomm-defmi",
- "qomm-mpc 0.1.0 (git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64)",
+ "qomm-mpc 0.1.0 (git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca)",
  "qomm-proofs",
  "qomm-transport",
  "qomm-zk",
@@ -862,7 +862,7 @@ dependencies = [
 [[package]]
 name = "qomm-audit"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -880,7 +880,7 @@ dependencies = [
 [[package]]
 name = "qomm-defmi"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "base64",
  "bulletproofs",
@@ -906,7 +906,7 @@ dependencies = [
 [[package]]
 name = "qomm-dsl"
 version = "0.1.0"
-source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
+source = "git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca#da75fdc4b03502d467829c9634976435bcfb0cca"
 dependencies = [
  "sha2",
 ]
@@ -914,7 +914,7 @@ dependencies = [
 [[package]]
 name = "qomm-dsl"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "sha2",
 ]
@@ -922,20 +922,20 @@ dependencies = [
 [[package]]
 name = "qomm-measure"
 version = "0.1.0"
-source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
+source = "git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca#da75fdc4b03502d467829c9634976435bcfb0cca"
 
 [[package]]
 name = "qomm-measure"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 
 [[package]]
 name = "qomm-mpc"
 version = "0.1.0"
-source = "git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64#27299a1b49818d8c33ecfe9f4eeafab664f6ca64"
+source = "git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca#da75fdc4b03502d467829c9634976435bcfb0cca"
 dependencies = [
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64)",
- "qomm-measure 0.1.0 (git+https://github.com/shukob/qomm.git?rev=27299a1b49818d8c33ecfe9f4eeafab664f6ca64)",
+ "qomm-dsl 0.1.0 (git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca)",
+ "qomm-measure 0.1.0 (git+https://github.com/zkFMI/qomm.git?rev=da75fdc4b03502d467829c9634976435bcfb0cca)",
  "rand_core",
  "serde",
  "serde_json",
@@ -944,10 +944,10 @@ dependencies = [
 [[package]]
 name = "qomm-mpc"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f)",
- "qomm-measure 0.1.0 (git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f)",
+ "qomm-dsl 0.1.0 (git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09)",
+ "qomm-measure 0.1.0 (git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09)",
  "serde",
  "serde_json",
 ]
@@ -955,13 +955,13 @@ dependencies = [
 [[package]]
 name = "qomm-proofs"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
  "ed25519-dalek",
  "merlin",
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f)",
+ "qomm-dsl 0.1.0 (git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09)",
  "qomm-zk",
  "rand_core",
  "serde",
@@ -971,7 +971,7 @@ dependencies = [
 [[package]]
 name = "qomm-transport"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -981,8 +981,8 @@ dependencies = [
  "merlin",
  "openssl",
  "qomm-audit",
- "qomm-dsl 0.1.0 (git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f)",
- "qomm-mpc 0.1.0 (git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f)",
+ "qomm-dsl 0.1.0 (git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09)",
+ "qomm-mpc 0.1.0 (git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09)",
  "qomm-proofs",
  "qomm-zk",
  "qomm-zkpi",
@@ -997,7 +997,7 @@ dependencies = [
 [[package]]
 name = "qomm-zk"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
@@ -1010,7 +1010,7 @@ dependencies = [
 [[package]]
 name = "qomm-zkpi"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek",
@@ -1401,7 +1401,7 @@ dependencies = [
 [[package]]
 name = "zkpi-defmi-sdk"
 version = "0.1.0"
-source = "git+https://github.com/shukob/defmi.git?rev=5dd1f68d43da3f81e640c6eae25749d358e6680f#5dd1f68d43da3f81e640c6eae25749d358e6680f"
+source = "git+https://github.com/zkFMI/defmi.git?rev=2694a149cf8fa5fcb7b1ca64e010a2c127975a09#2694a149cf8fa5fcb7b1ca64e010a2c127975a09"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",

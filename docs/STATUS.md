@@ -28,7 +28,7 @@ OCLOBは研究用MVPです。新しいCLI/Docker経路では、法人2社の実�
 
 さらに[法人側のキューと常駐送信](CORPORATE_WORKER_JA.md)を接続しました。実ノードを一つ停止して送信待ちを確認し、予約確定後と7ノード受付後に法人プロセスを強制終了しました。再起動した常駐処理が保存済みの同じ指図で受付を完了し、その注文で上記の2回の決済と2回の資産解放を実行しました。二重ワーカーの拒否、同じ要求の再登録と常駐処理の再起動、7 MPCノードと5検証ノードの状態一致も確認しました。MPC公開板配信を加えた最終ソースとDeFMI `5dd1f68` で、この全経路を再実行済みです。証拠は `artifacts/oclob_native_worker.json`、実行した83ファイルのハッシュは `artifacts/oclob_native_worker_sources.json` です。キューは7ノードの受付までを管理し、決済済みとは表示しません。
 
-`artifacts/oclob_native_notes.json` と `artifacts/oclob_native_recovery.json` は、以前の依存版での接続・停止復旧の記録です。旧支出証明には[安全性上の欠陥](https://github.com/shukob/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md)が見つかっており、旧正常系の成功を修正版の安全性の証拠として流用しません。
+`artifacts/oclob_native_notes.json` と `artifacts/oclob_native_recovery.json` は、以前の依存版での接続・停止復旧の記録です。旧支出証明には[安全性上の欠陥](https://github.com/zkFMI/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md)が見つかっており、旧正常系の成功を修正版の安全性の証拠として流用しません。
 
 [未受付注文の期限切れ回収](QUEUED_EXPIRY_JA.md)では、7 MPCノードすべてを停止し、未送信終了1件と実際の資産解放1件を確認しました。送信開始と未送信終了は、片方だけが確定できる永続記録で区別します。確保直後と解放直後の強制終了から常駐処理が復旧し、返却された同じ資産で次の注文を7ノードが受け付けました。キュー再起動と5検証ノードの台帳一致も確認しています。結果は `artifacts/oclob_native_expiry.json`、実行ソース71ファイルは `artifacts/oclob_native_expiry_sources.json` です。ここでの新規注文は受付までであり、約定を行ったことにはしません。
 

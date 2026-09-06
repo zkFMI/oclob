@@ -7,3 +7,4 @@
 /oclob_demo/react-flow/node_modules/
 /oclob_demo/react-flow/.test-build/
 .DS_Store
+.codex/

@@ -129,12 +129,12 @@ saltも個々のMPCノードへ渡しません。
 各 Rust VM は所有権・残高不足防止・保証枠の証明全文を検証します。
 RFQ の受付票や架空の Maker 方針は使いません。予約署名と DeKYX 証明が
 循環しない生成順序と、非公開の承認処理の信頼範囲は
-[DeFMI の接続資料](https://github.com/shukob/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/APPLICATION_NOTE_RESERVATIONS_JA.md)
+[DeFMI の接続資料](https://github.com/zkFMI/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/APPLICATION_NOTE_RESERVATIONS_JA.md)
 に記載しています。
 
 支出証明は、所有権と金額を別々に拘束する新形式へ変更しています。
 旧方式で見つけた金額改ざん、使用元の直接特定、残差検証、出力先差替えの問題は
-[DeFMIの安全性レビュー](https://github.com/shukob/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md)
+[DeFMIの安全性レビュー](https://github.com/zkFMI/defmi/blob/153fe671e523ec573a6c6261f341423a49371f5d/docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md)
 を参照してください。旧版の正常系の実行記録は、新形式の安全性の証拠にしません。
 固定したTriptych実装は実験用であり、独立した暗号監査と旧状態の移行審査は未完了です。
 

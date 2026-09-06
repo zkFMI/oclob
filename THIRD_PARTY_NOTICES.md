@@ -6,9 +6,9 @@ OCLOB source is MIT-licensed. It also builds on independently versioned componen
 
 | Component | Source | Pin | Purpose |
 |---|---|---|---|
-| DeKYX | `https://github.com/shukob/dekyx.git` | workspace `Cargo.toml` | Anonymous organizational eligibility |
-| QOMM | `https://github.com/shukob/qomm.git` | workspace `Cargo.toml` | Official MPC compiler adapter |
-| zkPI / DeFMI SDK | `https://github.com/shukob/defmi.git` | workspace `Cargo.toml` | Proofs, settlement instruction, canonical ledger |
+| DeKYX | `https://github.com/zkFMI/dekyx.git` | workspace `Cargo.toml` | Anonymous organizational eligibility |
+| QOMM | `https://github.com/zkFMI/qomm.git` | workspace `Cargo.toml` | Official MPC compiler adapter |
+| zkPI / DeFMI SDK | `https://github.com/zkFMI/defmi.git` | workspace `Cargo.toml` | Proofs, settlement instruction, canonical ledger |
 | Tari Triptych | `https://github.com/tari-project/triptych.git` | transitive DeFMI dependency in `Cargo.lock` | Parallel ownership/value membership for native notes |
 | MP-SPDZ | `https://github.com/data61/MP-SPDZ.git` | `docker/Dockerfile` | Official MPC compiler and malicious-Shamir runtime |
 
