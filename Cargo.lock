@@ -363,7 +363,7 @@ dependencies = [
 [[package]]
 name = "defmi"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/defmi.git?rev=b48bda6cf07abb74068b85268c9293ef37b1e68e#b48bda6cf07abb74068b85268c9293ef37b1e68e"
+source = "git+https://github.com/zkFMI/defmi.git?rev=1034c0a76c76a88e266ae6afef8a7ce4607c6f1f#1034c0a76c76a88e266ae6afef8a7ce4607c6f1f"
 dependencies = [
  "base64",
  "bulletproofs",
@@ -383,7 +383,7 @@ dependencies = [
  "thiserror 1.0.69",
  "triptych",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
 ]
@@ -391,7 +391,7 @@ dependencies = [
 [[package]]
 name = "dekyx-core"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/dekyx.git?rev=09c2c1a7295e8cab592aca6af2f89381c3c110ac#09c2c1a7295e8cab592aca6af2f89381c3c110ac"
+source = "git+https://github.com/zkFMI/dekyx.git?rev=4ea50f5c25482c680716622d39b008dd6e0645c8#4ea50f5c25482c680716622d39b008dd6e0645c8"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
@@ -400,7 +400,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=26ebfe96563a05c3379219f7fdacea137ab5fb4f)",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -910,7 +910,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -925,7 +925,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.20",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -953,7 +953,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
  "zkpi-defmi-sdk",
@@ -976,7 +976,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
  "zkpi-defmi-sdk",
@@ -1021,7 +1021,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tiny_http",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
  "zkpi-defmi-sdk",
@@ -1096,7 +1096,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
  "zkpi-defmi-sdk",
@@ -1239,7 +1239,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
 ]
 
@@ -1278,7 +1278,7 @@ dependencies = [
  "serde",
  "sha2",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
 ]
 
@@ -1306,7 +1306,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "zeroize",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
 ]
@@ -1857,28 +1857,6 @@ dependencies = [
 [[package]]
 name = "zkfmi-crypto"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkfmi-crypto.git?rev=26ebfe96563a05c3379219f7fdacea137ab5fb4f#26ebfe96563a05c3379219f7fdacea137ab5fb4f"
-dependencies = [
- "aes",
- "aes-gcm",
- "ed25519-dalek",
- "getrandom 0.4.3",
- "hkdf",
- "ml-dsa",
- "ml-kem",
- "rand_core 0.6.4",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "toml",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "zkfmi-crypto"
-version = "0.1.0"
 source = "git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0#9a183c90b6ee6af17fce26ca4b235bdb543dc0a0"
 dependencies = [
  "aes",
@@ -1933,14 +1911,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
 ]
 
 [[package]]
 name = "zkpi-defmi-sdk"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/defmi.git?rev=b48bda6cf07abb74068b85268c9293ef37b1e68e#b48bda6cf07abb74068b85268c9293ef37b1e68e"
+source = "git+https://github.com/zkFMI/defmi.git?rev=1034c0a76c76a88e266ae6afef8a7ce4607c6f1f#1034c0a76c76a88e266ae6afef8a7ce4607c6f1f"
 dependencies = [
  "curve25519-dalek",
  "defmi",
@@ -1952,7 +1930,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
- "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-crypto",
  "zkfmi-zk",
  "zkpi",
 ]
