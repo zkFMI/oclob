@@ -55,12 +55,12 @@ oclob-service = { path = "rust/oclob-service" }
 # Update these revisions only together with the protocol compatibility tests.
 dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "4ea50f5c25482c680716622d39b008dd6e0645c8" }
 qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
-defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "4a6081f653516d1b17ba650b9d8f5c4e5bcb2bc7" }
+defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "99b5eb271e1e0e405f70679697722e978cd706a3" }
 qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
-zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "4a6081f653516d1b17ba650b9d8f5c4e5bcb2bc7" }
+zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "99b5eb271e1e0e405f70679697722e978cd706a3" }
 
 [profile.release]
 lto = "thin"
