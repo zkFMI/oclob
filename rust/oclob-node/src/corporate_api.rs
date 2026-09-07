@@ -13,8 +13,8 @@ use oclob_settlement::native::{
     project_pending_native_head, NativeClaimAuthorizationIssue,
     NativeParticipantClaimAuthorizations,
 };
-use qomm_defmi::application_settlement::ApplicationNoteFill;
-use qomm_defmi::avalanche::AvalancheClient;
+use defmi::application_settlement::ApplicationNoteFill;
+use defmi::avalanche::AvalancheClient;
 use serde::{Deserialize, Serialize};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -193,7 +193,7 @@ impl CorporateApi {
             || finalized.permit.facility_id != self.config.facility_id
             || finalized.permit.asset_id != self.config.asset_id
             || finalized.permit.participant_handle
-                != qomm_zkpi::handles::Identity::from_seed(self.config.identity_seed)
+                != zkpi::handles::Identity::from_seed(self.config.identity_seed)
                     .handle(b"defmi:oclob:v1")
                     .point
                     .compress()
@@ -307,11 +307,11 @@ impl CorporateApi {
 
     fn wallet_snapshot(&self) -> Result<serde_json::Value, String> {
         use curve25519_dalek::scalar::Scalar;
-        use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-        use qomm_defmi::facility::QuorumAuthorizer;
-        use qomm_defmi::notes::{note_nullifier, Wallet};
-        use qomm_zk::pedersen::Pedersen;
-        use qomm_zkpi::handles::Identity;
+        use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+        use defmi::facility::QuorumAuthorizer;
+        use defmi::notes::{note_nullifier, Wallet};
+        use zkfmi_zk::pedersen::Pedersen;
+        use zkpi::handles::Identity;
         use std::collections::BTreeMap;
         let client = private_client(&self.config, &self.identity)?.chain()?;
         let root = client.state_root()?;

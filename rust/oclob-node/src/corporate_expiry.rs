@@ -5,9 +5,9 @@ use crate::corporate::{private_client, CorporateNativeConfig, PreparedCorporateR
 use crate::corporate_journal::NativeCorporateJournal;
 use crate::corporate_submission::{reserve_digest, SubmissionCheckpoint};
 use crate::network::ClientIdentityConfig;
-use qomm_defmi::application_settlement::{ApplicationNoteRelease, ApplicationReleaseReason};
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use qomm_defmi::facility::QuorumAuthorizer;
+use defmi::application_settlement::{ApplicationNoteRelease, ApplicationReleaseReason};
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

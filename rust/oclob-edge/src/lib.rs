@@ -15,8 +15,8 @@ use curve25519_dalek::scalar::Scalar;
 use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment, SecretOrder, TimeInForce};
 use openssl::symm::{Cipher, Crypter, Mode};
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Handle;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Handle;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2094,7 +2094,7 @@ pub enum EdgeError {
 mod tests {
     use super::*;
     use oclob_core::Side;
-    use qomm_zkpi::handles::Identity;
+    use zkpi::handles::Identity;
     use zkpi_defmi_sdk::reservation::ReservationRole;
 
     fn sample_order() -> SecretOrder {

@@ -11,7 +11,7 @@ use crate::edge_client::{EdgeAdmissionReceipt, EdgeDistributor, PreparedEdgeDeli
 use crate::network::{client_tls_context, ClientIdentityConfig, ClusterPublicConfig};
 use oclob_edge::{NodeEncryptionKey, SealedReservationAuthority, MPC_PARTIES};
 use oclob_settlement::pretrade::FinalizedReservation;
-use qomm_zkpi::handles::Identity;
+use zkpi::handles::Identity;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

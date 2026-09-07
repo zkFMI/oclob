@@ -10,8 +10,8 @@ use oclob_core::{SecretOrder, Side, TimeInForce};
 use oclob_edge::{
     ClaimAuthorizationEndpoint, EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey,
 };
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Identity;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 use std::fs;
 use std::path::PathBuf;
 use zkpi_defmi_sdk::admission::ReservationAdmission;

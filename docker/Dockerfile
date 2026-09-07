@@ -3,31 +3,65 @@
 ARG RUST_VERSION=1.97.1
 ARG NODE_VERSION=20.19.2
 ARG MP_SPDZ_COMMIT=9d809599ea6ce627216a389ca7d984fbb75d0cb9
-ARG QOMM_COMMIT=27299a1b49818d8c33ecfe9f4eeafab664f6ca64
-ARG DEFMI_COMMIT=5dd1f68d43da3f81e640c6eae25749d358e6680f
+# zkpi carries the MP-SPDZ patches, including the mandatory hybrid TLS one.
+ARG ZKPI_COMMIT=38baa1a86bedd2b47d7439c57412d25a20f9c405
+ARG DEFMI_COMMIT=b48bda6cf07abb74068b85268c9293ef37b1e68e
 ARG BUILD_JOBS=16
+# OpenSSL 3.5 is the first release with X25519MLKEM768; the MPC engine and the
+# Rust workspace both link against this build, never the distribution's.
+ARG OPENSSL_VERSION=3.5.5
+ARG OPENSSL_SHA256=b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89
 
 FROM debian:bookworm-slim AS mp-spdz-builder
 ARG MP_SPDZ_COMMIT
-ARG QOMM_COMMIT
+ARG ZKPI_COMMIT
 ARG BUILD_JOBS
+ARG OPENSSL_VERSION
+ARG OPENSSL_SHA256
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates git build-essential clang cmake yasm python3 \
-       libssl-dev libgmp-dev libsodium-dev libboost-dev libboost-thread-dev \
+       ca-certificates curl git build-essential clang cmake yasm python3 perl \
+       libgmp-dev libsodium-dev libboost-dev libboost-thread-dev \
        libboost-filesystem-dev libboost-iostreams-dev libntl-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone https://github.com/zkFMI/qomm.git /tmp/qomm \
-    && git -C /tmp/qomm checkout --detach "${QOMM_COMMIT}" \
-    && test "$(git -C /tmp/qomm rev-parse HEAD)" = "${QOMM_COMMIT}" \
+RUN curl --location --fail --silent --show-error \
+      "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" \
+      -o /tmp/openssl.tar.gz \
+    && echo "${OPENSSL_SHA256}  /tmp/openssl.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/pqc-build && tar -xzf /tmp/openssl.tar.gz -C /opt/pqc-build \
+    && cd "/opt/pqc-build/openssl-${OPENSSL_VERSION}" \
+    && ./Configure shared no-tests --prefix=/opt/pqc-openssl --openssldir=/etc/ssl \
+    && make -j"${BUILD_JOBS}" build_sw \
+    && make install_sw \
+    && install -m 0644 LICENSE.txt /opt/pqc-openssl/LICENSE.txt \
+    && rm -rf /opt/pqc-build /tmp/openssl.tar.gz
+ENV PATH=/opt/pqc-openssl/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64
+RUN git clone https://github.com/zkFMI/zkpi.git /tmp/zkpi \
+    && git -C /tmp/zkpi checkout --detach "${ZKPI_COMMIT}" \
+    && test "$(git -C /tmp/zkpi rev-parse HEAD)" = "${ZKPI_COMMIT}" \
     && git clone https://github.com/data61/MP-SPDZ.git /opt/MP-SPDZ \
     && git -C /opt/MP-SPDZ checkout --detach "${MP_SPDZ_COMMIT}" \
     && test "$(git -C /opt/MP-SPDZ rev-parse HEAD)" = "${MP_SPDZ_COMMIT}" \
-    && git -C /opt/MP-SPDZ apply --check /tmp/qomm/rust/qomm-mpc/patches/expose-machine-to-embedder.patch \
-    && git -C /opt/MP-SPDZ apply /tmp/qomm/rust/qomm-mpc/patches/expose-machine-to-embedder.patch \
+    && git -C /opt/MP-SPDZ apply --check /tmp/zkpi/rust/qomm-mpc/patches/expose-machine-to-embedder.patch \
+    && git -C /opt/MP-SPDZ apply /tmp/zkpi/rust/qomm-mpc/patches/expose-machine-to-embedder.patch \
+    && git -C /opt/MP-SPDZ apply --check /tmp/zkpi/rust/qomm-mpc/patches/require-hybrid-tls.patch \
+    && git -C /opt/MP-SPDZ apply /tmp/zkpi/rust/qomm-mpc/patches/require-hybrid-tls.patch \
+    && printf '\nCFLAGS += -I/opt/pqc-openssl/include\nLDLIBS += -L/opt/pqc-openssl/lib64 -Wl,-rpath,/opt/pqc-openssl/lib64\n' >> /opt/MP-SPDZ/CONFIG.mine \
     && make -C /opt/MP-SPDZ -j"${BUILD_JOBS}" libSPDZ.so malicious-shamir-party.x \
     && cd /opt/MP-SPDZ \
-    && Scripts/setup-ssl.sh 7
+    && sha256sum Networking/ssl_sockets.h libSPDZ.so malicious-shamir-party.x > .pqc-tls.sha256 \
+    && rm -rf /tmp/zkpi
+# Single-host demo credentials for the seven local parties, signed with the
+# post-quantum algorithm the engine now requires. Never operator keys.
+RUN umask 077; mkdir -p /opt/MP-SPDZ/Player-Data && cd /opt/MP-SPDZ/Player-Data \
+    && for node in 0 1 2 3 4 5 6; do \
+        openssl req -x509 -newkey ML-DSA-65 -noenc -days 3650 \
+          -subj "/CN=P${node}" -addext "subjectAltName=DNS:P${node}" \
+          -keyout "P${node}.key" -out "P${node}.pem" || exit 1; \
+       done \
+    && openssl rehash . \
+    && chmod 0600 P[0-6].key
 
 FROM node:${NODE_VERSION}-bookworm-slim AS node-runtime
 
@@ -39,10 +73,15 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
        libboost-filesystem-dev libboost-iostreams-dev libntl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add rustfmt clippy
+COPY --from=mp-spdz-builder /opt/pqc-openssl /opt/pqc-openssl
 COPY --from=mp-spdz-builder /opt/MP-SPDZ /opt/MP-SPDZ
 COPY --from=node-runtime /usr/local/ /usr/local/
 ENV MP_SPDZ_ROOT=/opt/MP-SPDZ
-ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
+ENV OPENSSL_DIR=/opt/pqc-openssl
+ENV OPENSSL_NO_VENDOR=1
+ENV PKG_CONFIG_PATH=/opt/pqc-openssl/lib64/pkgconfig
+ENV PATH=/opt/pqc-openssl/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64:/opt/MP-SPDZ
 ENV CARGO_TARGET_DIR=/var/cache/oclob/target
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 WORKDIR /workspace
@@ -91,7 +130,7 @@ RUN --mount=type=cache,id=defmi-cargo-registry,target=/usr/local/cargo/registry 
     --mount=type=cache,id=defmi-cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=defmi-vm-target,target=/source/defmi/rust/target \
     env -u MP_SPDZ_ROOT cargo build --locked --release \
-      -p qomm-avalanche-vm --bin qomm-avalanche-vm \
+      -p defmi-avalanche-vm --bin qomm-avalanche-vm \
     && install -d /out \
     && install -m 0755 target/release/qomm-avalanche-vm /out/qomm-avalanche-vm
 
@@ -160,12 +199,14 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system oclob \
     && useradd --system --gid oclob --home-dir /var/lib/oclob --create-home oclob
+COPY --from=oclob-builder /opt/pqc-openssl /opt/pqc-openssl
 COPY --from=oclob-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
 COPY --from=oclob-builder --chown=oclob:oclob /opt/oclob-bin/oclob-server /usr/local/bin/oclob-server
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64:/opt/MP-SPDZ
 RUN ! ldd /opt/MP-SPDZ/malicious-shamir-party.x | grep -F 'not found' \
     && ! ldd /opt/MP-SPDZ/libSPDZ.so | grep -F 'not found'
 ENV MP_SPDZ_ROOT=/opt/MP-SPDZ
-ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64:/opt/MP-SPDZ
 ENV PYTHONDONTWRITEBYTECODE=1
 EXPOSE 18800
 VOLUME ["/var/lib/oclob"]
@@ -182,6 +223,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 oclob \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/oclob --create-home oclob
+COPY --from=oclob-cluster-builder /opt/pqc-openssl /opt/pqc-openssl
 COPY --from=oclob-cluster-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-node /usr/local/bin/oclob-node
 COPY --from=oclob-cluster-builder /opt/oclob-bin/oclob-lab-provision /usr/local/bin/oclob-lab-provision
@@ -200,7 +242,7 @@ RUN ! ldd /opt/MP-SPDZ/malicious-shamir-party.x | grep -F 'not found' \
     && test -x /usr/local/bin/oclob-corporate-api \
     && ! ldd /usr/local/bin/oclob-corporate-api | grep -F 'not found' \
     && ! ldd /usr/local/bin/oclob-corporate-worker | grep -F 'not found'
-ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64:/opt/MP-SPDZ
 USER oclob
 WORKDIR /var/lib/oclob
 CMD ["oclob-node", "--config", "/node/config.json"]
@@ -216,6 +258,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/oclob --create-home oclob \
     && install -d -o oclob -g oclob -m 0700 /var/lib/oclob \
     && install -d -o oclob -g oclob -m 0700 /out
+COPY --from=oclob-builder /opt/pqc-openssl /opt/pqc-openssl
 COPY --from=oclob-builder --chown=oclob:oclob /opt/MP-SPDZ /opt/MP-SPDZ
 COPY --from=oclob-builder /opt/oclob-bin/oclob-avalanche-acceptance /usr/local/bin/oclob-avalanche-acceptance
 COPY --from=defmi-vm-builder /out/qomm-avalanche-vm /usr/local/bin/qomm-avalanche-vm
@@ -232,7 +275,7 @@ ENV QOMM_AVALANCHE_ACCEPTANCE_BIN=/usr/local/bin/oclob-avalanche-acceptance
 ENV QOMM_AVALANCHE_VM_BIN=/usr/local/bin/qomm-avalanche-vm
 ENV QOMM_AVALANCHE_ARTIFACT=/out/oclob_avalanche_acceptance.json
 ENV MP_SPDZ_ROOT=/opt/MP-SPDZ
-ENV LD_LIBRARY_PATH=/opt/MP-SPDZ
+ENV LD_LIBRARY_PATH=/opt/pqc-openssl/lib64:/opt/MP-SPDZ
 ENV PYTHONDONTWRITEBYTECODE=1
 USER oclob
 WORKDIR /var/lib/oclob

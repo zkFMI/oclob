@@ -3,12 +3,12 @@ use super::*;
 use ed25519_dalek::{Signature, SigningKey};
 use oclob_node::native_admission::{AdmissionAuthority, AdmissionRpcServer};
 use oclob_node::network::{server_tls_context, Principal};
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::avalanche::AvalancheNoteBridge;
-use qomm_defmi::facility::{
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::avalanche::AvalancheNoteBridge;
+use defmi::facility::{
     AssetDefinition, AssetKind, CreditFacilityGrant, GuarantorDefinition, GuarantorKind,
 };
-use qomm_defmi::note_chain::{CsdIssuerDefinition, NoteIssuance, NoteOutput};
+use defmi::note_chain::{CsdIssuerDefinition, NoteIssuance, NoteOutput};
 use serde::Deserialize;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 
@@ -178,7 +178,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
             nonce: entry.facility,
             guarantor_signature: Vec::new(),
         };
-        grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        grant.guarantor_signature = defmi::facility::sign_guarantor_message(
             &issuer_signer,
             &zkfmi_crypto::test_support::entity_pq_signer(&issuer_signer.to_bytes()),
             &grant.guarantor_message()?,
@@ -204,10 +204,10 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         }
     }
     let public_bytes = fs::read("/handoff/native-committee.bin")?;
-    let public = qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&public_bytes)?;
-    let pq_committee: qomm_zkpi::QuorumPolicy =
+    let public = zkpi::frost::keys::PublicKeyPackage::deserialize(&public_bytes)?;
+    let pq_committee: zkpi::QuorumPolicy =
         read_json_limited(Path::new("/handoff/native-committee.pq.json"))?;
-    qomm_zkpi::validate_settlement_committee(&pq_committee, &public)?;
+    zkpi::validate_settlement_committee(&pq_committee, &public)?;
     let scope = ApplicationReserveScope {
         application_binding: oclob_manifest_v1().digest()?,
         venue_id: digest(b"defmi:oclob:v1"),

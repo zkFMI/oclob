@@ -27,10 +27,10 @@ use oclob_settlement::native::{
     NativeFillAuthorizationRequest, NativeFillClaimAuthorizations, NativeReservationAuthority,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::application_settlement::ApplicationNoteFillBatch;
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use qomm_defmi::facility::QuorumAuthorizer;
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::ApplicationNoteFillBatch;
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
 use qomm_proofs::price_limit::PriceLimitDirection;
 use qomm_transport::node_service::client_ssl_context;
 use qomm_transport::proof_client::ProofPartyTlsClient;
@@ -146,7 +146,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !maker.manifest.uses_pretrade_reservation() || !taker.manifest.uses_pretrade_reservation() {
         return Err("native acceptance refuses legacy raw-order capabilities".into());
     }
-    let public = qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&fs::read(
+    let public = zkpi::frost::keys::PublicKeyPackage::deserialize(&fs::read(
         "/handoff/native-committee.bin",
     )?)?;
     let key = SigningKey::from_bytes(&load_application_signing_seed(
@@ -175,7 +175,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(120),
     )?;
     let scope: ApplicationReserveScope = serde_json::from_value(private.call("scope", json!({}))?)?;
-    let pq_committee: qomm_zkpi::QuorumPolicy = read("/handoff/native-committee.pq.json")?;
+    let pq_committee: zkpi::QuorumPolicy = read("/handoff/native-committee.pq.json")?;
     scope.verify_committee(&public.serialize()?, &pq_committee)?;
     if scope.committee_key_digest != <[u8; 32]>::from(Sha256::digest(public.serialize()?)) {
         return Err("native scope has another MPC committee".into());

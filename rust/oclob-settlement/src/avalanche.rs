@@ -10,8 +10,8 @@ use crate::{
     SettlementError,
 };
 
-use qomm_defmi::avalanche::{AvalancheClient, FacilityAvalancheBridge};
-use qomm_defmi::facility::{
+use defmi::avalanche::{AvalancheClient, FacilityAvalancheBridge};
+use defmi::facility::{
     AccountOpening, AssetDefinition, AssetKind, DefmiFacility, QuorumApproval, SettlementOrder,
     StateLeg,
 };
@@ -30,14 +30,14 @@ const ROOT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub struct AvalancheCanonicalGateway<'a, C: AvalancheClient> {
     facility: &'a DefmiFacility,
     clients: &'a [C],
-    approval_keys: &'a BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+    approval_keys: &'a BTreeMap<String, defmi::governance::GovernanceSigner>,
 }
 
 impl<'a, C: AvalancheClient> AvalancheCanonicalGateway<'a, C> {
     pub fn new(
         facility: &'a DefmiFacility,
         clients: &'a [C],
-        approval_keys: &'a BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+        approval_keys: &'a BTreeMap<String, defmi::governance::GovernanceSigner>,
     ) -> Result<Self, SettlementError> {
         if clients.len() < 3 || approval_keys.len() < 3 {
             return Err(SettlementError::Finality(
@@ -284,7 +284,7 @@ mod tests {
     use oclob_proofs::{
         public_fills_digest, TransitionProof, TransitionStatement, VerifiedTransitionProof,
     };
-    use qomm_defmi::facility::QuorumAuthorizer;
+    use defmi::facility::QuorumAuthorizer;
     use rand::rngs::OsRng;
     use std::fs;
 
@@ -409,7 +409,7 @@ mod tests {
             .map(|node| {
                 (
                     format!("node-{node}"),
-                    qomm_defmi::governance::GovernanceSigner::generate(
+                    defmi::governance::GovernanceSigner::generate(
                         &format!("node-{node}"),
                         0,
                         i64::MAX as u64,

@@ -9,8 +9,8 @@ use qomm_proofs::threshold_range::{
 use qomm_transport::dvp_issuer::{
     DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
 };
-use qomm_zk::sigma::prove_product;
-use qomm_zkpi::{
+use zkfmi_zk::sigma::prove_product;
+use zkpi::{
     asset_scalar, frost, Bounds, PartialInstruction, AMOUNT_RANGE_CONTEXT, PRICE_RANGE_CONTEXT,
 };
 use rand_core::OsRng;
@@ -78,7 +78,7 @@ impl Fixture {
 
     fn with_direction(maker_is_payer: bool) -> Self {
         let key = Pedersen::new(b"qomm:defmi:v1");
-        let (shares, public) = qomm_zkpi::deal_quorum(7, 3, &mut OsRng).unwrap();
+        let (shares, public) = zkpi::deal_quorum(7, 3, &mut OsRng).unwrap();
         let keys = shares
             .into_iter()
             .map(|(id, share)| (id, frost::keys::KeyPackage::try_from(share).unwrap()))
@@ -270,7 +270,7 @@ impl Fixture {
                             leg,
                             recipient_commitment,
                             authorization:
-                                qomm_defmi::claim_redemption::NoteClaimAuthorization::generate(
+                                defmi::claim_redemption::NoteClaimAuthorization::generate(
                                     recipient_commitment,
                                     NOW,
                                     2_000,
@@ -361,7 +361,7 @@ impl Fixture {
             make_opening("cash_refund", 40, cash_refund_blind, payer),
         ];
         let asset_link =
-            qomm_defmi::asset_link::prove(&key, securities_asset, &asset, &asset_blind, &mut OsRng)
+            defmi::asset_link::prove(&key, securities_asset, &asset, &asset_blind, &mut OsRng)
                 .unwrap();
         let fill = ApplicationNoteFill {
             version: 2,
@@ -375,7 +375,7 @@ impl Fixture {
             cash_asset,
             securities,
             cash,
-            instruction: qomm_zkpi::wire::encode(&instruction),
+            instruction: zkpi::wire::encode(&instruction),
             dvp_proofs: encode_dvp_proofs(&dvp).unwrap(),
             cash_commitment: key.commit_u64(4_000, &cash_blind).compress().to_bytes(),
             asset_link_announcement: asset_link.announcement.compress().to_bytes(),

@@ -10,13 +10,13 @@ use oclob_core::application_crypto::{
     VerifyingKey as ApplicationVerifyingKey,
 };
 use oclob_edge::{ClaimAuthorizationEndpoint, EdgeOrderManifest, VerifiedReservationAuthority};
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::application_settlement::{
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::{
     application_fill_group, point, ApplicationFillBatchBinding, ApplicationNoteFill,
     ApplicationOpening, ApplicationSpendHead,
 };
-use qomm_defmi::avalanche::CanonicalApplicationReservation;
-use qomm_defmi::note_chain::{
+use defmi::avalanche::CanonicalApplicationReservation;
+use defmi::note_chain::{
     note_claim_recipient_commitment, ClaimAuthorizationCommitment, NoteClaimKind,
 };
 use qomm_transport::frost_coordinator::distributed_hybrid_sign;
@@ -25,7 +25,7 @@ use qomm_transport::proof_codec::encode_dvp_proofs;
 use qomm_transport::proof_party::{
     ApplicationStatementAuthorization, ApplicationStatementVerifier, CompletedApplicationProof,
 };
-use qomm_zk::pedersen::Pedersen;
+use zkfmi_zk::pedersen::Pedersen;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -614,7 +614,7 @@ impl ApplicationStatementVerifier for NativeFillVerifier<'_> {
             );
         }
         let instruction =
-            qomm_zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
+            zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
         if instruction.digest() != evidence.payment_digest
             || instruction.nonce != evidence.job_id
             || self.execution.maker.participant_handle != evidence.maker_handle
@@ -781,7 +781,7 @@ impl NativeFillVerifier<'_> {
         self.verify_group()?;
         let fill = &self.request.fill;
         let instruction =
-            qomm_zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
+            zkpi::wire::decode(&fill.instruction).map_err(|error| error.to_string())?;
         let job = collaborative_job_id(
             self.request.round_id,
             self.request.slot,
@@ -1026,7 +1026,7 @@ pub fn native_claim_authorization_issue(
 }
 
 fn native_claim_authorization_issue_from_sequences(
-    instruction: &qomm_zkpi::Instruction,
+    instruction: &zkpi::Instruction,
     maker: &NativeReservationAuthority,
     taker: &NativeReservationAuthority,
     maker_sequence: u64,
@@ -1160,7 +1160,7 @@ pub fn prepare_native_fill(
         cash_asset,
         securities,
         cash,
-        instruction: qomm_zkpi::wire::encode(&proof.instruction),
+        instruction: zkpi::wire::encode(&proof.instruction),
         dvp_proofs: encode_dvp_proofs(&proof.dvp_proofs)?,
         cash_commitment: proof.cash_commitment.compress().to_bytes(),
         asset_link_announcement: proof.asset_link.announcement.compress().to_bytes(),
@@ -1219,7 +1219,7 @@ pub fn certify_native_fill<T: ProofPartyRpc>(
         }
     }
     let public =
-        qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&request.fill.committee_public)
+        zkpi::frost::keys::PublicKeyPackage::deserialize(&request.fill.committee_public)
             .map_err(|error| error.to_string())?;
     let signed = distributed_hybrid_sign(
         parties,

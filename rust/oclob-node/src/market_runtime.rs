@@ -25,10 +25,10 @@ use oclob_settlement::native::{
     NativeFillClaimAuthorizations, NativeReservationAuthority,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::application_settlement::ApplicationNoteFillBatch;
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use qomm_defmi::facility::QuorumAuthorizer;
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::ApplicationNoteFillBatch;
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
 use qomm_proofs::price_limit::PriceLimitDirection;
 use qomm_transport::node_service::client_ssl_context;
 use qomm_transport::proof_client::ProofPartyTlsClient;
@@ -231,7 +231,7 @@ impl NativeMarketRuntime {
         let scope: ApplicationReserveScope =
             serde_json::from_value(private.call("scope", json!({}))?).map_err(err)?;
         let public =
-            qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&self.committee).map_err(err)?;
+            zkpi::frost::keys::PublicKeyPackage::deserialize(&self.committee).map_err(err)?;
         if scope.committee_key_digest
             != <[u8; 32]>::from(Sha256::digest(public.serialize().map_err(err)?))
         {

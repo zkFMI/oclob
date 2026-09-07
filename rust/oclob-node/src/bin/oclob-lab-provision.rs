@@ -23,10 +23,10 @@ use openssl::x509::extension::{
     SubjectKeyIdentifier,
 };
 use openssl::x509::{X509Builder, X509NameBuilder, X509};
-use qomm_defmi::note_chain::NoteOutput;
-use qomm_defmi::notes::{NoteLedger, Wallet};
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Identity;
+use defmi::note_chain::NoteOutput;
+use defmi::notes::{NoteLedger, Wallet};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

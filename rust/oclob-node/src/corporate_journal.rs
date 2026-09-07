@@ -11,8 +11,8 @@ use oclob_settlement::native::{
     NativeClaimAuthorizationCommitment, NativeClaimAuthorizationIssue, NativeClaimLeg,
     NativeParticipantClaimAuthorizations, CLAIM_AUTHORIZATION_ISSUE_VERSION,
 };
-use qomm_defmi::claim_redemption::NoteClaimAuthorization;
-use qomm_defmi::note_chain::NoteClaim;
+use defmi::claim_redemption::NoteClaimAuthorization;
+use defmi::note_chain::NoteClaim;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -60,7 +60,7 @@ struct StoredClaimAuthorizationKey {
     recipient_commitment: [u8; 32],
     #[serde(with = "oclob_core::application_crypto::secret_serde")]
     signing_key: [u8; 64],
-    authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment,
+    authorization: defmi::note_chain::ClaimAuthorizationCommitment,
 }
 
 /// Private one-time claim signers. Only the encrypted CorporateOutbox may
@@ -401,7 +401,7 @@ impl NativeCorporateJournal {
         &self,
         config: &CorporateNativeConfig,
         identity: &crate::network::ClientIdentityConfig,
-    ) -> Result<qomm_defmi::application_reservation::ApplicationReserveScope, String> {
+    ) -> Result<defmi::application_reservation::ApplicationReserveScope, String> {
         use crate::corporate_authorization::{read_authorization_scope, validate_scope};
         let saved = match self.get("authorization-scope")? {
             Some(saved) => saved,
@@ -684,17 +684,17 @@ impl NativeCorporateJournal {
     pub(crate) fn expiry_release(
         &self,
         id: &str,
-    ) -> Result<Option<qomm_defmi::application_settlement::ApplicationNoteRelease>, String> {
+    ) -> Result<Option<defmi::application_settlement::ApplicationNoteRelease>, String> {
         self.get(&record_id("expiry", id)?)
     }
 
     pub(crate) fn save_expiry_release(
         &self,
         id: &str,
-        release: &qomm_defmi::application_settlement::ApplicationNoteRelease,
+        release: &defmi::application_settlement::ApplicationNoteRelease,
         prepared: &PreparedCorporateReserve,
         now: u64,
-    ) -> Result<qomm_defmi::application_settlement::ApplicationNoteRelease, String> {
+    ) -> Result<defmi::application_settlement::ApplicationNoteRelease, String> {
         crate::corporate_expiry::validate_expiry_release(release, prepared, now)?;
         let saved = self.put_first(&record_id("expiry", id)?, release, now, u64::MAX)?;
         crate::corporate_expiry::validate_expiry_release(&saved, prepared, now)?;
@@ -856,7 +856,7 @@ impl NativeCorporateJournal {
                 .to_bytes()
                 != receipt.manifest.signer
             || command.reason
-                != qomm_defmi::application_settlement::ApplicationReleaseReason::Cancelled
+                != defmi::application_settlement::ApplicationReleaseReason::Cancelled
         {
             return Err("cancel does not belong to the originally admitted corporate order".into());
         }
@@ -1066,14 +1066,14 @@ impl NativeCorporateJournal {
     pub fn claim_redemption(
         &self,
         claim: [u8; 32],
-    ) -> Result<Option<qomm_defmi::claim_redemption::NoteClaimRedemption>, String> {
+    ) -> Result<Option<defmi::claim_redemption::NoteClaimRedemption>, String> {
         self.get(&format!("redemption:{}", hex::encode(claim)))
     }
 
     pub fn save_claim_redemption(
         &self,
-        value: &qomm_defmi::claim_redemption::NoteClaimRedemption,
-    ) -> Result<qomm_defmi::claim_redemption::NoteClaimRedemption, String> {
+        value: &defmi::claim_redemption::NoteClaimRedemption,
+    ) -> Result<defmi::claim_redemption::NoteClaimRedemption, String> {
         value.signing_message()?;
         self.put_first(
             &format!("redemption:{}", hex::encode(value.claim_id)),
@@ -1411,7 +1411,7 @@ mod tests {
             .issue_wallet(u64::from(seed), &[seed], &mut rand::rngs::OsRng)
             .unwrap();
         let handle =
-            qomm_zkpi::handles::Identity::from_seed(config.identity_seed).handle(b"defmi:oclob:v1");
+            zkpi::handles::Identity::from_seed(config.identity_seed).handle(b"defmi:oclob:v1");
         let order = SecretOrder::new_with_dekyx_nullifier(
             "CORPORATE-UNIT",
             Side::Sell,
@@ -1434,7 +1434,7 @@ mod tests {
             expires_at: 1000,
             reserve_send_tracking: true,
         };
-        let scope = qomm_defmi::application_reservation::ApplicationReserveScope {
+        let scope = defmi::application_reservation::ApplicationReserveScope {
             application_binding: zkpi_defmi_sdk::application::oclob_manifest_v1()
                 .digest()
                 .unwrap(),
@@ -1797,7 +1797,7 @@ mod tests {
             recipient_commitment: payer.claims[0].recipient_commitment,
             authorization: payer.claims[0].authorization,
             source_hold_id: issue.payee.reservation_id,
-            kind: qomm_defmi::note_chain::NoteClaimKind::Delivery,
+            kind: defmi::note_chain::NoteClaimKind::Delivery,
             opening_envelope: qomm_proofs::opening_envelope::OpeningEnvelope::new(
                 context,
                 1,
@@ -2316,10 +2316,10 @@ mod tests {
 
     #[test]
     fn claim_request_recovery_preserves_first_destination_and_signature_bytes() {
-        use qomm_defmi::claim_redemption::NoteClaimRedemption;
-        use qomm_defmi::note_chain::NoteOutput;
-        use qomm_defmi::notes::{NoteLedger, Wallet};
-        use qomm_zk::pedersen::Pedersen;
+        use defmi::claim_redemption::NoteClaimRedemption;
+        use defmi::note_chain::NoteOutput;
+        use defmi::notes::{NoteLedger, Wallet};
+        use zkfmi_zk::pedersen::Pedersen;
         let files = Files::new();
         let (config, cluster) = fixture();
         let journal =
@@ -2349,7 +2349,7 @@ mod tests {
         // This unit tests durable bytes only; VM ownership verification is
         // covered by the real-signature DeFMI tests and live acceptance.
         let original = NoteClaimRedemption {
-            version: qomm_defmi::claim_redemption::VERSION,
+            version: defmi::claim_redemption::VERSION,
             domain: "unit-chain".into(),
             before_root: [41; 32],
             operation_id: [42; 32],

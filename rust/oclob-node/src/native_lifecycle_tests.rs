@@ -6,8 +6,8 @@ use oclob_core::application_crypto::SigningKey;
 use oclob_core::{SecretOrder, Side, TimeInForce};
 use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
 use oclob_ordering::OrderingCommittee;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Identity;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 use zkpi_defmi_sdk::reservation::{ReservationPermit, ReservationRole};
 
 fn fixture() -> (

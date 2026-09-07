@@ -10,12 +10,12 @@ use oclob_core::application_crypto::SigningKey;
 use oclob_core::{SecretOrder, Side};
 use oclob_dekyx::{AnonymousPresentation, DemoEligibilityWallet};
 use oclob_settlement::pretrade::{select_funding_ring, CorporateFunding, PrivateReserveRequest};
-use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use qomm_defmi::facility::QuorumAuthorizer;
-use qomm_defmi::notes::Wallet;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::{Handle, Identity};
+use defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
+use defmi::notes::Wallet;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::{Handle, Identity};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -273,7 +273,7 @@ pub fn prepare_authorized_reservation(
         {
             continue;
         }
-        let serial = qomm_defmi::notes::note_nullifier(&opening.serial)
+        let serial = defmi::notes::note_nullifier(&opening.serial)
             .compress()
             .to_bytes();
         let spent = bridge.note_serial(serial)?;

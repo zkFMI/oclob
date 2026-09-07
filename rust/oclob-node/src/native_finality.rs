@@ -9,9 +9,9 @@ use oclob_settlement::native::{
     NativeFillAuthorizationRequest, NativeFillVerifier, NativeReservationTrust,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::application_settlement::ApplicationNoteFillBatch;
-use qomm_defmi::avalanche::{AcceptedTransition, AvalancheClient};
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::ApplicationNoteFillBatch;
+use defmi::avalanche::{AcceptedTransition, AvalancheClient};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -190,7 +190,7 @@ pub(crate) fn observe(
     // archived signature integrity, while the VM enforced key validity at
     // execution. The deadline remains the authority-interval anchor because
     // the receipt RPC does not contain a block timestamp.
-    let deadline = qomm_zkpi::wire::decode(&fill.instruction)
+    let deadline = zkpi::wire::decode(&fill.instruction)
         .map_err(|e| e.to_string())?
         .deadline;
     if deadline == 0 {

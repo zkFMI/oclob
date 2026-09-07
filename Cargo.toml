@@ -20,10 +20,10 @@ license = "MIT"
 rust-version = "1.89"
 
 [workspace.dependencies]
-zkfmi-crypto = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "26ebfe96563a05c3379219f7fdacea137ab5fb4f" }
-qomm-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
+zkfmi-crypto = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "9a183c90b6ee6af17fce26ca4b235bdb543dc0a0" }
+zkfmi-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 curve25519-dalek = { version = "4.1.3", features = ["rand_core", "digest"] }
 base64 = "0.22.1"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
@@ -54,13 +54,13 @@ oclob-service = { path = "rust/oclob-service" }
 # exports cryptographically-random Shamir input generation.
 # Update these revisions only together with the protocol compatibility tests.
 dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "09c2c1a7295e8cab592aca6af2f89381c3c110ac" }
-qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "1b9b0b1d28f6cbd30479fc01399e541ac9379519" }
-qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "1b9b0b1d28f6cbd30479fc01399e541ac9379519" }
+qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "b48bda6cf07abb74068b85268c9293ef37b1e68e" }
+qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "b48bda6cf07abb74068b85268c9293ef37b1e68e" }
 
 [profile.release]
 lto = "thin"

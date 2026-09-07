@@ -6,18 +6,18 @@
 
 use curve25519_dalek::scalar::Scalar;
 use dekyx_core::{AnonymousPresentation, DeKyxVerifier, EligibilityRequirement};
-use qomm_defmi::application_reservation::{
+use defmi::application_reservation::{
     ApplicationIdentityEvidence, ApplicationReserveMandate, ApplicationReserveScope,
     VerifiedApplicationNoteReservation,
 };
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, CanonicalCreditFacility};
-use qomm_defmi::facility::{
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, CanonicalCreditFacility};
+use defmi::facility::{
     CreditFacilityRelationProof, CreditFacilityStatus, CreditFacilityTransition,
     CreditTransitionKind, QuorumApproval, ZERO,
 };
-use qomm_defmi::note_chain::NoteOutput;
-use qomm_defmi::notes::{decode_spend_proof, encode_spend_proof, NoteLedger, Wallet};
-use qomm_zk::pedersen::Pedersen;
+use defmi::note_chain::NoteOutput;
+use defmi::notes::{decode_spend_proof, encode_spend_proof, NoteLedger, Wallet};
+use zkfmi_zk::pedersen::Pedersen;
 use rand::seq::SliceRandom;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -89,9 +89,9 @@ impl PrivateAdmissionClient {
         response
     }
 
-    pub fn chain(&self) -> Result<qomm_defmi::avalanche::AvalancheRpcClient, String> {
+    pub fn chain(&self) -> Result<defmi::avalanche::AvalancheRpcClient, String> {
         let transport = self.clone();
-        qomm_defmi::avalanche::AvalancheRpcClient::with_transport(
+        defmi::avalanche::AvalancheRpcClient::with_transport(
             &self.endpoint,
             self.timeout,
             false,

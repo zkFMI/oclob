@@ -9,8 +9,8 @@ use base64::Engine;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
-use qomm_defmi::asset_link::{self, AssetLinkProof};
-use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides, ThresholdDvpPackage};
+use defmi::asset_link::{self, AssetLinkProof};
+use defmi::settlement::{build_threshold_package_from_proofs, Sides, ThresholdDvpPackage};
 use qomm_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
 use qomm_proofs::price_limit::{
     from_threshold as threshold_price_limit, threshold_context as price_limit_context,
@@ -50,9 +50,9 @@ use qomm_transport::zkpi_issuer::{
 use qomm_transport::zkpi_wire::{
     decode as decode_zkpi, encode as encode_zkpi, Envelope as ZkpiEnvelope, Message as ZkpiMessage,
 };
-use qomm_zk::pedersen::Pedersen;
-use qomm_zk::sigma::verify_product;
-use qomm_zkpi::{asset_scalar, frost, Bounds, Instruction, QuoteBinding, Venue};
+use zkfmi_zk::pedersen::Pedersen;
+use zkfmi_zk::sigma::verify_product;
+use zkpi::{asset_scalar, frost, Bounds, Instruction, QuoteBinding, Venue};
 use rand_core::OsRng;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -89,7 +89,7 @@ pub struct CollaborativeFillProof {
     pub asset_id: [u8; 32],
     pub instruction: Instruction,
     pub frost_public: frost::keys::PublicKeyPackage,
-    pub pq_committee: qomm_zkpi::QuorumPolicy,
+    pub pq_committee: zkpi::QuorumPolicy,
     pub maker_handle: RistrettoPoint,
     pub price_limit_proof: ThresholdRangeProof,
     pub dvp_proofs: DvpProofs,
@@ -122,7 +122,7 @@ pub struct CollaborativeSettlementContext<'a> {
     pub taker_reserve: RistrettoPoint,
     pub asset_id: [u8; 32],
     pub frost_public: &'a frost::keys::PublicKeyPackage,
-    pub pq_committee: &'a qomm_zkpi::QuorumPolicy,
+    pub pq_committee: &'a zkpi::QuorumPolicy,
     pub now: u64,
 }
 
@@ -648,7 +648,7 @@ fn prove_zkpi_ranges<T: ProofPartyRpc>(
 fn authorize_zkpi<T: ProofPartyRpc>(
     parties: &mut [T],
     job_id: [u8; 32],
-    partial: &qomm_zkpi::PartialInstruction,
+    partial: &zkpi::PartialInstruction,
     amount_range: &[u8],
     price_range: &[u8],
 ) -> Result<(), String> {

@@ -5,7 +5,7 @@ use oclob_node::native_lifecycle::{
     NativeReleaseConfirmation, NativeReleaseRequest,
 };
 use oclob_ordering::OrderCertificate;
-use qomm_defmi::application_settlement::ApplicationNoteRelease;
+use defmi::application_settlement::ApplicationNoteRelease;
 
 pub(super) fn run(
     phase: &str,

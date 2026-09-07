@@ -1,5 +1,5 @@
 use oclob_settlement::native::native_batch_binding;
-use qomm_defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_reservation::ApplicationReserveScope;
 
 fn scope() -> ApplicationReserveScope {
     ApplicationReserveScope {

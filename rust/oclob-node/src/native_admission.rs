@@ -4,9 +4,9 @@
 use crate::network::{certificate_fingerprint, PeerRole, Principal, ServerTlsConfig};
 use oclob_dekyx::OclobEligibilityVerifier;
 use oclob_settlement::pretrade::{PrivateReserveRequest, MAX_PRETRADE_BYTES};
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient};
-use qomm_defmi::facility::QuorumAuthorizer;
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient};
+use defmi::facility::QuorumAuthorizer;
 use qomm_transport::proof_party::{
     encode_bounded_response, read_bounded_request_line, ProofRequest, ProofResponse,
 };
@@ -24,7 +24,7 @@ use zkfmi_crypto::hybrid::signature::HybridSigner;
 pub struct AdmissionAuthority {
     pub client: AvalancheRpcClient,
     pub authorizer: QuorumAuthorizer,
-    pub governance_signers: BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+    pub governance_signers: BTreeMap<String, defmi::governance::GovernanceSigner>,
     pub receipt_issuer: Arc<HybridSigner>,
     pub private_tag_key: zeroize::Zeroizing<[u8; 32]>,
     pub scope: ApplicationReserveScope,
@@ -133,7 +133,7 @@ impl AdmissionAuthority {
                 let participant_expiry = if role == PeerRole::Participant
                     && method == "defmivm.issueApplicationNoteRelease"
                 {
-                    let release: qomm_defmi::application_settlement::ApplicationNoteRelease =
+                    let release: defmi::application_settlement::ApplicationNoteRelease =
                         serde_json::from_value(
                             params
                                 .get("release")
@@ -144,7 +144,7 @@ impl AdmissionAuthority {
                     release.signing_message()?;
                     release.scope == self.scope
                         && release.reason
-                            == qomm_defmi::application_settlement::ApplicationReleaseReason::Expired
+                            == defmi::application_settlement::ApplicationReleaseReason::Expired
                         && release.committee_public.is_empty()
                         && release.signature.is_empty()
                     // The VM, not this ingress or the corporate clock, checks
@@ -345,7 +345,7 @@ mod tests {
             authorizer: QuorumAuthorizer::new(
                 BTreeMap::from([(
                     "unit".into(),
-                    qomm_defmi::governance::GovernanceSigner::generate("unit", 0, i64::MAX as u64)
+                    defmi::governance::GovernanceSigner::generate("unit", 0, i64::MAX as u64)
                         .unwrap()
                         .verifying_key(),
                 )]),
@@ -413,7 +413,7 @@ mod tests {
         );
         // Unit authorization boundary only: the real VM must still enforce
         // expiry and canonical head checks, exercised by the native Docker run.
-        use qomm_defmi::application_settlement::{
+        use defmi::application_settlement::{
             ApplicationNoteRelease, ApplicationReleaseReason,
         };
         let release = ApplicationNoteRelease {

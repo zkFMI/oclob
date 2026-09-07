@@ -10,10 +10,10 @@ use oclob_edge::EdgeOrderManifest;
 use oclob_ordering::OrderCertificate;
 use oclob_settlement::native::{NativeReservationAuthority, NativeReservationTrust};
 use oclob_settlement::pretrade::PrivateAdmissionClient;
-use qomm_defmi::application_reservation::ApplicationReserveScope;
-use qomm_defmi::application_settlement::ApplicationNoteRelease;
-use qomm_defmi::application_settlement::ApplicationReleaseReason;
-use qomm_defmi::avalanche::{AvalancheClient, CanonicalApplicationReservation};
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::ApplicationNoteRelease;
+use defmi::application_settlement::ApplicationReleaseReason;
+use defmi::avalanche::{AvalancheClient, CanonicalApplicationReservation};
 use qomm_transport::proof_party::{ApplicationControlAuthorization, ApplicationControlVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -385,7 +385,7 @@ struct VerifiedControl<'a> {
 impl ApplicationControlVerifier for VerifiedControl<'_> {
     fn verify(
         &self,
-        public: &qomm_zkpi::frost::keys::PublicKeyPackage,
+        public: &zkpi::frost::keys::PublicKeyPackage,
     ) -> Result<ApplicationControlAuthorization, String> {
         let release = &self.request.release;
         if release.reason != ApplicationReleaseReason::Cancelled
@@ -560,7 +560,7 @@ pub fn certify_native_release<T: qomm_transport::proof_client::ProofPartyRpc>(
         }
     }
     let public =
-        qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&request.release.committee_public)
+        zkpi::frost::keys::PublicKeyPackage::deserialize(&request.release.committee_public)
             .map_err(|e| e.to_string())?;
     let signed = qomm_transport::frost_coordinator::distributed_hybrid_sign(
         parties,

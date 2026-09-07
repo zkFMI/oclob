@@ -17,7 +17,7 @@ use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor};
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
 };
-use qomm_zkpi::handles::Identity;
+use zkpi::handles::Identity;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde_json::json;

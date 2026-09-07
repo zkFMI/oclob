@@ -12,13 +12,13 @@ use oclob_settlement::pretrade::{
     select_funding_ring, CorporateFunding, FinalizedReservation, PrivateAdmissionClient,
     PrivateReserveRequest,
 };
-use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use qomm_defmi::facility::QuorumAuthorizer;
-use qomm_defmi::notes::Wallet;
+use defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
+use defmi::notes::Wallet;
 use qomm_transport::node_service::client_ssl_context;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Handle;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Handle;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -254,7 +254,7 @@ pub fn prepare_reservation_from_note(
         {
             continue;
         }
-        let serial = qomm_defmi::notes::note_nullifier(&opening.serial)
+        let serial = defmi::notes::note_nullifier(&opening.serial)
             .compress()
             .to_bytes();
         let spent = bridge.note_serial(serial)?;

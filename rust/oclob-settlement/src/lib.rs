@@ -13,15 +13,15 @@ use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeI
 use oclob_edge::VerifiedSettlementCapability;
 use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
 use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
-use qomm_defmi::ledger::Ledger;
-use qomm_defmi::settlement::{
+use defmi::ledger::Ledger;
+use defmi::settlement::{
     account_of, build_package, Defmi, Holdings, InstructionOpenings, CASH_RAIL, SECURITIES_RAIL,
 };
 use qomm_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions, ValueShares};
 use qomm_proofs::threshold_sigma::PartyId;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::{Handle, Identity};
-use qomm_zkpi::{
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::{Handle, Identity};
+use zkpi::{
     distributed_key_generation, frost, Bounds, PartialInstruction, Venue, AMOUNT_RANGE_CONTEXT,
     PRICE_RANGE_CONTEXT,
 };
@@ -1209,7 +1209,7 @@ pub struct SettlementEngine {
     signing_shares: BTreeMap<frost::Identifier, frost::keys::KeyPackage>,
     public_key: frost::keys::PublicKeyPackage,
     collaborative_public_key: Option<frost::keys::PublicKeyPackage>,
-    collaborative_pq_policy: Option<qomm_zkpi::QuorumPolicy>,
+    collaborative_pq_policy: Option<zkpi::QuorumPolicy>,
     participants: BTreeMap<Digest32, ParticipantBalances>,
     demo_handles: (Digest32, Digest32),
     reservations: ReservationBook,
@@ -1301,7 +1301,7 @@ impl SettlementEngine {
     pub fn pin_collaborative_settlement_committee(
         &mut self,
         public_key: frost::keys::PublicKeyPackage,
-        pq_policy: qomm_zkpi::QuorumPolicy,
+        pq_policy: zkpi::QuorumPolicy,
     ) -> Result<(), SettlementError> {
         if self.height != 0
             || !self.reservations.records.is_empty()
@@ -1311,7 +1311,7 @@ impl SettlementEngine {
                 "the MPC settlement committee must be pinned at DeFMI genesis".into(),
             ));
         }
-        qomm_zkpi::validate_settlement_committee(&pq_policy, &public_key)
+        zkpi::validate_settlement_committee(&pq_policy, &public_key)
             .map_err(|error| SettlementError::Proof(error.into()))?;
         if pq_policy.threshold != 3 || pq_policy.members.len() != 7 {
             return Err(SettlementError::Proof(
@@ -1762,7 +1762,7 @@ impl SettlementEngine {
             .require_threshold_ranges()
             .verify(&instruction, now)
             .map_err(SettlementError::Cryptography)?;
-        let wire = qomm_zkpi::wire::encode(&instruction);
+        let wire = zkpi::wire::encode(&instruction);
         let payment_instruction_digest = Sha256::digest(&wire).into();
         let range_proof_digest = digest(b"OCLOB:ZKPI:RESERVATION-RANGES:v1", &wire);
         Ok((
@@ -2374,7 +2374,7 @@ impl SettlementEngine {
                 return Err(SettlementError::Insolvent);
             }
             let zkpi_digest: Digest32 =
-                Sha256::digest(qomm_zkpi::wire::encode(&package.instruction)).into();
+                Sha256::digest(zkpi::wire::encode(&package.instruction)).into();
             members.push(OclobSettlementMemberReceipt {
                 instruction_nullifier,
                 zkpi_digest,

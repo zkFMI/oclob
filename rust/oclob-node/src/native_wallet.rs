@@ -5,13 +5,13 @@ use crate::corporate::{private_client, CorporateNativeConfig, FacilityWitness};
 use crate::corporate_journal::NativeCorporateJournal;
 use crate::network::ClientIdentityConfig;
 use curve25519_dalek::scalar::Scalar;
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, CanonicalNoteClaim};
-use qomm_defmi::claim_redemption::redeem_claim;
-use qomm_defmi::facility::QuorumAuthorizer;
-use qomm_defmi::note_chain::{NoteClaimKind, NoteOutput};
-use qomm_defmi::notes::Wallet;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::handles::Identity;
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, CanonicalNoteClaim};
+use defmi::claim_redemption::redeem_claim;
+use defmi::facility::QuorumAuthorizer;
+use defmi::note_chain::{NoteClaimKind, NoteOutput};
+use defmi::notes::Wallet;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -122,7 +122,7 @@ pub fn recover_wallet(
         if outputs[index].lock_id != [0; 32] || opening.value == 0 {
             continue;
         }
-        let serial = qomm_defmi::notes::note_nullifier(&opening.serial)
+        let serial = defmi::notes::note_nullifier(&opening.serial)
             .compress()
             .to_bytes();
         let status = bridge.note_serial(serial)?;
@@ -404,10 +404,10 @@ pub fn verify_selected_funding_spent(
         scalar(config.wallet_spend_secret)?,
         config.note_opening_key()?,
     );
-    let serial = qomm_defmi::notes::note_nullifier(&wallet.serial(&output.to_note()?.ephemeral))
+    let serial = defmi::notes::note_nullifier(&wallet.serial(&output.to_note()?.ephemeral))
         .compress()
         .to_bytes();
-    let proof = qomm_defmi::notes::decode_spend_proof(&prepared.request.spend_proof)?;
+    let proof = defmi::notes::decode_spend_proof(&prepared.request.spend_proof)?;
     let spent = client.note_serial_snapshot(serial)?;
     if proof.serial_point.compress().to_bytes() != serial
         || spent.serial_point != serial

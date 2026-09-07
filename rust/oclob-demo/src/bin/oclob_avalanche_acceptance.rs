@@ -33,9 +33,9 @@ use oclob_settlement::collaborative::{
 };
 use oclob_settlement::CollaborativeCanonicalAdmissionBatch;
 use oclob_settlement::{canonical_securities_asset_id, SettlementEngine};
-use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
-use qomm_defmi::facility::{DefmiFacility, QuorumAuthorizer};
-use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides};
+use defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
+use defmi::facility::{DefmiFacility, QuorumAuthorizer};
+use defmi::settlement::{build_threshold_package_from_proofs, Sides};
 use qomm_proofs::price_limit::PriceLimitDirection;
 use qomm_transport::node_service::client_ssl_context as proof_tls_context;
 use qomm_transport::proof_client::ProofPartyTlsClient;
@@ -572,7 +572,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     collaborative_settlement.proof.market_proof_digest = original_market_proof_digest;
 
     let (_, unpinned_public) =
-        qomm_zkpi::distributed_key_generation(7, 3, &mut rand::rngs::OsRng).map_err(failure)?;
+        zkpi::distributed_key_generation(7, 3, &mut rand::rngs::OsRng).map_err(failure)?;
     let pinned_proof_public = std::mem::replace(
         &mut collaborative_settlement.proof.frost_public,
         unpinned_public,
@@ -830,7 +830,7 @@ fn verify_collaborative_fill(
     taker_certificate: &OrderCertificate,
     taker_plan: &RoundPlan,
     taker_execution: &AgreedRoundExecution,
-    frost_public: qomm_zkpi::frost::keys::PublicKeyPackage,
+    frost_public: zkpi::frost::keys::PublicKeyPackage,
     now: u64,
 ) -> RunResult<VerifiedCollaborativeSettlement> {
     if !maker_receipt.manifest.settlement_proof_enabled
@@ -921,7 +921,7 @@ fn verify_collaborative_fill(
     .map_err(failure)?;
     verify_collaborative_statements(&proof, maker_handle, maker_reserve, taker_reserve)?;
     let package = build_threshold_package_from_proofs(
-        &qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1"),
+        &zkfmi_zk::pedersen::Pedersen::new(b"qomm:defmi:v1"),
         proof.instruction.clone(),
         Sides::of(&proof.instruction),
         maker_reserve,
@@ -932,7 +932,7 @@ fn verify_collaborative_fill(
     )
     .map_err(failure)?;
     let instruction_digest: [u8; 32] =
-        Sha256::digest(qomm_zkpi::wire::encode(&proof.instruction)).into();
+        Sha256::digest(zkpi::wire::encode(&proof.instruction)).into();
     let frost_public_digest: [u8; 32] = Sha256::digest(
         proof
             .frost_public
@@ -973,11 +973,11 @@ fn verify_collaborative_statements(
     maker_reserve: RistrettoPoint,
     taker_reserve: RistrettoPoint,
 ) -> RunResult<()> {
-    let key = qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1");
+    let key = zkfmi_zk::pedersen::Pedersen::new(b"qomm:defmi:v1");
     if proof.maker_handle != maker_handle
         || proof.instruction.payee_handle != maker_handle
         || proof.instruction.payer_handle == maker_handle
-        || !qomm_defmi::asset_link::verify(
+        || !defmi::asset_link::verify(
             &key,
             &canonical_securities_asset_id(MARKET),
             &proof.instruction.asset_commitment,
@@ -1562,10 +1562,10 @@ fn committee(
     domain: &str,
 ) -> RunResult<(
     QuorumAuthorizer,
-    BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+    BTreeMap<String, defmi::governance::GovernanceSigner>,
 )> {
     let keys =
-        qomm_defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
+        defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
     let nodes = keys
         .iter()
         .map(|(name, key)| (name.clone(), key.verifying_key()))
