@@ -8,7 +8,7 @@
 
 use ed25519_dalek::SigningKey;
 use oclob_core::{authorize_order, Digest32, SecretOrder, Side, TimeInForce};
-use oclob_dekyx::{lab_environment, LabEligibilityIssuer, OclobEligibilityWallet};
+use oclob_dekyx::{deterministic_demo_environment, DemoEligibilityIssuer, DemoEligibilityWallet};
 use oclob_service::{DurableOclobQueue, OclobExecutionReceipt, OclobService, QueueWorkerResult};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ struct Participant {
     display_name: &'static str,
     handle: Digest32,
     signing_key: SigningKey,
-    wallet: OclobEligibilityWallet,
+    wallet: DemoEligibilityWallet,
     queue: DurableOclobQueue,
     next_nonce: u64,
     own_orders: Vec<OwnOrder>,
@@ -132,19 +132,16 @@ struct PumpRequest {
 impl DemoRuntime {
     fn new(mp_spdz_root: &Path, state_dir: &Path, passphrase: &[u8]) -> Result<Self, String> {
         fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
-        let (policy, issuer) =
-            lab_environment(MARKET, &mut OsRng).map_err(|error| error.to_string())?;
-        let service = OclobService::new(
-            MARKET,
-            mp_spdz_root,
-            policy.verifier().map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let (eligibility, issuer) =
+            deterministic_demo_environment(MARKET).map_err(|error| error.to_string())?;
+        let service = OclobService::new(MARKET, mp_spdz_root, eligibility)
+            .map_err(|error| error.to_string())?;
         let (maker_handle, taker_handle) = service.demo_participant_handles();
         let maker = participant(
             "maker",
             "売り手企業",
             maker_handle,
+            11,
             41,
             b"oclob-demo-maker",
             &issuer,
@@ -155,6 +152,7 @@ impl DemoRuntime {
             "taker",
             "買い手企業",
             taker_handle,
+            22,
             42,
             b"oclob-demo-taker",
             &issuer,
@@ -523,14 +521,15 @@ fn participant(
     role: &'static str,
     display_name: &'static str,
     handle: Digest32,
+    subject_seed: u64,
     signing_seed: u8,
     credential_label: &[u8],
-    issuer: &LabEligibilityIssuer,
+    issuer: &DemoEligibilityIssuer,
     state_dir: &Path,
     passphrase: &[u8],
 ) -> Result<Participant, String> {
     let wallet = issuer
-        .issue_wallet(credential_label, &mut OsRng)
+        .issue_wallet(subject_seed, credential_label, &mut OsRng)
         .map_err(|error| error.to_string())?;
     let queue = DurableOclobQueue::open(
         state_dir.join(format!("{role}-outbox.bin")),

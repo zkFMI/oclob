@@ -2,7 +2,7 @@
 
 use ed25519_dalek::SigningKey;
 use oclob_core::{authorize_order, SecretOrder, Side, TimeInForce};
-use oclob_dekyx::lab_environment;
+use oclob_dekyx::deterministic_demo_environment;
 use oclob_service::OclobService;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -110,22 +110,16 @@ fn run() -> Result<(), DemoError> {
     }
 
     let started = Instant::now();
-    let (eligibility_policy, eligibility_issuer) = lab_environment(MARKET, &mut OsRng)
+    let (eligibility, eligibility_issuer) = deterministic_demo_environment(MARKET)
         .map_err(|error| DemoError::Execution(error.to_string()))?;
     let seller_eligibility = eligibility_issuer
-        .issue_wallet(b"demo-seller", &mut OsRng)
+        .issue_wallet(11, b"demo-seller", &mut OsRng)
         .map_err(|error| DemoError::Execution(error.to_string()))?;
     let buyer_eligibility = eligibility_issuer
-        .issue_wallet(b"demo-buyer", &mut OsRng)
+        .issue_wallet(22, b"demo-buyer", &mut OsRng)
         .map_err(|error| DemoError::Execution(error.to_string()))?;
-    let mut service = OclobService::new(
-        MARKET,
-        &options.mp_spdz_root,
-        eligibility_policy
-            .verifier()
-            .map_err(|error| DemoError::Execution(error.to_string()))?,
-    )
-    .map_err(|error| DemoError::Execution(error.to_string()))?;
+    let mut service = OclobService::new(MARKET, &options.mp_spdz_root, eligibility)
+        .map_err(|error| DemoError::Execution(error.to_string()))?;
     let (seller_handle, buyer_handle) = service.demo_participant_handles();
     let maker_key = SigningKey::from_bytes(&[41; 32]);
     let taker_key = SigningKey::from_bytes(&[42; 32]);
