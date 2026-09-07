@@ -7,8 +7,10 @@ ARG MP_SPDZ_COMMIT=9d809599ea6ce627216a389ca7d984fbb75d0cb9
 ARG ZKPI_COMMIT=38baa1a86bedd2b47d7439c57412d25a20f9c405
 ARG DEFMI_COMMIT=1034c0a76c76a88e266ae6afef8a7ce4607c6f1f
 ARG BUILD_JOBS=16
-# OpenSSL 3.5 is the first release with X25519MLKEM768; the MPC engine and the
-# Rust workspace both link against this build, never the distribution's.
+# OpenSSL 3.5 is the first release with X25519MLKEM768. The engine is compiled
+# against its headers and resolves libssl.so.3 from /opt/pqc-openssl at run time
+# through LD_LIBRARY_PATH, exactly as the accepted native image does; the
+# distribution's libssl-dev only satisfies the link step.
 ARG OPENSSL_VERSION=3.5.5
 ARG OPENSSL_SHA256=b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89
 
@@ -21,7 +23,7 @@ ARG OPENSSL_SHA256
 RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl git build-essential clang cmake yasm python3 perl \
-       libgmp-dev libsodium-dev libboost-dev libboost-thread-dev \
+       libssl-dev libgmp-dev libsodium-dev libboost-dev libboost-thread-dev \
        libboost-filesystem-dev libboost-iostreams-dev libntl-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --location --fail --silent --show-error \
