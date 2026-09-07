@@ -6,7 +6,7 @@
 //! portfolio. Maker and taker projections contain only that participant's own
 //! data.
 
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{authorize_order, Digest32, SecretOrder, Side, TimeInForce};
 use oclob_dekyx::{deterministic_demo_environment, DemoEligibilityIssuer, DemoEligibilityWallet};
 use oclob_service::{DurableOclobQueue, OclobExecutionReceipt, OclobService, QueueWorkerResult};
@@ -543,7 +543,7 @@ fn participant(
         role,
         display_name,
         handle,
-        signing_key: SigningKey::from_bytes(&[signing_seed; 32]),
+        signing_key: SigningKey::from_bytes(&[signing_seed; 64]),
         wallet,
         queue,
         next_nonce: 0,
