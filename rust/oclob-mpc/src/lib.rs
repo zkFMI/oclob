@@ -78,6 +78,10 @@ const ROUND_TIMEOUT: Duration = Duration::from_secs(300);
 /// Marker every party prints after each served round.
 pub const ROUND_END_MARKER: &str = "OCLOB_ROUND_END";
 
+/// The one body line the resident form leaves out (see `matching_service_program`).
+const PERSISTENCE_WRITE: &str =
+    "sint.write_to_file(private_book_wires + settlement_proof_wires)";
+
 impl MpcRunner {
     pub fn compile(root: impl AsRef<Path>) -> Result<Self, MpcError> {
         let compiler = OfficialCompiler::from_checkout(root)
@@ -450,6 +454,14 @@ pub fn matching_service_program() -> Result<String, MpcError> {
         "# Service form: the identical body inside one loop. The control word is\n# read in the same input batch as the round values, because the compiler\n# merges every input instruction of a basic block into one round.\n@do_while\ndef _():\n    control = sint.get_input_from(0)\n",
     );
     for line in body.lines() {
+        if line == PERSISTENCE_WRITE {
+            // The single-shot form keeps the owner-local share file for the
+            // node executor. The resident runner never reads it, and one
+            // append per round (5,000 shares, 160 KB per party) would grow
+            // without bound over the life of the mesh.
+            source.push_str("    # Persistence is kept by the single-shot form only.\n");
+            continue;
+        }
         if !line.is_empty() {
             source.push_str("    ");
             source.push_str(line);
@@ -992,7 +1004,8 @@ mod tests {
         for line in service[loop_start..].lines().skip(1) {
             assert!(line.is_empty() || line.starts_with("    "), "{line}");
         }
-        assert!(service.contains("    sint.write_to_file(private_book_wires + settlement_proof_wires)"));
+        assert!(!service.contains("write_to_file"));
+        assert!(service.contains("    # Persistence is kept by the single-shot form only.\n"));
         assert!(source.contains("resting_remaining_0"));
         assert!(source.contains("maker_pool_remainder_0"));
         assert!(source.contains("matched_0 * resting_handle_0"));
