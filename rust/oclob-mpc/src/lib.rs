@@ -7,12 +7,14 @@ use oclob_core::{
     PrivateMatchInput, PrivateRestingInput, MAX_MATCH_SLOTS,
 };
 use qomm_mpc::compiler::OfficialCompiler;
+use qomm_mpc::engine_policy::EnginePin;
 use qomm_mpc::inputs::build_shamir_party_files_secure;
 use qomm_mpc::program::{ed25519_lagrange_at_zero, ED25519_ORDER};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -58,20 +60,34 @@ pub struct MpcBatchReceipt {
 
 pub struct MpcRunner {
     root: PathBuf,
+    engine: EnginePin,
     binary: PathBuf,
     program: String,
     program_sha256: [u8; 32],
     compile_ms: f64,
     work: TempRoot,
     rounds: u64,
+    /// The seven parties stay alive between rounds; see [`ServiceMesh`].
+    mesh: Option<ServiceMesh>,
+    meshes: u64,
 }
+
+/// How long one round may take before the mesh is torn down and rebuilt.
+const ROUND_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Marker every party prints after each served round.
+pub const ROUND_END_MARKER: &str = "OCLOB_ROUND_END";
 
 impl MpcRunner {
     pub fn compile(root: impl AsRef<Path>) -> Result<Self, MpcError> {
         let compiler = OfficialCompiler::from_checkout(root)
             .map_err(|error| MpcError::Setup(error.to_string()))?;
         let root = compiler.root().to_path_buf();
-        qomm_mpc::engine_policy::verify(&root).map_err(MpcError::Setup)?;
+        // The full receipt check (45 MB of hashing) runs once here; each
+        // round re-checks the artifact identities and re-hashes only if they
+        // changed, so the engine stays fail-closed without paying the hash
+        // per order.
+        let engine = EnginePin::verify(&root).map_err(MpcError::Setup)?;
         let binary = root.join("malicious-shamir-party.x");
         if !binary.is_file() {
             return Err(MpcError::Setup(format!(
@@ -79,7 +95,7 @@ impl MpcRunner {
                 binary.display()
             )));
         }
-        let source = matching_program()?;
+        let source = matching_service_program()?;
         let program_sha256 = Sha256::digest(source.as_bytes()).into();
         let work = TempRoot::new()?;
         let program = format!(
@@ -112,12 +128,15 @@ impl MpcRunner {
         }
         Ok(Self {
             root,
+            engine,
             binary,
             program,
             program_sha256,
             compile_ms: started.elapsed().as_secs_f64() * 1_000.0,
             work,
             rounds: 0,
+            mesh: None,
+            meshes: 0,
         })
     }
 
@@ -159,7 +178,7 @@ impl MpcRunner {
         &mut self,
         input: &PrivateMatchBatch,
     ) -> Result<MpcBatchReceipt, MpcError> {
-        qomm_mpc::engine_policy::verify(&self.root).map_err(MpcError::Setup)?;
+        self.engine.recheck().map_err(MpcError::Setup)?;
         if input.resting.len() > MAX_MATCH_SLOTS {
             return Err(MpcError::Input(format!(
                 "a batch supports at most {MAX_MATCH_SLOTS} resting slots"
@@ -174,70 +193,55 @@ impl MpcRunner {
             &mut sharing_rng,
         )
         .map_err(|error| MpcError::Input(error.to_string()))?;
-        let round = self.work.0.join(format!("round-{}", self.rounds));
-        fs::create_dir_all(&round)?;
-        fs::create_dir(round.join("Persistence"))?;
-        symlink(self.root.join("Programs"), round.join("Programs"))?;
-        symlink(self.root.join("Player-Data"), round.join("Player-Data"))?;
-        let input_prefix = round.join("Input");
-        for (party, contents) in party_files.iter().enumerate() {
-            fs::write(round.join(format!("Input-P{party}-0")), contents)?;
+        // One long-lived mesh serves every round. Spawning the seven parties
+        // per round cost a process start, the program load, the preprocessing
+        // and 42 mutually authenticated TLS handshakes (about 13 ms of
+        // ML-DSA-65 signing alone) on every order; measured on 2026-09-08 the
+        // whole round was about 720 ms, of which the circuit itself is a
+        // small part. A failed or timed-out round tears the mesh down so the
+        // next round starts from a clean set of processes.
+        if self.mesh.is_none() {
+            self.meshes += 1;
+            let dir = self.work.0.join(format!("mesh-{}", self.meshes));
+            self.mesh = Some(ServiceMesh::spawn(
+                &dir,
+                &self.root,
+                &self.binary,
+                &self.program,
+            )?);
         }
-        let port = free_port_block(MPC_PARTIES)?;
-        let hosts = (0..MPC_PARTIES)
-            .map(|party| format!("127.0.0.1:{}\n", port + party as u16))
-            .collect::<String>();
-        for party in 0..MPC_PARTIES {
-            fs::write(round.join(format!("hosts-P{party}")), &hosts)?;
-        }
-
         let started = Instant::now();
-        let mut children = Vec::with_capacity(MPC_PARTIES);
-        let mut logs = Vec::with_capacity(MPC_PARTIES);
-        for party in 0..MPC_PARTIES {
-            let log_path = round.join(format!("party-{party}.log"));
-            let stdout = File::create(&log_path)?;
-            let stderr = stdout.try_clone()?;
-            let mut command = Command::new(&self.binary);
-            command
-                // The canonical circuit writes owner-local Persistence. Keep
-                // this compatibility runner isolated per round so concurrent
-                // tests cannot share or overwrite proof material.
-                .current_dir(&round)
-                .arg(party.to_string())
-                .arg(&self.program)
-                .args(["-N", &MPC_PARTIES.to_string()])
-                .args(["-T", &MAX_CORRUPT_NODES.to_string()])
-                .args(["-P", ED25519_ORDER])
-                .arg("-ip")
-                .arg(round.join(format!("hosts-P{party}")))
-                .arg("-IF")
-                .arg(&input_prefix)
-                .args(["-OF", "."])
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr));
-            children.push(
-                command
-                    .spawn()
-                    .map_err(|error| MpcError::Party(party, error.to_string()))?,
-            );
-            logs.push(log_path);
-        }
-        wait_all(&mut children, Duration::from_secs(300))?;
+        let outcome = self
+            .mesh
+            .as_mut()
+            .ok_or(MpcError::NoOutput)
+            .and_then(|mesh| mesh.serve_round(&party_files, ROUND_TIMEOUT));
+        let outputs = match outcome {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                // Drop kills the children; the next round respawns them.
+                self.mesh = None;
+                return Err(error);
+            }
+        };
         let execution_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        let outputs = logs
-            .iter()
-            .map(|path| fs::read_to_string(path).map_err(MpcError::Io))
-            .collect::<Result<Vec<_>, _>>()?;
         let parsed = outputs
             .iter()
             .enumerate()
             .map(|(party, output)| {
                 parse_result(output).map_err(|message| MpcError::Party(party, message))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>();
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.mesh = None;
+                return Err(error);
+            }
+        };
         let mut first = parsed.first().cloned().ok_or(MpcError::NoOutput)?;
         if parsed.iter().any(|result| result != &first) {
+            self.mesh = None;
             return Err(MpcError::Disagreement);
         }
         first.slots.truncate(input.resting.len());
@@ -254,6 +258,154 @@ impl MpcRunner {
             all_parties_agreed: true,
             result: first,
         })
+    }
+}
+
+/// Seven `malicious-shamir-party.x` processes running the service form of
+/// the matching program: they connect once, then loop, reading each round's
+/// shares from named pipes and printing the public result followed by
+/// [`ROUND_END_MARKER`]. Dropping the mesh kills the processes.
+struct ServiceMesh {
+    children: Vec<Child>,
+    /// Write ends of the input pipes, opened read-write so the parties never
+    /// observe end of file between rounds.
+    inputs: Vec<File>,
+    logs: Vec<PathBuf>,
+    consumed: Vec<u64>,
+}
+
+impl ServiceMesh {
+    fn spawn(dir: &Path, root: &Path, binary: &Path, program: &str) -> Result<Self, MpcError> {
+        fs::create_dir_all(dir)?;
+        fs::create_dir(dir.join("Persistence"))?;
+        symlink(root.join("Programs"), dir.join("Programs"))?;
+        symlink(root.join("Player-Data"), dir.join("Player-Data"))?;
+        let port = free_port_block(MPC_PARTIES)?;
+        let hosts = (0..MPC_PARTIES)
+            .map(|party| format!("127.0.0.1:{}\n", port + party as u16))
+            .collect::<String>();
+        let mut inputs = Vec::with_capacity(MPC_PARTIES);
+        for party in 0..MPC_PARTIES {
+            fs::write(dir.join(format!("hosts-P{party}")), &hosts)?;
+            let pipe = dir.join(format!("Input-P{party}-0"));
+            let status = Command::new("mkfifo")
+                .arg("-m")
+                .arg("600")
+                .arg(&pipe)
+                .status()
+                .map_err(|error| MpcError::Setup(format!("mkfifo: {error}")))?;
+            if !status.success() {
+                return Err(MpcError::Setup(format!(
+                    "could not create the input pipe for party {party}"
+                )));
+            }
+            // Opened before the party starts, so its blocking open of the
+            // read end returns at once and it never sees end of file.
+            inputs.push(OpenOptions::new().read(true).write(true).open(&pipe)?);
+        }
+        let input_prefix = dir.join("Input");
+        let mut children = Vec::with_capacity(MPC_PARTIES);
+        let mut logs = Vec::with_capacity(MPC_PARTIES);
+        for party in 0..MPC_PARTIES {
+            let log_path = dir.join(format!("party-{party}.log"));
+            let stdout = File::create(&log_path)?;
+            let stderr = stdout.try_clone()?;
+            let spawned = Command::new(binary)
+                .current_dir(dir)
+                .arg(party.to_string())
+                .arg(program)
+                .args(["-N", &MPC_PARTIES.to_string()])
+                .args(["-T", &MAX_CORRUPT_NODES.to_string()])
+                .args(["-P", ED25519_ORDER])
+                .arg("-ip")
+                .arg(dir.join(format!("hosts-P{party}")))
+                .arg("-IF")
+                .arg(&input_prefix)
+                .args(["-OF", "."])
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn();
+            match spawned {
+                Ok(child) => children.push(child),
+                Err(error) => {
+                    for child in &mut children {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    return Err(MpcError::Party(party, error.to_string()));
+                }
+            }
+            logs.push(log_path);
+        }
+        Ok(Self {
+            children,
+            inputs,
+            logs,
+            consumed: vec![0; MPC_PARTIES],
+        })
+    }
+
+    /// Feed one round and return each party's output for that round only.
+    fn serve_round(
+        &mut self,
+        party_files: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<String>, MpcError> {
+        if party_files.len() != MPC_PARTIES {
+            return Err(MpcError::Input("one input file per party is required".into()));
+        }
+        // Party 0 carries the control word (1 = serve another round) in the
+        // same batch as its shares; the compiler merges all inputs of the
+        // loop body into one round, so the word must arrive with them.
+        for (party, contents) in party_files.iter().enumerate() {
+            let pipe = &mut self.inputs[party];
+            if party == 0 {
+                pipe.write_all(b"1\n")?;
+            }
+            pipe.write_all(contents.as_bytes())?;
+            pipe.flush()?;
+        }
+        let deadline = Instant::now() + timeout;
+        let mut outputs: Vec<Option<String>> = vec![None; MPC_PARTIES];
+        loop {
+            for party in 0..MPC_PARTIES {
+                if outputs[party].is_some() {
+                    continue;
+                }
+                if let Some(status) = self.children[party].try_wait()? {
+                    return Err(MpcError::Party(
+                        party,
+                        format!("exited with {}", status.code().unwrap_or(-1)),
+                    ));
+                }
+                let mut file = File::open(&self.logs[party])?;
+                file.seek(SeekFrom::Start(self.consumed[party]))?;
+                let mut pending = String::new();
+                file.read_to_string(&mut pending)?;
+                let marker = format!("{ROUND_END_MARKER}\n");
+                if let Some(end) = pending.find(&marker) {
+                    let segment_len = end + marker.len();
+                    self.consumed[party] += segment_len as u64;
+                    outputs[party] = Some(pending[..segment_len].to_string());
+                }
+            }
+            if outputs.iter().all(Option::is_some) {
+                return Ok(outputs.into_iter().flatten().collect());
+            }
+            if Instant::now() >= deadline {
+                return Err(MpcError::Timeout);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+impl Drop for ServiceMesh {
+    fn drop(&mut self) {
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -283,10 +435,38 @@ impl Drop for MpcRunner {
 /// Canonical OCLOB matching source compiled by the official MP-SPDZ compiler.
 /// Distributed parties must all pin the digest of these exact bytes.
 pub fn matching_program() -> Result<String, MpcError> {
+    let (header, body) = matching_program_parts()?;
+    Ok(header + &body)
+}
+
+/// The same circuit inside one long-lived loop, for the resident runner.
+/// Every round reads a control word from party 0 together with the shares,
+/// runs the body, prints the public result and [`ROUND_END_MARKER`], then
+/// continues while the control word is non-zero.
+pub fn matching_service_program() -> Result<String, MpcError> {
+    let (header, body) = matching_program_parts()?;
+    let mut source = header;
+    source.push_str(
+        "# Service form: the identical body inside one loop. The control word is\n# read in the same input batch as the round values, because the compiler\n# merges every input instruction of a basic block into one round.\n@do_while\ndef _():\n    control = sint.get_input_from(0)\n",
+    );
+    for line in body.lines() {
+        if !line.is_empty() {
+            source.push_str("    ");
+            source.push_str(line);
+        }
+        source.push('\n');
+    }
+    source.push_str(&format!(
+        "    print_ln('{ROUND_END_MARKER}')\n    return regint(control.reveal())\n"
+    ));
+    Ok(source)
+}
+
+fn matching_program_parts() -> Result<(String, String), MpcError> {
     let lagrange = ed25519_lagrange_at_zero(MPC_PARTIES)
         .map_err(|error| MpcError::Setup(error.to_string()))?
         .join(", ");
-    let mut source = format!(
+    let header = format!(
         r#"# OCLOB fixed-shape multi-fill matching circuit; generated by Rust.
 program.set_bit_length(64)
 N_PARTIES = 7
@@ -302,6 +482,7 @@ def secret_input():
 
 "#
     );
+    let mut source = String::new();
     for slot in 0..MAX_MATCH_SLOTS {
         source.push_str(&format!(
             "active_{slot} = secret_input()\nresting_side_{slot} = secret_input()\nresting_price_{slot} = secret_input()\nresting_quantity_{slot} = secret_input()\nresting_price_blinding_{slot} = secret_input()\nresting_reserve_{slot} = secret_input()\nresting_reserve_blinding_{slot} = secret_input()\nresting_handle_{slot} = secret_input()\n"
@@ -429,7 +610,7 @@ print_ln('OCLOB_SLOT_{slot}_QUANTITY=%s', trade_quantity_{slot}.reveal())\n"
     for i in 0..=MAX_MATCH_SLOTS {
         source.push_str(&format!("print_ln('OCLOB_LEVEL_{i}_SIDE=%s', depth[{i}][1].reveal())\nprint_ln('OCLOB_LEVEL_{i}_PRICE=%s', depth[{i}][2].reveal())\nprint_ln('OCLOB_LEVEL_{i}_QUANTITY=%s', depth[{i}][3].reveal())\n"));
     }
-    Ok(source)
+    Ok((header, source))
 }
 
 /// Parse and validate only the deliberately public matching result. Callers
@@ -579,43 +760,6 @@ pub fn public_depth_digest(levels: &[oclob_core::MpcPriceLevel]) -> [u8; 32] {
         hash.update(level.quantity.to_be_bytes());
     }
     hash.finalize().into()
-}
-
-fn wait_all(children: &mut [Child], timeout: Duration) -> Result<(), MpcError> {
-    let deadline = Instant::now() + timeout;
-    let mut finished = vec![false; children.len()];
-    loop {
-        let mut remaining = 0;
-        for (party, child) in children.iter_mut().enumerate() {
-            if finished[party] {
-                continue;
-            }
-            match child.try_wait()? {
-                Some(status) if status.success() => finished[party] = true,
-                Some(status) => {
-                    for child in children.iter_mut() {
-                        let _ = child.kill();
-                    }
-                    return Err(MpcError::Party(
-                        party,
-                        format!("exited with {}", status.code().unwrap_or(-1)),
-                    ));
-                }
-                None => remaining += 1,
-            }
-        }
-        if remaining == 0 {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            for child in children.iter_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            return Err(MpcError::Timeout);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
 }
 
 fn free_port_block(parties: usize) -> Result<u16, MpcError> {
@@ -836,6 +980,19 @@ mod tests {
         assert!(!source.contains("SLOT_0_REMAINING"));
         assert!(source.contains("published_remaining"));
         assert!(source.contains("sint.write_to_file(private_book_wires + settlement_proof_wires)"));
+        let service = matching_service_program().unwrap();
+        assert!(service.contains("@do_while\ndef _():\n    control = sint.get_input_from(0)\n"));
+        assert!(service.ends_with(&format!(
+            "    print_ln('{ROUND_END_MARKER}')\n    return regint(control.reveal())\n"
+        )));
+        let (header, body) = matching_program_parts().unwrap();
+        assert_eq!(source, format!("{header}{body}"));
+        // Every body line sits inside the loop body.
+        let loop_start = service.find("def _():").unwrap();
+        for line in service[loop_start..].lines().skip(1) {
+            assert!(line.is_empty() || line.starts_with("    "), "{line}");
+        }
+        assert!(service.contains("    sint.write_to_file(private_book_wires + settlement_proof_wires)"));
         assert!(source.contains("resting_remaining_0"));
         assert!(source.contains("maker_pool_remainder_0"));
         assert!(source.contains("matched_0 * resting_handle_0"));

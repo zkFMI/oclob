@@ -9,6 +9,7 @@ use oclob_mpc::{
 };
 use oclob_ordering::{CommitteePolicy, OrderCertificate};
 use oclob_settlement::native::{ExecutedReservationBinding, NativeFillExecution};
+use qomm_mpc::engine_policy::EnginePin;
 use qomm_mpc::persistence::parse_header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -361,6 +362,7 @@ impl NodeExecutionReceipt {
 pub struct PartyExecutor {
     party: u16,
     root: PathBuf,
+    engine: EnginePin,
     work_root: PathBuf,
     program: String,
     hosts: String,
@@ -411,7 +413,8 @@ impl PartyExecutor {
         }
         reject_symlink(&root)?;
         reject_symlink(&work_root)?;
-        qomm_mpc::engine_policy::verify(&root).map_err(oclob_mpc::MpcError::Setup)?;
+        // Full hash check once per executor; rounds re-check identities.
+        let engine = EnginePin::verify(&root).map_err(oclob_mpc::MpcError::Setup)?;
         let binary = root.join("malicious-shamir-party.x");
         if !binary.is_file() {
             return Err(PartyExecutionError::Config);
@@ -429,6 +432,7 @@ impl PartyExecutor {
         Ok(Self {
             party,
             root,
+            engine,
             work_root,
             program,
             hosts,
@@ -452,7 +456,7 @@ impl PartyExecutor {
         prepared: &PreparedPartyInput,
         plan: &RoundPlan,
     ) -> Result<NodeExecutionReceipt, PartyExecutionError> {
-        qomm_mpc::engine_policy::verify(&self.root).map_err(oclob_mpc::MpcError::Setup)?;
+        self.engine.recheck().map_err(oclob_mpc::MpcError::Setup)?;
         if prepared.party() != self.party {
             return Err(PartyExecutionError::PartyBinding);
         }
