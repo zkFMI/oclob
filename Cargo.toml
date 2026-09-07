@@ -53,14 +53,14 @@ oclob-service = { path = "rust/oclob-service" }
 # official MP-SPDZ adapter remains pinned to the reviewed QOMM revision that
 # exports cryptographically-random Shamir input generation.
 # Update these revisions only together with the protocol compatibility tests.
-dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "09c2c1a7295e8cab592aca6af2f89381c3c110ac" }
+dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "4ea50f5c25482c680716622d39b008dd6e0645c8" }
 qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "b48bda6cf07abb74068b85268c9293ef37b1e68e" }
+defmi = { git = "https://github.com/zkFMI/defmi.git", rev = "1034c0a76c76a88e266ae6afef8a7ce4607c6f1f" }
 qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "b48bda6cf07abb74068b85268c9293ef37b1e68e" }
+zkpi-defmi-sdk = { git = "https://github.com/zkFMI/defmi.git", rev = "1034c0a76c76a88e266ae6afef8a7ce4607c6f1f" }
 
 [profile.release]
 lto = "thin"

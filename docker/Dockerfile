@@ -5,7 +5,7 @@ ARG NODE_VERSION=20.19.2
 ARG MP_SPDZ_COMMIT=9d809599ea6ce627216a389ca7d984fbb75d0cb9
 # zkpi carries the MP-SPDZ patches, including the mandatory hybrid TLS one.
 ARG ZKPI_COMMIT=38baa1a86bedd2b47d7439c57412d25a20f9c405
-ARG DEFMI_COMMIT=b48bda6cf07abb74068b85268c9293ef37b1e68e
+ARG DEFMI_COMMIT=1034c0a76c76a88e266ae6afef8a7ce4607c6f1f
 ARG BUILD_JOBS=16
 # OpenSSL 3.5 is the first release with X25519MLKEM768; the MPC engine and the
 # Rust workspace both link against this build, never the distribution's.
