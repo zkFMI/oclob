@@ -2,15 +2,15 @@
 
 #![forbid(unsafe_code)]
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-const VOTE_DOMAIN: &[u8] = b"OCLOB:ORDER-VOTE:v1";
-const CERTIFICATE_DOMAIN: &[u8] = b"OCLOB:ORDER-CERTIFICATE:v1";
+const VOTE_DOMAIN: &[u8] = b"OCLOB:ORDER-VOTE:v2";
+const CERTIFICATE_DOMAIN: &[u8] = b"OCLOB:ORDER-CERTIFICATE:v2";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CommitteePolicy {
@@ -114,11 +114,16 @@ impl OrderingNode {
                 return Err(OrderingError::Equivocation);
             }
         }
+        let signature = self
+            .key
+            .try_sign(&statement)
+            .map_err(|_| OrderingError::InvalidVote)?
+            .to_bytes();
         self.voted.insert(sequence, statement);
         Ok(OrderVote {
             node_id: self.id,
             statement_digest: statement,
-            signature: self.key.sign(&statement).to_bytes().to_vec(),
+            signature,
         })
     }
 }
@@ -209,7 +214,7 @@ impl OrderingCommittee {
         let policy = CommitteePolicy::seven_node();
         policy.validate()?;
         let nodes = (1..=policy.nodes)
-            .map(|id| OrderingNode::new(id as u16, SigningKey::from_bytes(&[id as u8; 32])))
+            .map(|id| OrderingNode::new(id as u16, SigningKey::from_bytes(&[id as u8; 64])))
             .collect::<Result<Vec<_>, _>>()?;
         let keys = nodes
             .iter()
@@ -410,7 +415,7 @@ mod tests {
 
     #[test]
     fn one_node_refuses_two_statements_for_one_sequence() {
-        let mut node = OrderingNode::new(1, SigningKey::from_bytes(&[1; 32])).unwrap();
+        let mut node = OrderingNode::new(1, SigningKey::from_bytes(&[1; 64])).unwrap();
         node.vote(
             "JGB10Y-JPY",
             1,

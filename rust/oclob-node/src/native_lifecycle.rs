@@ -4,7 +4,7 @@
 //! independently observed by this node before it forgets the active order.
 
 use crate::{NodeError, NodeShareStore};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::EdgeOrderManifest;
 use oclob_ordering::OrderCertificate;
@@ -57,7 +57,7 @@ impl LifecycleCommand {
         key: &SigningKey,
     ) -> Result<Self, String> {
         let mut command = Self {
-            version: 1,
+            version: 2,
             market_id: manifest.market_id.clone(),
             target: manifest.commitment,
             reason: ApplicationReleaseReason::Cancelled,
@@ -66,14 +66,18 @@ impl LifecycleCommand {
             nonce,
             signature: Vec::new(),
         };
-        command.signature = key.sign(&command.digest()?).to_bytes().to_vec();
+        command.signature = key
+            .try_sign(&command.digest()?)
+            .map_err(|error| error.to_string())?
+            .to_bytes()
+            .to_vec();
         command.verify(manifest, now)?;
         Ok(command)
     }
 
     pub fn expire(manifest: &EdgeOrderManifest, now: u64, expires_at: u64) -> Result<Self, String> {
         let command = Self {
-            version: 1,
+            version: 2,
             market_id: manifest.market_id.clone(),
             target: manifest.commitment,
             reason: ApplicationReleaseReason::Expired,
@@ -90,7 +94,7 @@ impl LifecycleCommand {
         let mut unsigned = self.clone();
         unsigned.signature.clear();
         Ok(Sha256::new()
-            .chain_update(b"OCLOB:NATIVE-LIFECYCLE:v1")
+            .chain_update(b"OCLOB:NATIVE-LIFECYCLE:v2")
             .chain_update(serde_json::to_vec(&unsigned).map_err(|e| e.to_string())?)
             .finalize()
             .into())
@@ -102,7 +106,7 @@ impl LifecycleCommand {
         manifest
             .verify(manifest.retention_deadline)
             .map_err(|e| e.to_string())?;
-        if self.version != 1
+        if self.version != 2
             || self.market_id != manifest.market_id
             || self.target != manifest.commitment
             || !manifest.uses_pretrade_reservation()

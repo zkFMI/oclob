@@ -1,5 +1,6 @@
 //! Scenario-independent native market pipeline. Inputs are certified encrypted
 //! orders; all matching and cryptographic work uses the existing node/DeFMI APIs.
+use crate::corporate_api::request_claim_authorizations;
 use crate::edge_client::{
     collect_order_certificate, collect_threshold_capability_release, execute_agreed_round,
     finalize_agreed_private_state, AgreedRoundExecution,
@@ -9,18 +10,19 @@ use crate::market_journal::{MarketBookEntry, MarketCompletedRound, MarketJournal
 use crate::market_network::MarketServiceConfig;
 use crate::native_finality::{aggregate_finality, NativeFinalityRecord, NativeFinalityRequest};
 use crate::network::{
-    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
+    client_tls_context, load_application_signing_seed, ClientIdentityConfig, ClusterPublicConfig,
 };
 use crate::PrivateStateFinality;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use oclob_core::application_crypto::SigningKey;
 use oclob_ordering::OrderCertificate;
 use oclob_settlement::collaborative::{
     collaborative_job_id, load_fill, prove_fill, CollaborativeFillRequest,
 };
 use oclob_settlement::native::{
-    certify_native_fill, native_batch_binding, prepare_native_fill, project_pending_native_head,
-    NativeFillAuthorizationRequest, NativeReservationAuthority,
+    certify_native_fill, native_batch_binding, native_claim_authorization_issue,
+    prepare_native_fill, project_pending_native_head, NativeFillAuthorizationRequest,
+    NativeFillClaimAuthorizations, NativeReservationAuthority,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
 use qomm_defmi::application_reservation::ApplicationReserveScope;
@@ -53,7 +55,7 @@ pub struct NativeMarketRuntime {
     pub config: MarketServiceConfig,
     pub journal: Arc<MarketJournal>,
     pub committee: Vec<u8>,
-    pub issuer: [u8; 32],
+    pub issuer: Vec<u8>,
 }
 impl NativeMarketRuntime {
     pub fn pump(&self) -> Result<bool, String> {
@@ -97,7 +99,8 @@ impl NativeMarketRuntime {
             Some(saved) => saved,
             None => {
                 let key = SigningKey::from_bytes(
-                    &load_secret_32(&self.coordinator.application_signing_key).map_err(err)?,
+                    &load_application_signing_seed(&self.coordinator.application_signing_key)
+                        .map_err(err)?,
                 );
                 let at = now()?;
                 let expiry = book.iter().try_fold(
@@ -234,7 +237,10 @@ impl NativeMarketRuntime {
         {
             return Err("market native scope differs from pinned committee".into());
         }
-        let issuer = VerifyingKey::from_bytes(&self.issuer).map_err(err)?;
+        let issuer = &self.issuer;
+        if issuer.len() != 1984 {
+            return Err("legacy issuer requires PQC re-enrollment".into());
+        }
         let client = private.chain()?;
         let readonly = QuorumAuthorizer::read_only();
         let bridge = AvalancheNoteBridge::new(&readonly, &client);
@@ -279,7 +285,7 @@ impl NativeMarketRuntime {
                                 &input.receipt.manifest,
                                 scope.venue_id,
                                 scope.defmi_id,
-                                &issuer,
+                                issuer,
                                 now()?,
                             )
                             .map_err(err)?;
@@ -345,6 +351,47 @@ impl NativeMarketRuntime {
                                 json!({"job_id":hex::encode(job)}),
                             )?;
                         }
+                        let claim_issue = native_claim_authorization_issue(
+                            &proof,
+                            &maker,
+                            &taker,
+                            &maker_head,
+                            &taker_head,
+                        )?;
+                        let prior_fills = requests
+                            .iter()
+                            .map(|request: &NativeFillAuthorizationRequest| request.fill.clone())
+                            .collect::<Vec<_>>();
+                        let payer_authority =
+                            if maker.permit.reservation_id == claim_issue.payer.reservation_id {
+                                &maker
+                            } else {
+                                &taker
+                            };
+                        let payee_authority =
+                            if maker.permit.reservation_id == claim_issue.payee.reservation_id {
+                                &maker
+                            } else {
+                                &taker
+                            };
+                        let claim_authorizations = NativeFillClaimAuthorizations {
+                            payer: request_claim_authorizations(
+                                &payer_authority.claim_authorization_endpoint,
+                                &self.coordinator,
+                                claim_issue.payer.reservation_id,
+                                &claim_issue,
+                                &prior_fills,
+                                payer_authority.order_signer,
+                            )?,
+                            payee: request_claim_authorizations(
+                                &payee_authority.claim_authorization_endpoint,
+                                &self.coordinator,
+                                claim_issue.payee.reservation_id,
+                                &claim_issue,
+                                &prior_fills,
+                                payee_authority.order_signer,
+                            )?,
+                        };
                         let mut fill = prepare_native_fill(
                             &proof,
                             scope.clone(),
@@ -352,6 +399,7 @@ impl NativeMarketRuntime {
                             &taker,
                             &maker_head,
                             &taker_head,
+                            &claim_authorizations,
                             position + 1 == slots.len() && execution.result.arriving_remaining == 0,
                         )?;
                         fill.batch = native_batch_binding(
@@ -368,6 +416,7 @@ impl NativeMarketRuntime {
                             fill,
                             maker,
                             taker: taker.clone(),
+                            claim_authorizations,
                         };
                         request.fill = certify_native_fill(&mut parties, &request)?;
                         if position + 1 < slots.len() {

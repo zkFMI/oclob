@@ -368,7 +368,7 @@ mod tests {
             };
         }
         let receipt = NodeExecutionReceipt {
-            version: 1,
+            version: 2,
             party: 0,
             round_id: [1; 32],
             generation: 0,
@@ -383,7 +383,10 @@ mod tests {
             depth_attestation: None,
             signer: [7; 32],
             signature: vec![8; 64],
-        };
+        }
+        .signed_fixture(&oclob_core::application_crypto::SigningKey::from_bytes(
+            &[201; 64],
+        ));
         let records = slots
             .iter()
             .map(|&slot| {
@@ -488,9 +491,18 @@ mod tests {
             transition_digest: [2; 32],
             canonical_receipt_digest: [2; 32],
             canonical_height: 1,
+            private_state_receipt: None,
         })
         .unwrap();
         assert!(serde_json::from_value::<crate::PrivateRoundFinalization>(value.clone()).is_ok());
+        let mut missing_receipt = value.clone();
+        missing_receipt
+            .as_object_mut()
+            .unwrap()
+            .remove("private_state_receipt");
+        assert!(
+            serde_json::from_value::<crate::PrivateRoundFinalization>(missing_receipt).is_err()
+        );
         value
             .as_object_mut()
             .unwrap()
@@ -525,9 +537,9 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
         };
         write_v7(&store);
-        let migrated = NodeShareStore::open(&path, 0, key.clone()).unwrap();
-        assert_eq!(migrated.state.version, crate::STORE_VERSION);
-        drop(migrated);
+        let before = std::fs::read(&path).unwrap();
+        assert!(NodeShareStore::open(&path, 0, key.clone()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         store.state.finalized_private_rounds.insert(
             hex::encode([1; 32]),
             crate::PrivateRoundFinalization {
@@ -536,6 +548,7 @@ mod tests {
                 transition_digest: [3; 32],
                 canonical_receipt_digest: [4; 32],
                 canonical_height: 1,
+                private_state_receipt: None,
             },
         );
         write_v7(&store);

@@ -1,0 +1,45 @@
+{
+  "manifest_id": "oclob-native-lifecycle-pqc-custody-005",
+  "contract_id": "oclob-native-lifecycle-v2",
+  "contract_path": "research/oclob_native_lifecycle_v2_contract.json",
+  "contract_sha256": "74093488ce6e3accd983a8b2ad025fd0ed3226bb8cd2165a2e5024edf3904743",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "Dynamic per-sequence participant claim custody has not yet crossed the two-round three-fill lifecycle, nine redemptions, cancellation, expiry and seven-node restart in current native images.",
+  "causal_hypothesis": "Idempotent participant issuance keyed by reservation and projected sequence will supply six exact signed responses and twelve unlinkable one-time claim keys across both rounds without giving the coordinator custody or breaking cancellation and expiry recovery.",
+  "single_intended_change": "Run the existing lifecycle acceptance on current synchronized source and verify aggregate claim response and fresh-key counts from the three actual signed fill requests.",
+  "baseline": "The v1 lifecycle scenario established two rounds, three fills, nine claims, two releases and node restart. Current deterministic gates add dynamic encrypted claim custody, projected multi-fill sequence validation and exact response replay.",
+  "evidence_boundary": "The deterministic standard gate proves exact randomized response persistence across corporate API retry and process restart. This native run measures actual API issuance and the persisted responses across the canonical three-fill lifecycle, claim redemption and node/validator restart; its receipt must cite both evidence sources.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_processes": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "fills": 3,
+    "canonical_releases": 2
+  },
+  "primary_metric": "completed_native_releases",
+  "point_prediction": {
+    "completed_native_rounds": 2,
+    "total_native_fills": 3,
+    "completed_native_releases": 2,
+    "recipient_claims_redeemed": 9,
+    "post_match_participant_signatures": 6,
+    "claim_authorization_response_signatures": 6,
+    "fresh_claim_authorization_keys": 12,
+    "post_match_financial_approval_signatures": 0,
+    "node_restart_state_preserved": true,
+    "final_facility_sequences": [8, 5]
+  },
+  "most_likely_prediction_error": "The second in-batch or next-round projected sequence may disagree with one participant journal after restart, exposing a missing or incorrectly keyed retained signer.",
+  "rejection_rules": [
+    "contract or synchronized source hash differs",
+    "response signature count differs from six",
+    "fresh key count differs from twelve or any fingerprint repeats",
+    "any post-match financial approval signature",
+    "claim redemption, cancellation, expiry, releases, node restart or validator agreement regresses"
+  ],
+  "promotion_rules": [
+    "smoke_only; no WAN, independent-operator, HSM, performance, economic or production promotion"
+  ],
+  "command": "zkfmi-crypto/scripts/pqc-native-acceptance.sh (lifecycle phase)"
+}

@@ -1,10 +1,13 @@
 //! Pretrade path owned by the corporate participant, not the coordinator.
 
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::SecretOrder;
 use oclob_dekyx::DemoEligibilityWallet;
-use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey, SealedReservationAuthority, MPC_PARTIES};
+use oclob_edge::{
+    ClaimAuthorizationEndpoint, EdgeOrderBundle, NodeEncryptionKey, SealedReservationAuthority,
+    MPC_PARTIES,
+};
 use oclob_settlement::pretrade::{
     select_funding_ring, CorporateFunding, FinalizedReservation, PrivateAdmissionClient,
     PrivateReserveRequest,
@@ -30,9 +33,10 @@ pub struct CorporateNativeConfig {
     pub host: String,
     pub port: u16,
     pub server_name: String,
+    pub claim_authorization_endpoint: ClaimAuthorizationEndpoint,
     pub venue_id: [u8; 32],
     pub defmi_id: [u8; 32],
-    pub issuer_public: [u8; 32],
+    pub issuer_public: Vec<u8>,
     pub facility_id: [u8; 32],
     pub asset_id: [u8; 32],
     pub facility_values: [u64; 3],
@@ -77,7 +81,8 @@ impl FacilityWitness {
 pub struct PreparedCorporateReserve {
     pub request: PrivateReserveRequest,
     pub order_wire: Vec<u8>,
-    pub signing_key: [u8; 32],
+    #[serde(with = "oclob_core::application_crypto::secret_serde")]
+    pub signing_key: [u8; 64],
     pub eligibility_commitment: [u8; 32],
     pub side_blinding: [u8; 32],
     pub reserve_blinding: [u8; 32],
@@ -101,9 +106,7 @@ impl PreparedCorporateReserve {
             || mandate.hold_id != order.reservation_id()
             || self.request.order_commitment != order.commitment().0
             || mandate.participant_public
-                != SigningKey::from_bytes(&self.signing_key)
-                    .verifying_key()
-                    .to_bytes()
+                != SigningKey::from_bytes(&self.signing_key).hybrid_public_key()
             || mandate.request_commitment
                 != order_authorization_commitment(
                     order.commitment().0,
@@ -283,7 +286,7 @@ pub fn prepare_reservation_from_note(
         oclob_core::Side::Sell => 1,
     };
     let mandate = ApplicationReserveMandate {
-        version: 1,
+        version: 2,
         scope: scope.clone(),
         request_commitment: order_authorization_commitment(order.commitment().0, salt)
             .map_err(err)?,
@@ -300,10 +303,10 @@ pub fn prepare_reservation_from_note(
         settlement_terms_commitment: key.commit_u64(side, &side_blinding).compress().to_bytes(),
         valid_from: now,
         valid_until: order.expires_at(),
-        participant_public: signer.verifying_key().to_bytes(),
+        participant_public: signer.hybrid_public_key(),
         signature: vec![],
     }
-    .sign(signer)?;
+    .sign(&signer.raw_hybrid_signer())?;
     let presentation = eligibility
         .present_context(
             mandate.identity_context(eligibility.scope_digest())?,
@@ -392,11 +395,11 @@ pub fn verify_finalized(
     prepared.validate(config)?;
     let request = &prepared.request;
     let scope = &request.mandate.scope;
-    let issuer = VerifyingKey::from_bytes(&config.issuer_public).map_err(err)?;
+    let issuer = &config.issuer_public;
     let delta = scalar(request.reserve_reblinding)?;
     finalized
         .permit
-        .verify(scope.application_binding, config.defmi_id, &issuer, now)
+        .verify(scope.application_binding, config.defmi_id, issuer, now)
         .map_err(err)?;
     finalized
         .admission
@@ -443,14 +446,14 @@ pub fn build_reserved_delivery(
     prepared.validate(config)?;
     let order = SecretOrder::from_secret_wire(&prepared.order_wire).map_err(err)?;
     let signer = SigningKey::from_bytes(&prepared.signing_key);
-    let issuer = VerifyingKey::from_bytes(&config.issuer_public).map_err(err)?;
+    let issuer = &config.issuer_public;
     let delta = scalar(prepared.request.reserve_reblinding)?;
     let bundle = EdgeOrderBundle::create_with_reservation_admission(
         &order,
         handle,
         prepared.eligibility_commitment,
         &finalized.admission,
-        &issuer,
+        issuer,
         scalar(prepared.side_blinding)?,
         scalar(prepared.reserve_blinding)? + delta,
         &signer,
@@ -464,6 +467,7 @@ pub fn build_reserved_delivery(
             &finalized.permit,
             &finalized.admission,
             delta,
+            &config.claim_authorization_endpoint,
             &mut rand::rngs::OsRng,
         )
         .map_err(err)?;

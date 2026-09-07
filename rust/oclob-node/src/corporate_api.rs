@@ -9,11 +9,17 @@ use crate::network::{
     certificate_fingerprint, client_tls_context, ClientIdentityConfig, ClusterPublicConfig,
     ServerTlsConfig,
 };
+use oclob_settlement::native::{
+    project_pending_native_head, NativeClaimAuthorizationIssue,
+    NativeParticipantClaimAuthorizations,
+};
+use qomm_defmi::application_settlement::ApplicationNoteFill;
+use qomm_defmi::avalanche::AvalancheClient;
 use serde::{Deserialize, Serialize};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-const REQUEST_BYTES: usize = 256 * 1024;
+const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -22,6 +28,8 @@ pub struct CorporateApiConfig {
     pub endpoint: MarketEndpoint,
     /// Exact corporate client certificates; sharing a CA is insufficient.
     pub clients: Vec<[u8; 32]>,
+    /// Market certificates may invoke only claim-key commitment issuance.
+    pub claim_authorization_clients: Vec<[u8; 32]>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -32,6 +40,11 @@ pub enum CorporateRequest {
         intent: Box<StoredCorporateIntent>,
         authorization: Box<CorporateReserveAuthorization>,
         source_note: Option<[u8; 32]>,
+    },
+    IssueClaimAuthorizations {
+        reservation_id: [u8; 32],
+        issue: Box<NativeClaimAuthorizationIssue>,
+        prior_fills: Vec<ApplicationNoteFill>,
     },
     QueueStatus,
     WalletSnapshot,
@@ -49,6 +62,9 @@ pub enum CorporateResponse {
     },
     Wallet {
         snapshot: serde_json::Value,
+    },
+    ClaimAuthorizations {
+        authorizations: Box<NativeParticipantClaimAuthorizations>,
     },
     Rejected,
 }
@@ -69,6 +85,18 @@ impl CorporateApi {
             }),
             CorporateRequest::WalletSnapshot => Ok(CorporateResponse::Wallet {
                 snapshot: self.wallet_snapshot()?,
+            }),
+            CorporateRequest::IssueClaimAuthorizations {
+                reservation_id,
+                issue,
+                prior_fills,
+            } => Ok(CorporateResponse::ClaimAuthorizations {
+                authorizations: Box::new(self.issue_claim_authorizations(
+                    reservation_id,
+                    issue.as_ref(),
+                    &prior_fills,
+                    now,
+                )?),
             }),
             CorporateRequest::Enqueue {
                 request_id,
@@ -133,9 +161,152 @@ impl CorporateApi {
         }
     }
 
+    fn issue_claim_authorizations(
+        &self,
+        reservation_id: [u8; 32],
+        issue: &NativeClaimAuthorizationIssue,
+        prior_fills: &[ApplicationNoteFill],
+        now: u64,
+    ) -> Result<NativeParticipantClaimAuthorizations, String> {
+        issue.validate()?;
+        let (prepared, finalized) = self.journal.admitted_reservation(reservation_id)?;
+        prepared.validate(&self.config)?;
+        let order_signer =
+            oclob_core::application_crypto::SigningKey::from_bytes(&prepared.signing_key);
+        if let Some(saved) = self.journal.saved_claim_authorizations(
+            issue,
+            reservation_id,
+            order_signer.verifying_key().to_bytes(),
+        )? {
+            return Ok(saved);
+        }
+        let local = if issue.payer.reservation_id == reservation_id {
+            &issue.payer
+        } else if issue.payee.reservation_id == reservation_id {
+            &issue.payee
+        } else {
+            return Err("claim authorization was requested from another participant".into());
+        };
+        if local.reservation_id != finalized.permit.reservation_id
+            || local.asset_id != finalized.permit.asset_id
+            || local.participant_handle != finalized.permit.participant_handle
+            || finalized.permit.facility_id != self.config.facility_id
+            || finalized.permit.asset_id != self.config.asset_id
+            || finalized.permit.participant_handle
+                != qomm_zkpi::handles::Identity::from_seed(self.config.identity_seed)
+                    .handle(b"defmi:oclob:v1")
+                    .point
+                    .compress()
+                    .to_bytes()
+        {
+            return Err("claim authorization permit is not owned by this corporate wallet".into());
+        }
+        let application = zkpi_defmi_sdk::application::oclob_manifest_v1()
+            .digest()
+            .map_err(err)?;
+        finalized
+            .permit
+            .verify(
+                application,
+                self.config.defmi_id,
+                &self.config.issuer_public,
+                now,
+            )
+            .map_err(err)?;
+        finalized
+            .admission
+            .verify(
+                application,
+                self.config.defmi_id,
+                &self.config.issuer_public,
+                now,
+            )
+            .map_err(err)?;
+        if finalized.permit.venue_id != self.config.venue_id {
+            return Err("claim authorization permit names another venue".into());
+        }
+        if prior_fills.len() >= oclob_core::MAX_MATCH_SLOTS {
+            return Err("claim authorization prior-fill chain exceeds one market round".into());
+        }
+        let client = private_client(&self.config, &self.identity)?.chain()?;
+        let root = client.state_root()?;
+        let mut payer_head = client.application_reservation_snapshot(issue.payer.reservation_id)?;
+        let mut payee_head = client.application_reservation_snapshot(issue.payee.reservation_id)?;
+        if payer_head.state_root != root
+            || payee_head.state_root != root
+            || payer_head.status != "active"
+            || payee_head.status != "active"
+            || payer_head.binding.hold_id != issue.payer.reservation_id
+            || payee_head.binding.hold_id != issue.payee.reservation_id
+            || payer_head.binding.asset_id != issue.payer.asset_id
+            || payee_head.binding.asset_id != issue.payee.asset_id
+            || payer_head.binding.scope != prepared.request.mandate.scope
+            || payee_head.binding.scope != prepared.request.mandate.scope
+        {
+            return Err(
+                "claim authorization request is not at active canonical reserve heads".into(),
+            );
+        }
+        let mut operations = std::collections::BTreeSet::new();
+        for fill in prior_fills {
+            if fill.before_root != root
+                || fill.scope.application_binding != application
+                || fill.scope.venue_id != self.config.venue_id
+                || fill.scope.defmi_id != self.config.defmi_id
+                || fill.batch.is_none()
+                || !operations.insert(fill.operation_id)
+            {
+                return Err("claim authorization prior-fill chain is malformed".into());
+            }
+            let mut touched = false;
+            if [&fill.securities, &fill.cash]
+                .iter()
+                .any(|head| head.hold_id == payer_head.binding.hold_id)
+            {
+                payer_head = project_pending_native_head(&payer_head, fill, now)?;
+                touched = true;
+            }
+            if [&fill.securities, &fill.cash]
+                .iter()
+                .any(|head| head.hold_id == payee_head.binding.hold_id)
+            {
+                payee_head = project_pending_native_head(&payee_head, fill, now)?;
+                touched = true;
+            }
+            if !touched {
+                return Err("claim authorization prior fill advances neither participant".into());
+            }
+        }
+        if payer_head.status != "active"
+            || payee_head.status != "active"
+            || payer_head.sequence != issue.payer.sequence
+            || payee_head.sequence != issue.payee.sequence
+            || payer_head.binding.hold_id != issue.payer.reservation_id
+            || payee_head.binding.hold_id != issue.payee.reservation_id
+        {
+            return Err(
+                "claim authorization issue does not extend the certified fill chain".into(),
+            );
+        }
+        let local_head = if reservation_id == issue.payer.reservation_id {
+            &payer_head
+        } else {
+            &payee_head
+        };
+        if local_head.binding.mandate_digest != finalized.permit.authority_digest
+            || local_head.escrow_note_id != finalized.permit.escrow_note_id
+        {
+            return Err("claim authorization local head differs from its durable permit".into());
+        }
+        if client.state_root()? != root {
+            return Err("claim authorization reserve reads crossed canonical generations".into());
+        }
+        self.journal
+            .issue_claim_authorizations(issue, reservation_id, now, &order_signer)
+    }
+
     fn wallet_snapshot(&self) -> Result<serde_json::Value, String> {
         use curve25519_dalek::scalar::Scalar;
-        use ed25519_dalek::VerifyingKey;
         use qomm_defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
         use qomm_defmi::facility::QuorumAuthorizer;
         use qomm_defmi::notes::{note_nullifier, Wallet};
@@ -167,22 +338,14 @@ impl CorporateApi {
         } else {
             crate::native_wallet::recover_facility(&self.config, &client, &self.journal)?
         };
-        let authorizer = QuorumAuthorizer::new(
-            BTreeMap::from([(
-                "read-only".into(),
-                VerifyingKey::from_bytes(&self.config.issuer_public).map_err(err)?,
-            )]),
-            1,
-            1,
-            "read-only",
-        )?;
+        let authorizer = QuorumAuthorizer::read_only();
         let bridge = AvalancheNoteBridge::new(&authorizer, &client);
         let handle = Identity::from_seed(self.config.identity_seed).handle(b"defmi:oclob:v1");
         let spend = Option::<Scalar>::from(Scalar::from_canonical_bytes(
             self.config.wallet_spend_secret,
         ))
         .ok_or("invalid corporate spend key")?;
-        let wallet = Wallet::from_parts(handle.secret, spend);
+        let wallet = Wallet::from_parts(handle.secret, spend, self.config.note_opening_key()?);
         let key = Pedersen::new(b"qomm:defmi:v1");
         // Escrow note face values remain immutable after a partial fill. Their
         // nullifiers are not a current balance: the reservation head is. Reuse
@@ -265,12 +428,25 @@ pub fn serve(
     config: CorporateApiConfig,
     api: CorporateApi,
 ) -> Result<(), String> {
-    if config.clients.is_empty() || config.clients.contains(&[0; 32]) {
-        return Err("corporate API requires exact client certificate pins".into());
-    }
+    validate_operation_acl(&config)?;
     for tcp in listener.incoming().flatten() {
         // Never print raw RPC errors, order contents or private wallet data.
         let _ = receive(tcp, &tls, &config, &api);
+    }
+    Ok(())
+}
+
+fn validate_operation_acl(config: &CorporateApiConfig) -> Result<(), String> {
+    if config.clients.is_empty()
+        || config.claim_authorization_clients.is_empty()
+        || config.clients.contains(&[0; 32])
+        || config.claim_authorization_clients.contains(&[0; 32])
+        || config
+            .clients
+            .iter()
+            .any(|fingerprint| config.claim_authorization_clients.contains(fingerprint))
+    {
+        return Err("corporate API requires exact operation-scoped client certificate pins".into());
     }
     Ok(())
 }
@@ -293,16 +469,28 @@ fn receive(
         .ssl()
         .peer_certificate()
         .ok_or("corporate TLS peer absent")?;
-    if !config
-        .clients
-        .contains(&certificate_fingerprint(&peer.to_der().map_err(err)?))
-    {
+    let fingerprint = certificate_fingerprint(&peer.to_der().map_err(err)?);
+    let request: CorporateRequest = read_record(&mut stream, REQUEST_BYTES)?;
+    if !client_is_authorized(config, &request, fingerprint) {
         return Err("corporate client not authorized".into());
     }
-    let response = read_record(&mut stream, REQUEST_BYTES)
-        .and_then(|r| api.handle(r, crate::market_runtime::now()?))
+    let response = api
+        .handle(request, crate::market_runtime::now()?)
         .unwrap_or(CorporateResponse::Rejected);
     write_record(&mut stream, &response, RESPONSE_BYTES)
+}
+
+fn client_is_authorized(
+    config: &CorporateApiConfig,
+    request: &CorporateRequest,
+    fingerprint: [u8; 32],
+) -> bool {
+    match request {
+        CorporateRequest::IssueClaimAuthorizations { .. } => {
+            config.claim_authorization_clients.contains(&fingerprint)
+        }
+        _ => config.clients.contains(&fingerprint),
+    }
 }
 
 pub fn call(
@@ -340,6 +528,105 @@ pub fn call(
     write_record(&mut stream, request, REQUEST_BYTES)?;
     read_record(&mut stream, RESPONSE_BYTES)
 }
+
+pub fn request_claim_authorizations(
+    endpoint: &oclob_edge::ClaimAuthorizationEndpoint,
+    identity: &ClientIdentityConfig,
+    reservation_id: [u8; 32],
+    issue: &NativeClaimAuthorizationIssue,
+    prior_fills: &[ApplicationNoteFill],
+    expected_signer: [u8; 32],
+) -> Result<NativeParticipantClaimAuthorizations, String> {
+    endpoint.validate().map_err(err)?;
+    let response = call(
+        &MarketEndpoint {
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            server_name: endpoint.server_name.clone(),
+            certificate_sha256: endpoint.certificate_sha256,
+        },
+        identity,
+        &CorporateRequest::IssueClaimAuthorizations {
+            reservation_id,
+            issue: Box::new(issue.clone()),
+            prior_fills: prior_fills.to_vec(),
+        },
+    )?;
+    let CorporateResponse::ClaimAuthorizations { authorizations } = response else {
+        return Err("corporate claim authorization request was rejected".into());
+    };
+    authorizations.verify(issue, expected_signer)?;
+    Ok(*authorizations)
+}
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_and_claim_authorization_certificate_pins_must_be_disjoint() {
+        let shared = [7; 32];
+        let config = CorporateApiConfig {
+            endpoint: MarketEndpoint {
+                host: "127.0.0.1".into(),
+                port: 1,
+                server_name: "corporate.test".into(),
+                certificate_sha256: [8; 32],
+            },
+            clients: vec![shared],
+            claim_authorization_clients: vec![shared],
+        };
+        assert!(validate_operation_acl(&config)
+            .unwrap_err()
+            .contains("operation-scoped"));
+    }
+
+    #[test]
+    fn market_claim_certificate_has_no_owner_queue_or_wallet_authority() {
+        let owner = [6; 32];
+        let market = [7; 32];
+        let config = CorporateApiConfig {
+            endpoint: MarketEndpoint {
+                host: "127.0.0.1".into(),
+                port: 1,
+                server_name: "corporate.test".into(),
+                certificate_sha256: [8; 32],
+            },
+            clients: vec![owner],
+            claim_authorization_clients: vec![market],
+        };
+        validate_operation_acl(&config).unwrap();
+        for request in [
+            CorporateRequest::QueueStatus,
+            CorporateRequest::WalletSnapshot,
+        ] {
+            assert!(!client_is_authorized(&config, &request, market));
+            assert!(client_is_authorized(&config, &request, owner));
+        }
+        let issue = CorporateRequest::IssueClaimAuthorizations {
+            reservation_id: [1; 32],
+            issue: Box::new(NativeClaimAuthorizationIssue {
+                version: oclob_settlement::native::CLAIM_AUTHORIZATION_ISSUE_VERSION,
+                instruction_nullifier: [2; 32],
+                payer: oclob_settlement::native::NativeClaimReservation {
+                    reservation_id: [3; 32],
+                    participant_handle: [4; 32],
+                    asset_id: [5; 32],
+                    sequence: 0,
+                },
+                payee: oclob_settlement::native::NativeClaimReservation {
+                    reservation_id: [6; 32],
+                    participant_handle: [7; 32],
+                    asset_id: [8; 32],
+                    sequence: 0,
+                },
+            }),
+            prior_fills: Vec::new(),
+        };
+        assert!(client_is_authorized(&config, &issue, market));
+        assert!(!client_is_authorized(&config, &issue, owner));
+    }
 }

@@ -40,7 +40,10 @@ pub(super) fn run(
     )?;
     let client = private.chain()?;
     let scope: ApplicationReserveScope = serde_json::from_value(private.call("scope", json!({}))?)?;
-    let issuer = VerifyingKey::from_bytes(&read::<[u8; 32]>("/public/native-issuer.json")?)?;
+    let issuer: Vec<u8> = read("/public/native-issuer.json")?;
+    if issuer.len() != 1984 {
+        return Err("legacy issuer key requires PQC re-enrollment".into());
+    }
     let readonly = QuorumAuthorizer::read_only();
     let bridge = AvalancheNoteBridge::new(&readonly, &client);
     let read_node_states =
@@ -169,7 +172,9 @@ pub(super) fn run(
             receipt.manifest.retention_deadline,
             Duration::from_secs(30),
         )?;
-        let key = SigningKey::from_bytes(&load_secret_32(&coordinator.application_signing_key)?);
+        let key = SigningKey::from_bytes(&load_application_signing_seed(
+            &coordinator.application_signing_key,
+        )?);
         let plan = RoundPlan::sign(
             previous.clone(),
             vec![],

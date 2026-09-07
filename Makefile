@@ -23,6 +23,15 @@ NATIVE_CORPORATE_API ?= 0
 NATIVE_HTTP_MANIFEST ?= /research/manifests/oclob_native_http_001.json
 NATIVE_DEPTH_MANIFEST ?= /research/manifests/oclob_native_depth_001.json
 NATIVE_WORKER_MANIFEST ?= /research/manifests/oclob_native_worker_006.json
+PQC_NATIVE_RUN_ROOT ?=
+PQC_NATIVE_SKIP_SYNC ?= 0
+PQC_NATIVE_REUSE_IMAGES ?= 0
+PQC_NATIVE_CLUSTER_IMAGE ?= oclob-native-cluster:local
+PQC_NATIVE_AVALANCHE_IMAGE ?= oclob-native-avalanche:local
+PQC_NATIVE_COMPOSE_PROJECT ?=
+PQC_NATIVE_CONTRACT ?=
+PQC_NATIVE_MANIFEST ?=
+PQC_NATIVE_ARTIFACT ?=
 
 .PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
 
@@ -259,43 +268,57 @@ remote-native-e2e:
 	@case '$(NATIVE_DEFERRED):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_WORKER):$(NATIVE_EXPIRY):$(NATIVE_RECOVERY)' in 0:*|1:1:0:0:0:0) ;; *) echo 'deferred intake requires its two-fill acceptance' >&2; exit 2 ;; esac
 	@case '$(NATIVE_EXPIRY):$(NATIVE_RECOVERY):$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_WORKER)' in 0:*|1:0:0:0:0) ;; *) echo 'queued expiry uses its separate acceptance contract' >&2; exit 2 ;; esac
 	@case '$(NATIVE_MULTIFILL):$(NATIVE_WALLET):$(NATIVE_RECOVERY):$(NATIVE_FINALITY):$(NATIVE_CYCLE)' in 0:*:*:*:0|1:0:0:0:0|1:1:0:0:1) ;; *) echo 'choose one native acceptance variant' >&2; exit 2 ;; esac
+	@case '$(PQC_NATIVE_SKIP_SYNC):$(PQC_NATIVE_REUSE_IMAGES)' in 0:0|0:1|1:0|1:1) ;; *) echo 'PQC native sync/reuse flags must be 0 or 1' >&2; exit 2 ;; esac
 	@set -eu; \
-	remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
-	case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
+	if [ -n '$(PQC_NATIVE_RUN_ROOT)' ]; then \
+	  case '$(PQC_NATIVE_RUN_ROOT)' in work/pqc-astra-high-20260906/.cache/native-runs/*) ;; *) echo 'invalid dedicated native run root' >&2; exit 2 ;; esac; \
+	  remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "cd '$(PQC_NATIVE_RUN_ROOT)' && pwd -P")"; \
+	  case "$$remote_dir" in */work/pqc-astra-high-20260906/.cache/native-runs/*) ;; *) echo 'dedicated native run root escaped project cache' >&2; exit 2 ;; esac; \
+	else \
+	  remote_dir="$$(ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" 'mktemp -d /tmp/oclob-native.XXXXXX')"; \
+	  case "$$remote_dir" in /tmp/oclob-native.*) ;; *) exit 2 ;; esac; \
+	fi; \
 	printf 'Native run directory: %s\n' "$$remote_dir"; \
-	rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; \
+	if [ '$(PQC_NATIVE_SKIP_SYNC)' = 0 ]; then rsync -a --compress --exclude '.git/' --exclude 'target/' --exclude '.runtime/' --exclude 'oclob_demo/react-flow/node_modules/' ./ "$(REMOTE_TEST_HOST):$$remote_dir/oclob/"; fi; \
 	ssh $(REMOTE_TEST_SSH_OPTIONS) "$(REMOTE_TEST_HOST)" "set -eu; \
-	  runtime='$$remote_dir/runtime'; install -d -m 0770 \"\$$runtime\" \"\$$runtime/state\" \"\$$runtime/handoff\" \"\$$runtime/out\"; \
+	  runtime='$$remote_dir/runtime'; install -d -m 0770 \"\$$runtime\" \"\$$runtime/state\" \"\$$runtime/handoff\" \"\$$runtime/out\" \"\$$runtime/out/tmp\"; \
 	  for party in 0 1 2 3 4 5 6; do install -d -m 0770 \"\$$runtime/state/node-\$$party\"; done; \
 	  export OCLOB_RUNTIME_DIR=\"\$$runtime\" OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_UID=10001 OCLOB_GID=\$$(id -g); \
-	  export OCLOB_CLUSTER_IMAGE='oclob-native-cluster:local' OCLOB_AVALANCHE_IMAGE='oclob-native-avalanche:local'; \
-	  export COMPOSE_PROJECT_NAME='oclob-native-$$(date +%s)'; \
+	  export OCLOB_CLUSTER_IMAGE='$(PQC_NATIVE_CLUSTER_IMAGE)' OCLOB_AVALANCHE_IMAGE='$(PQC_NATIVE_AVALANCHE_IMAGE)'; \
+	  if [ -n '$(PQC_NATIVE_COMPOSE_PROJECT)' ]; then export COMPOSE_PROJECT_NAME='$(PQC_NATIVE_COMPOSE_PROJECT)'; else export COMPOSE_PROJECT_NAME='oclob-native-$$(date +%s)'; fi; \
 	  if [ '$(NATIVE_RECOVERY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_recovery_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_recovery_001.json; fi; \
 	  export OCLOB_NATIVE_WALLET='$(NATIVE_WALLET)'; \
 	  if [ '$(NATIVE_MULTIFILL)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_multifill_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_multifill_002.json; fi; \
 	  if [ '$(NATIVE_WALLET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_wallet_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_wallet_003.json; fi; \
-	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_002.json; fi; \
+	  if [ '$(NATIVE_FINALITY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_finality_v2_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_finality_003.json; fi; \
 	  if [ '$(NATIVE_CYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_cycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_cycle_006.json; fi; \
-	  if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_lifecycle_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_lifecycle_004.json; fi; \
+	  if [ '$(NATIVE_LIFECYCLE)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_lifecycle_v2_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_lifecycle_005.json; fi; \
 	  if [ '$(NATIVE_WORKER)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_worker_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_WORKER_MANIFEST)'; fi; \
 	  if [ '$(NATIVE_EXPIRY)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_expiry_fenced_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_expiry_003.json; fi; \
 	  if [ '$(NATIVE_DEFERRED)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_deferred_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_deferred_003.json; fi; \
-	  if [ '$(NATIVE_MARKET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_market_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_market_002.json OCLOB_MARKET_CONFIG=/public/market.json; fi; \
+	  if [ '$(NATIVE_MARKET)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_market_v2_contract.json OCLOB_NATIVE_MANIFEST=/research/manifests/oclob_native_market_003.json OCLOB_MARKET_CONFIG=/public/market.json; fi; \
 	  if [ '$(NATIVE_DEPTH)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_depth_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_DEPTH_MANIFEST)'; fi; \
 	  if [ '$(NATIVE_HTTP)' = 1 ]; then export OCLOB_NATIVE_CONTRACT=/research/oclob_native_http_contract.json OCLOB_NATIVE_MANIFEST='$(NATIVE_HTTP_MANIFEST)'; fi; \
-	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml'; \
+	  if [ -n '$(PQC_NATIVE_CONTRACT)' ]; then export OCLOB_NATIVE_CONTRACT='$(PQC_NATIVE_CONTRACT)'; fi; \
+	  if [ -n '$(PQC_NATIVE_MANIFEST)' ]; then export OCLOB_NATIVE_MANIFEST='$(PQC_NATIVE_MANIFEST)'; fi; \
+	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml -f $$remote_dir/oclob/deploy/docker-compose.native.yml -f $$remote_dir/oclob/deploy/docker-compose.claim-authorization.yml'; \
 	  if [ '$(NATIVE_BROWSER)' = 1 ]; then compose=\"\$$compose -f $$remote_dir/oclob/deploy/docker-compose.native-browser.yml\"; fi; \
 	  if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then compose=\"\$$compose -f $$remote_dir/oclob/deploy/docker-compose.corporate-api.yml\"; fi; \
 	  cleanup() { \$$compose logs --no-color > '$$remote_dir/containers.log' 2>&1 || true; \$$compose down --remove-orphans >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT INT TERM; \
-	  docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-cluster -t \"\$$OCLOB_CLUSTER_IMAGE\" '$$remote_dir/oclob'; \
-	  docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-avalanche-acceptance -t \"\$$OCLOB_AVALANCHE_IMAGE\" '$$remote_dir/oclob'; \
+	  if [ '$(PQC_NATIVE_REUSE_IMAGES)' = 0 ]; then \
+	    docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-cluster -t \"\$$OCLOB_CLUSTER_IMAGE\" '$$remote_dir/oclob'; \
+	    docker build --network host -f '$$remote_dir/oclob/docker/Dockerfile' --target oclob-avalanche-acceptance -t \"\$$OCLOB_AVALANCHE_IMAGE\" '$$remote_dir/oclob'; \
+	  else \
+	    docker image inspect \"\$$OCLOB_CLUSTER_IMAGE\" \"\$$OCLOB_AVALANCHE_IMAGE\" >/dev/null; \
+	  fi; \
 	  docker run --rm --user \"\$$OCLOB_UID:\$$OCLOB_GID\" --mount type=bind,src=\"\$$runtime\",dst=/runtime \"\$$OCLOB_CLUSTER_IMAGE\" oclob-lab-provision --out /runtime/cluster; \
 	  \$$compose config --quiet; \
 	  \$$compose up -d --wait --wait-timeout 180 node-0 node-1 node-2 node-3 node-4 node-5 node-6; \
 	  \$$compose run --rm native-bootstrap; \
 	  \$$compose up -d --wait --wait-timeout 600 defmi; \
 	  defmi_container=\$$(\$$compose ps -q defmi); [ -n \"\$$defmi_container\" ]; \
+	  \$$compose up -d --wait maker-api taker-api; \
 	  if [ '$(NATIVE_MARKET)' = 1 ]; then \
 	    \$$compose run --rm market-worker oclob-market-worker --initialize; \
 	    export OCLOB_MARKET_CRASH_AFTER_CANONICAL=1; \
@@ -473,6 +496,7 @@ remote-native-e2e:
 	if [ '$(NATIVE_DEPTH)' = 1 ]; then artifact=artifacts/oclob_native_depth.json; fi; \
 	if [ '$(NATIVE_HTTP)' = 1 ]; then artifact=artifacts/oclob_native_http.json; fi; \
 	if [ '$(NATIVE_CORPORATE_API)' = 1 ]; then artifact=artifacts/oclob_native_corporate_client.json; fi; \
+	if [ -n '$(PQC_NATIVE_ARTIFACT)' ]; then artifact='$(PQC_NATIVE_ARTIFACT)'; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
 

@@ -5,8 +5,8 @@
 //! authorization rules; no QOMM order data crosses this interface.
 
 use crate::executor::{NodeExecutionReceipt, PartyExecutor, RoundPlan};
-use crate::{IngestOutcome, NodeShareStore, NodeStoreStatus, PrivateStateFinality};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use crate::{NodeShareStore, NodeStoreStatus, PrivateStateFinality};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::{
     CapabilityKeyShare, EdgeOrderManifest, SealedCapabilityKeyShare, SealedPartyShare,
@@ -31,14 +31,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-pub const REQUEST_RECORD_BYTES: usize = 64 * 1024;
-pub const RESPONSE_RECORD_BYTES: usize = 16 * 1024;
-const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ1";
-const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS1";
-const ADMISSION_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-ADMISSION-RECEIPT:v1";
-const CAPABILITY_RELEASE_DOMAIN: &[u8] = b"OCLOB:NODE-CAPABILITY-RELEASE:v1";
-const PRIVATE_STATE_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-PRIVATE-STATE-RECEIPT:v1";
-const RECORD_VERSION: u16 = 3;
+pub const REQUEST_RECORD_BYTES: usize = 512 * 1024;
+pub const RESPONSE_RECORD_BYTES: usize = 256 * 1024;
+const REQUEST_MAGIC: &[u8; 8] = b"OCLOBRQ2";
+const RESPONSE_MAGIC: &[u8; 8] = b"OCLOBRS2";
+const ADMISSION_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-ADMISSION-RECEIPT:v2";
+const CAPABILITY_RELEASE_DOMAIN: &[u8] = b"OCLOB:NODE-CAPABILITY-RELEASE:v2";
+const PRIVATE_STATE_RECEIPT_DOMAIN: &[u8] = b"OCLOB:NODE-PRIVATE-STATE-RECEIPT:v2";
+const RECORD_VERSION: u16 = 4;
 const RECORD_HEADER_BYTES: usize = 8 + 2 + 4 + 32;
 const MAX_TLS_KEY_BYTES: u64 = 128 * 1024;
 
@@ -188,7 +188,11 @@ impl NodeAdmissionReceipt {
             signer: key.verifying_key().to_bytes(),
             signature: Vec::new(),
         };
-        receipt.signature = key.sign(&receipt.signature_body()).to_bytes().to_vec();
+        receipt.signature = key
+            .try_sign(&receipt.signature_body())
+            .map_err(|_| NetworkError::Protocol)?
+            .to_bytes()
+            .to_vec();
         Ok(receipt)
     }
 
@@ -267,7 +271,7 @@ impl std::fmt::Debug for NodeCapabilityRelease {
 }
 
 impl NodeCapabilityRelease {
-    fn sign(
+    pub(crate) fn sign(
         party: u16,
         order_commitment: OrderCommitment,
         plan: &RoundPlan,
@@ -310,7 +314,11 @@ impl NodeCapabilityRelease {
             signer: key.verifying_key().to_bytes(),
             signature: Vec::new(),
         };
-        release.signature = key.sign(&release.signature_body()).to_bytes().to_vec();
+        release.signature = key
+            .try_sign(&release.signature_body())
+            .map_err(|_| NetworkError::Protocol)?
+            .to_bytes()
+            .to_vec();
         Ok(release)
     }
 
@@ -415,7 +423,7 @@ impl NodePrivateStateReceipt {
             .map_err(|_| NetworkError::Protocol)
     }
     #[allow(clippy::too_many_arguments)]
-    fn sign(
+    pub(crate) fn sign(
         party: u16,
         execution: &NodeExecutionReceipt,
         finality: &PrivateStateFinality,
@@ -448,7 +456,11 @@ impl NodePrivateStateReceipt {
             signer: key.verifying_key().to_bytes(),
             signature: Vec::new(),
         };
-        receipt.signature = key.sign(&receipt.signature_body()).to_bytes().to_vec();
+        receipt.signature = key
+            .try_sign(&receipt.signature_body())
+            .map_err(|_| NetworkError::Protocol)?
+            .to_bytes()
+            .to_vec();
         Ok(receipt)
     }
 
@@ -605,6 +617,53 @@ impl NodeRpcServer {
         {
             return Err(NetworkError::Configuration);
         }
+        for record in store.state.records.values() {
+            if let Some(receipt) = &record.admission_receipt {
+                let capability = record
+                    .sealed_capability_key_share
+                    .as_ref()
+                    .ok_or(NetworkError::State)?;
+                receipt.verify(
+                    &record.manifest,
+                    party,
+                    record.sealed.wire_digest(),
+                    capability.wire_digest(),
+                    &receipt_signing_key.verifying_key(),
+                )?;
+                if receipt.generation > store.state.generation {
+                    return Err(NetworkError::State);
+                }
+            }
+        }
+        if store.state.completed_rounds.values().any(|receipt| {
+            receipt.signer != receipt_signing_key.verifying_key().to_bytes()
+                || !receipt.verify_stored_signature()
+        }) {
+            return Err(NetworkError::State);
+        }
+        for (round, finalization) in &store.state.finalized_private_rounds {
+            let execution = store
+                .state
+                .completed_rounds
+                .get(round)
+                .ok_or(NetworkError::State)?;
+            let receipt = finalization
+                .private_state_receipt
+                .as_ref()
+                .ok_or(NetworkError::State)?;
+            receipt.verify(
+                execution,
+                &PrivateStateFinality {
+                    round_id: execution.round_id,
+                    public_output_sha256: finalization.public_output_sha256,
+                    transition_digest: finalization.transition_digest,
+                    canonical_receipt_digest: finalization.canonical_receipt_digest,
+                    canonical_height: finalization.canonical_height,
+                },
+                party,
+                &receipt_signing_key.verifying_key(),
+            )?;
+        }
         let mut approved = BTreeMap::new();
         for principal in principals {
             principal.validate()?;
@@ -744,7 +803,7 @@ pub struct ClusterPublicConfig {
 
 impl ClusterPublicConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 4
+        if self.version != 5
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
@@ -808,7 +867,7 @@ pub struct ClientIdentityConfig {
 
 impl ClientIdentityConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 1
+        if self.version != 2
             || self.tls_certificate.as_os_str().is_empty()
             || self.tls_private_key.as_os_str().is_empty()
             || self.tls_ca.as_os_str().is_empty()
@@ -1059,7 +1118,7 @@ impl NodeRpcClient {
         let record = encode_record::<_, REQUEST_RECORD_BYTES>(REQUEST_MAGIC, &request)?;
         stream.write_all(&record)?;
         stream.flush()?;
-        let mut response = [0_u8; RESPONSE_RECORD_BYTES];
+        let mut response = vec![0_u8; RESPONSE_RECORD_BYTES];
         stream.read_exact(&mut response)?;
         decode_record(RESPONSE_MAGIC, &response)
     }
@@ -1089,7 +1148,7 @@ fn serve_connection(
         let principal = principals
             .get(&fingerprint)
             .ok_or(NetworkError::Unauthorized)?;
-        let mut request = [0_u8; REQUEST_RECORD_BYTES];
+        let mut request = vec![0_u8; REQUEST_RECORD_BYTES];
         stream.read_exact(&mut request)?;
         let request: NodeRequest = decode_record(REQUEST_MAGIC, &request)?;
         let response = dispatch(principal, request, &runtime);
@@ -1128,32 +1187,15 @@ fn dispatch_checked(
         } => {
             require_role(principal, PeerRole::Participant)?;
             let manifest = *manifest;
-            let order_share_digest = sealed.wire_digest();
-            let capability_key_share_digest = sealed_capability_key_share.wire_digest();
-            let (generation, status) = {
+            let receipt = {
                 let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
-                let outcome = store
+                store
                     .ingest(manifest.clone(), sealed, sealed_capability_key_share, now)
                     .map_err(|_| NetworkError::Admission)?;
-                let status = store.status().map_err(|_| NetworkError::State)?;
-                let generation = match outcome {
-                    IngestOutcome::Stored { generation }
-                    | IngestOutcome::AlreadyPresent { generation } => generation,
-                };
-                (generation, status)
+                store
+                    .admission_receipt(&manifest, &runtime.receipt_signing_key)
+                    .map_err(|_| NetworkError::State)?
             };
-            if generation != status.generation {
-                return Err(NetworkError::State);
-            }
-            let receipt = NodeAdmissionReceipt::sign(
-                status.party,
-                &manifest,
-                order_share_digest,
-                capability_key_share_digest,
-                generation,
-                status.state_digest,
-                &runtime.receipt_signing_key,
-            )?;
             Ok(NodeResponse::Ingested {
                 receipt: Box::new(receipt),
             })
@@ -1196,7 +1238,8 @@ fn dispatch_checked(
                     statement_digest,
                     signature: runtime
                         .receipt_signing_key
-                        .sign(&statement_digest)
+                        .try_sign(&statement_digest)
+                        .map_err(|_| NetworkError::Ordering)?
                         .to_bytes()
                         .to_vec(),
                 },
@@ -1303,28 +1346,12 @@ fn dispatch_checked(
             let plan = *plan;
             plan.verify_ordering(runtime.ordering_policy, &runtime.ordering_keys, now)
                 .map_err(|_| NetworkError::Plan)?;
-            let (execution, generation, status) = {
+            let receipt = {
                 let mut store = runtime.store.lock().map_err(|_| NetworkError::State)?;
-                let execution = store
-                    .completed_round(plan.round_id)
-                    .ok_or(NetworkError::Execution)?;
-                let generation = store
-                    .finalize_private_round(&plan, &finality)
-                    .map_err(|_| NetworkError::State)?;
-                let status = store.status().map_err(|_| NetworkError::State)?;
-                (execution, generation, status)
+                store
+                    .finalize_private_round(&plan, &finality, &runtime.receipt_signing_key)
+                    .map_err(|_| NetworkError::State)?
             };
-            if generation != status.generation {
-                return Err(NetworkError::State);
-            }
-            let receipt = NodePrivateStateReceipt::sign(
-                status.party,
-                &execution,
-                &finality,
-                generation,
-                status.state_digest,
-                &runtime.receipt_signing_key,
-            )?;
             Ok(NodeResponse::PrivateStateFinalized {
                 receipt: Box::new(receipt),
             })
@@ -1419,12 +1446,12 @@ fn require_role(principal: &Principal, expected: PeerRole) -> Result<(), Network
 fn encode_record<T: Serialize, const N: usize>(
     magic: &[u8; 8],
     message: &T,
-) -> Result<[u8; N], NetworkError> {
+) -> Result<Vec<u8>, NetworkError> {
     let payload = serde_json::to_vec(message).map_err(|_| NetworkError::Protocol)?;
     if N <= RECORD_HEADER_BYTES || payload.len() > N - RECORD_HEADER_BYTES {
         return Err(NetworkError::RecordSize);
     }
-    let mut record = [0_u8; N];
+    let mut record = vec![0_u8; N];
     record[..8].copy_from_slice(magic);
     record[8..10].copy_from_slice(&RECORD_VERSION.to_be_bytes());
     record[10..14].copy_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1487,9 +1514,15 @@ pub(crate) fn load_owner_private_key(path: &Path) -> Result<PKey<Private>, Netwo
         .map_err(|_| NetworkError::UnsafeKey)
 }
 
-/// Load a raw 32-byte application key through the same owner-only file gate
+/// Load a raw 32-byte encryption key through the same owner-only file gate
 /// used for TLS keys. The bytes are never formatted or returned by an API.
 pub fn load_secret_32(path: impl AsRef<Path>) -> Result<Digest32, NetworkError> {
+    load_secret_array(path)
+}
+
+/// Restore both independently provisioned application signing seeds. Legacy
+/// 32-byte files fail closed and are never regenerated by this loader.
+pub fn load_application_signing_seed(path: impl AsRef<Path>) -> Result<[u8; 64], NetworkError> {
     load_secret_array(path)
 }
 
@@ -1592,7 +1625,7 @@ impl NetworkError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use oclob_core::{
         MpcBatchResult, MpcSlotResult, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS,
     };
@@ -1609,6 +1642,33 @@ mod tests {
     use openssl::x509::{X509NameBuilder, X509};
     use std::fs::OpenOptions;
     use std::os::unix::fs::OpenOptionsExt;
+
+    #[test]
+    fn application_seed_restore_requires_both_independent_halves_without_regeneration() {
+        let root =
+            std::env::temp_dir().join(format!("oclob-application-key-{}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("application-key.raw");
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        file.write_all(key.as_bytes()).unwrap();
+        drop(file);
+        let restored = SigningKey::from_bytes(&load_application_signing_seed(&path).unwrap());
+        assert_eq!(restored.verifying_key(), key.verifying_key());
+        let old = vec![23; 32];
+        fs::write(&path, &old).unwrap();
+        assert!(load_application_signing_seed(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        let missing = root.join("missing.raw");
+        assert!(load_application_signing_seed(&missing).is_err());
+        assert!(!missing.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     struct Files {
         root: PathBuf,
@@ -1827,7 +1887,7 @@ mod tests {
             quote_asset: [2; 32],
         };
         let identity = ClientIdentityConfig {
-            version: 1,
+            version: 2,
             tls_certificate: files.participant_cert.clone(),
             tls_private_key: files.participant_key.clone(),
             tls_ca: files.ca.clone(),
@@ -1930,16 +1990,16 @@ mod tests {
             std::array::from_fn(|_| NodeDecryptionKey::generate().unwrap());
         let public_keys: [NodeEncryptionKey; MPC_PARTIES] =
             std::array::from_fn(|party| node_keys[party].public_key().unwrap());
-        let participant_signer = SigningKey::from_bytes(&[7; 32]);
-        let one_time_order_signer = SigningKey::from_bytes(&[10; 32]);
-        let coordinator_signer = SigningKey::from_bytes(&[8; 32]);
-        let receipt_signer = SigningKey::from_bytes(&[9; 32]);
+        let participant_signer = SigningKey::from_bytes(&[7; 64]);
+        let one_time_order_signer = SigningKey::from_bytes(&[10; 64]);
+        let coordinator_signer = SigningKey::from_bytes(&[8; 64]);
+        let receipt_signer = SigningKey::from_bytes(&[9; 64]);
         let ordering_keys = (1_u16..=7)
             .map(|node_id| {
                 let key = if node_id == 1 {
                     receipt_signer.verifying_key()
                 } else {
-                    SigningKey::from_bytes(&[node_id as u8 + 20; 32]).verifying_key()
+                    SigningKey::from_bytes(&[node_id as u8 + 20; 64]).verifying_key()
                 };
                 (node_id, key)
             })
@@ -2042,7 +2102,7 @@ mod tests {
         assert_eq!(first.generation, 1);
         assert_eq!(
             participant
-                .ingest(manifest, delivery, capability_key_delivery)
+                .ingest(manifest.clone(), delivery, capability_key_delivery)
                 .unwrap(),
             first
         );
@@ -2058,6 +2118,37 @@ mod tests {
             .unwrap();
         assert_eq!(vote.node_id, 1);
         assert!(participant.status().is_err());
+        drop(server);
+        let mut reopened = NodeShareStore::open(&store_path, 0, node_keys[0].clone()).unwrap();
+        let saved = fs::read(&store_path).unwrap();
+        assert!(reopened.status().unwrap().generation > first.generation);
+        assert_eq!(
+            reopened
+                .admission_receipt(&manifest, &receipt_signer)
+                .unwrap(),
+            first
+        );
+        assert_eq!(fs::read(&store_path).unwrap(), saved);
+        assert!(reopened
+            .admission_receipt(&manifest, &SigningKey::from_bytes(&[99; 64]))
+            .is_err());
+        for offset in [14 + 1984, 14 + 1984 + 64] {
+            let mut corrupt = first.clone();
+            corrupt.signature[offset] ^= 1;
+            reopened
+                .state
+                .records
+                .get_mut(&manifest.commitment.hex())
+                .unwrap()
+                .admission_receipt = Some(corrupt);
+            reopened.persist().unwrap();
+            let encoded = fs::read(&store_path).unwrap();
+            let mut restored = NodeShareStore::open(&store_path, 0, node_keys[0].clone()).unwrap();
+            assert!(restored
+                .admission_receipt(&manifest, &receipt_signer)
+                .is_err());
+            assert_eq!(fs::read(&store_path).unwrap(), encoded);
+        }
     }
 
     #[test]
@@ -2068,10 +2159,10 @@ mod tests {
             std::array::from_fn(|_| NodeDecryptionKey::generate().unwrap());
         let public_keys: [NodeEncryptionKey; MPC_PARTIES] =
             std::array::from_fn(|party| node_keys[party].public_key().unwrap());
-        let participant_signer = SigningKey::from_bytes(&[51; 32]);
-        let coordinator_signer = SigningKey::from_bytes(&[52; 32]);
-        let settlement_signer = SigningKey::from_bytes(&[53; 32]);
-        let receipt_signer = SigningKey::from_bytes(&[1; 32]);
+        let participant_signer = SigningKey::from_bytes(&[51; 64]);
+        let coordinator_signer = SigningKey::from_bytes(&[52; 64]);
+        let settlement_signer = SigningKey::from_bytes(&[53; 64]);
+        let receipt_signer = SigningKey::from_bytes(&[1; 64]);
         let order = SecretOrder::new(
             "JGB10Y-JPY",
             Side::Sell,
@@ -2126,23 +2217,26 @@ mod tests {
             .unwrap();
         let generation = store.status().unwrap().generation;
         store
-            .record_completed_round(NodeExecutionReceipt {
-                version: 1,
-                party: 0,
-                round_id: plan.round_id,
-                generation,
-                round_commitment: [59; 32],
-                program_sha256: [60; 32],
-                artifact_sha256: [61; 32],
-                private_parent_digest: [62; 32],
-                private_state_sha256: [63; 32],
-                public_output_sha256: output,
-                result,
-                execution_ms: 1,
-                depth_attestation: None,
-                signer: receipt_signer.verifying_key().to_bytes(),
-                signature: vec![62; 64],
-            })
+            .record_completed_round(
+                NodeExecutionReceipt {
+                    version: 2,
+                    party: 0,
+                    round_id: plan.round_id,
+                    generation,
+                    round_commitment: [59; 32],
+                    program_sha256: [60; 32],
+                    artifact_sha256: [61; 32],
+                    private_parent_digest: [62; 32],
+                    private_state_sha256: [63; 32],
+                    public_output_sha256: output,
+                    result,
+                    execution_ms: 1,
+                    depth_attestation: None,
+                    signer: receipt_signer.verifying_key().to_bytes(),
+                    signature: vec![62; 64],
+                }
+                .signed_fixture(&receipt_signer),
+            )
             .unwrap();
         let ordering_keys = committee.verifying_keys();
         let principals = vec![

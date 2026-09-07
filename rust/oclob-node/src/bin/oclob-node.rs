@@ -1,11 +1,11 @@
 //! Standalone OCLOB MPC node. One process owns one share and one MP-SPDZ party.
 
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_edge::NodeDecryptionKey;
 use oclob_node::executor::PartyExecutor;
 use oclob_node::network::{
-    load_hybrid_kem_seed, load_secret_32, server_tls_context, ClusterPublicConfig, NodeRpcServer,
-    Principal,
+    load_application_signing_seed, load_hybrid_kem_seed, load_secret_32, server_tls_context,
+    ClusterPublicConfig, NodeRpcServer, Principal,
 };
 use oclob_node::proof_network::{ProofRpcServer, ProofRpcServerConfig};
 use oclob_node::NodeShareStore;
@@ -24,6 +24,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Config {
+    recipient_opening_keys: Vec<qomm_transport::proof_party::RecipientOpeningKey>,
     version: u16,
     party: u16,
     listen: SocketAddr,
@@ -50,6 +51,9 @@ struct Config {
     trusted_defmi_id: String,
     trusted_reservation_venue_id: String,
     trusted_defmi_receipt_public: String,
+    /// Optional enrollment for the separate QOMM typed pre-trade ACK protocol.
+    #[serde(default)]
+    qomm_pretrade_ack_fingerprint: Option<String>,
     #[serde(default)]
     native_finality_endpoint: Option<NativeFinalityEndpoint>,
 }
@@ -72,7 +76,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let path = parse_config_path()?;
     let config: Config = read_json(&path)?;
-    if config.version != 3 {
+    if config.version != 4 {
         return Err("unsupported node configuration version".into());
     }
     let share_key = NodeDecryptionKey::from_raw(
@@ -80,7 +84,8 @@ fn run() -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     let receipt_key = SigningKey::from_bytes(
-        &load_secret_32(&config.receipt_signing_key).map_err(|error| error.to_string())?,
+        &load_application_signing_seed(&config.receipt_signing_key)
+            .map_err(|error| error.to_string())?,
     );
     let cluster: ClusterPublicConfig = read_json(&config.cluster_public_config)?;
     cluster.validate().map_err(|error| error.to_string())?;
@@ -104,16 +109,16 @@ fn run() -> Result<(), String> {
         &config.trusted_reservation_venue_id,
         "trusted reservation venue id",
     )?;
-    let trusted_defmi_receipt_public = parse_hex_32(
-        &config.trusted_defmi_receipt_public,
-        "trusted DeFMI receipt public key",
-    )?;
+    let trusted_defmi_receipt_public = hex::decode(&config.trusted_defmi_receipt_public)
+        .map_err(|_| "malformed hybrid issuer key")?;
+    if trusted_defmi_receipt_public.len() != 1984 {
+        return Err("legacy issuer key requires PQC re-enrollment".into());
+    }
     store
         .pin_reservation_trust(
             trusted_venue_id,
             trusted_defmi_id,
-            ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
-                .map_err(|_| "trusted DeFMI receipt public key is malformed")?,
+            trusted_defmi_receipt_public.clone(),
         )
         .map_err(|error| error.to_string())?;
     let executor = PartyExecutor::open(
@@ -152,7 +157,21 @@ fn run() -> Result<(), String> {
         Duration::from_millis(config.minimum_response_millis),
     )
     .map_err(|error| error.to_string())?;
+    let qomm_pretrade_ack_fingerprint = config
+        .qomm_pretrade_ack_fingerprint
+        .as_deref()
+        .map(|encoded| -> Result<[u8; 32], String> {
+            let bytes: [u8; 32] = hex::decode(encoded)
+                .map_err(|_| "QOMM pre-trade ACK fingerprint is not hexadecimal".to_owned())?
+                .try_into()
+                .map_err(|_| "QOMM pre-trade ACK fingerprint must be 32 bytes".to_owned())?;
+            qomm_transport::application_crypto::VerifyingKey::from_bytes(&bytes)
+                .map_err(|error| error.to_string())?;
+            Ok(bytes)
+        })
+        .transpose()?;
     let proof_party = ProofParty::new(ProofPartyConfig {
+        recipient_opening_keys: config.recipient_opening_keys.clone(),
         node: config.party,
         allowed_root: config.mpc_work_root.join("private-state"),
         state_file: config.proof_state_file,
@@ -168,7 +187,7 @@ fn run() -> Result<(), String> {
         complete_quote_proof: false,
         quote_eligibility_bits: 34,
         quote_span_bits: 32,
-        trusted_defmi_receipt_public: Some(trusted_defmi_receipt_public),
+        trusted_defmi_receipt_public: qomm_pretrade_ack_fingerprint,
         allow_health_signing: false,
     })?;
     let native_finality = config
@@ -200,8 +219,7 @@ fn run() -> Result<(), String> {
             native_trust: Some(oclob_settlement::native::NativeReservationTrust {
                 venue_id: trusted_venue_id,
                 defmi_id: trusted_defmi_id,
-                issuer: ed25519_dalek::VerifyingKey::from_bytes(&trusted_defmi_receipt_public)
-                    .map_err(|_| "trusted reservation issuer key is malformed")?,
+                issuer: trusted_defmi_receipt_public.clone(),
             }),
             native_finality,
             max_connections: config.max_connections,

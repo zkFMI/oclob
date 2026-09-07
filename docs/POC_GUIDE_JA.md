@@ -69,7 +69,7 @@ PoC責任者は、最低でも次の担当を分けます。同じ人が兼務�
 ## 4. ソースと依存の固定
 
 ```bash
-git clone https://github.com/shukob/oclob.git
+git clone https://github.com/zkFMI/oclob.git
 cd oclob
 git rev-parse HEAD
 ```

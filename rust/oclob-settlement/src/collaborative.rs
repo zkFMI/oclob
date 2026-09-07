@@ -1004,35 +1004,31 @@ fn prove_dvp<T: ProofPartyRpc>(
 }
 
 fn opening_share(value: &Value) -> Result<EncryptedOpeningShare, String> {
-    let decode32 = |name: &str| -> Result<[u8; 32], String> {
-        hex::decode(
+    let party = value
+        .get("party")
+        .and_then(Value::as_u64)
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("opening party is invalid")?;
+    let share = EncryptedOpeningShare {
+        party,
+        recipient_public: serde_json::from_value(
             value
-                .get(name)
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("proof node omitted opening {name}"))?,
+                .get("recipient_public")
+                .cloned()
+                .ok_or("opening recipient public key is absent")?,
         )
-        .map_err(|_| format!("proof node opening {name} is not hexadecimal"))?
-        .try_into()
-        .map_err(|_| format!("proof node opening {name} is not 32 bytes"))
+        .map_err(|e| e.to_string())?,
+        sealed: serde_json::from_value(
+            value
+                .get("sealed")
+                .cloned()
+                .ok_or("authenticated opening payload is absent")?,
+        )
+        .map_err(|e| e.to_string())?,
+        blinding_adjustment: Scalar::ZERO,
     };
-    Ok(EncryptedOpeningShare {
-        party: value
-            .get("party")
-            .and_then(Value::as_u64)
-            .and_then(|party| usize::try_from(party).ok())
-            .ok_or_else(|| "proof node opening party is invalid".to_owned())?,
-        ephemeral: CompressedRistretto(decode32("ephemeral")?)
-            .decompress()
-            .ok_or_else(|| "proof node opening ephemeral is not canonical".to_owned())?,
-        masked_value: Option::<Scalar>::from(Scalar::from_canonical_bytes(decode32(
-            "masked_value",
-        )?))
-        .ok_or_else(|| "proof node opening value mask is not canonical".to_owned())?,
-        masked_blinding: Option::<Scalar>::from(Scalar::from_canonical_bytes(decode32(
-            "masked_blinding",
-        )?))
-        .ok_or_else(|| "proof node opening blinding mask is not canonical".to_owned())?,
-    })
+    share.validate()?;
+    Ok(share)
 }
 
 fn collect_opening<T: ProofPartyRpc>(

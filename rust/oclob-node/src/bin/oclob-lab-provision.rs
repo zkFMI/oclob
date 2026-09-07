@@ -4,8 +4,10 @@
 //! their private keys independently and submit CSRs to an offline authority.
 
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
-use oclob_edge::{NodeDecryptionKey, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD};
+use oclob_core::application_crypto::SigningKey;
+use oclob_edge::{
+    ClaimAuthorizationEndpoint, NodeDecryptionKey, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD,
+};
 use oclob_node::corporate::CorporateNativeConfig;
 use oclob_node::network::{
     certificate_fingerprint, ClientIdentityConfig, ClusterNodePublic, ClusterPublicConfig,
@@ -28,6 +30,7 @@ use qomm_zkpi::handles::Identity;
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -134,6 +137,8 @@ fn provision(root: &Path) -> Result<(), String> {
     )?;
     let maker_fingerprint = certificate_fingerprint(&maker_cert.to_der().map_err(err)?);
     let taker_fingerprint = certificate_fingerprint(&taker_cert.to_der().map_err(err)?);
+    let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
+    let mut claim_authorization_endpoints = BTreeMap::new();
     for (directory, role, fingerprint) in [
         (&maker_dir, "maker", maker_fingerprint),
         (&taker_dir, "taker", taker_fingerprint),
@@ -148,22 +153,33 @@ fn provision(root: &Path) -> Result<(), String> {
             &directory.join("api-tls.pem"),
             &certificate.to_pem().map_err(err)?,
         )?;
+        let certificate_sha256 = certificate_fingerprint(&certificate.to_der().map_err(err)?);
+        let endpoint = oclob_node::market_network::MarketEndpoint {
+            host: hostname.clone(),
+            port: 9890,
+            server_name: hostname.clone(),
+            certificate_sha256,
+        };
         let api = oclob_node::corporate_api::CorporateApiConfig {
-            endpoint: oclob_node::market_network::MarketEndpoint {
+            endpoint,
+            clients: vec![fingerprint],
+            claim_authorization_clients: vec![coordinator_fingerprint],
+        };
+        claim_authorization_endpoints.insert(
+            role,
+            ClaimAuthorizationEndpoint {
                 host: hostname.clone(),
                 port: 9890,
                 server_name: hostname,
-                certificate_sha256: certificate_fingerprint(&certificate.to_der().map_err(err)?),
+                certificate_sha256,
             },
-            clients: vec![fingerprint],
-        };
+        );
         write_json(
             &public_dir.join(format!("{role}-api.json")),
             &serde_json::to_value(api).map_err(err)?,
             0o644,
         )?;
     }
-    let coordinator_fingerprint = certificate_fingerprint(&coordinator_cert.to_der().map_err(err)?);
     let settlement_fingerprint = certificate_fingerprint(&settlement_cert.to_der().map_err(err)?);
     let (market_tls_key, market_cert) =
         issue_leaf(&ca_key, &ca_cert, "oclob-market", &["oclob-market"], true)?;
@@ -242,13 +258,19 @@ fn provision(root: &Path) -> Result<(), String> {
         },
     ];
     let native_receipt_key = SigningKey::generate(&mut rand::rngs::OsRng);
+    let mut private_tag_key = zeroize::Zeroizing::new([0; 32]);
+    rand::rngs::OsRng.fill_bytes(private_tag_key.as_mut());
+    write_private(
+        &defmi_dir.join("admission-tag-key.raw"),
+        private_tag_key.as_ref(),
+    )?;
     write_private(
         &defmi_dir.join("receipt-key.raw"),
         &native_receipt_key.to_bytes(),
     )?;
     write_json(
         &public_dir.join("native-issuer.json"),
-        &json!(native_receipt_key.verifying_key().to_bytes()),
+        &json!(native_receipt_key.hybrid_public_key()),
         0o644,
     )?;
     let (defmi_tls_key, defmi_tls_cert) =
@@ -266,9 +288,10 @@ fn provision(root: &Path) -> Result<(), String> {
     let (_, issuer) = oclob_dekyx::deterministic_demo_environment(MARKET).map_err(err)?;
     let mut funding = Vec::new();
     let mut corporate_journals = Vec::new();
-    for (directory, seed, label, asset, amount) in [
+    for (directory, role, seed, label, asset, amount) in [
         (
             &maker_dir,
+            "maker",
             11,
             "distributed-maker",
             oclob_settlement::canonical_securities_asset_id(MARKET),
@@ -276,6 +299,7 @@ fn provision(root: &Path) -> Result<(), String> {
         ),
         (
             &taker_dir,
+            "taker",
             22,
             "distributed-taker",
             oclob_settlement::canonical_cash_asset_id(),
@@ -303,9 +327,13 @@ fn provision(root: &Path) -> Result<(), String> {
             host: "oclob-defmi".into(),
             port: 9443,
             server_name: "oclob-defmi".into(),
+            claim_authorization_endpoint: claim_authorization_endpoints
+                .get(role)
+                .ok_or("corporate claim authorization endpoint is absent")?
+                .clone(),
             venue_id: Sha256::digest(b"defmi:oclob:v1").into(),
             defmi_id: Sha256::digest(b"oclob-integrated-defmi-v1").into(),
-            issuer_public: native_receipt_key.verifying_key().to_bytes(),
+            issuer_public: native_receipt_key.hybrid_public_key(),
             facility_id: facility,
             asset_id: asset,
             facility_values: [amount, 0, 0],
@@ -423,15 +451,20 @@ fn provision(root: &Path) -> Result<(), String> {
             ))
             .map_err(err)?;
         corporate_journals.push((
-            client_state.join("outbox.enc"), client_journal_key, config.clone(),
-            credential.scope_digest(), encrypted_credential.clone(), false,
+            client_state.join("outbox.enc"),
+            client_journal_key,
+            config.clone(),
+            credential.scope_digest(),
+            encrypted_credential.clone(),
+            false,
         ));
         corporate_journals.push((
             directory.join("queue/outbox.enc"),
             journal_key,
             config,
             credential.scope_digest(),
-            encrypted_credential, true,
+            encrypted_credential,
+            true,
         ));
         let enrollment = credential
             .present([31; 32], [32; 32], 253_402_300_798, &mut rand::rngs::OsRng)
@@ -462,6 +495,30 @@ fn provision(root: &Path) -> Result<(), String> {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
+    let recipient_opening_keys = corporate_journals
+        .iter()
+        .filter(|journal| journal.5)
+        .map(|(_, _, config, _, _, _)| {
+            let view = Identity::from_seed(config.identity_seed)
+                .handle(b"defmi:oclob:v1")
+                .point
+                .compress()
+                .to_bytes();
+            Ok(qomm_transport::proof_party::RecipientOpeningKey {
+                view,
+                public: zkfmi_crypto::traits::KemDecapsulator::public_key(
+                    &config.note_opening_key()?,
+                ),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if recipient_opening_keys.len() != 2
+        || recipient_opening_keys[0].view == recipient_opening_keys[1].view
+    {
+        return Err(
+            "recipient opening directory must contain one distinct key per custody service".into(),
+        );
+    }
     let mut public_nodes = Vec::with_capacity(MPC_PARTIES);
     for party in 0..MPC_PARTIES {
         let name = format!("oclob-node-{party}");
@@ -497,7 +554,7 @@ fn provision(root: &Path) -> Result<(), String> {
         let trusted_defmi_id: [u8; 32] = Sha256::digest(b"oclob-integrated-defmi-v1").into();
         let trusted_venue_id: [u8; 32] = Sha256::digest(b"defmi:oclob:v1").into();
         let config = json!({
-            "version": 3,
+            "version": 4,
             "party": party,
             "listen": format!("0.0.0.0:{RPC_PORT}"),
             "tls_certificate": "/node/tls.pem",
@@ -519,11 +576,13 @@ fn provision(root: &Path) -> Result<(), String> {
             "minimum_response_millis": 10,
             "proof_listen": format!("0.0.0.0:{PROOF_PORT}"),
             "proof_state_file": "/state/mpc/private-state/proof-state.qps",
+            "recipient_opening_keys": recipient_opening_keys,
             "proof_state_passphrase": "/node/proof-state-passphrase.raw",
             "trusted_defmi_id": hex::encode(trusted_defmi_id),
             "native_finality_endpoint": { "host": "oclob-defmi", "port": 9443, "server_name": "oclob-defmi" },
             "trusted_reservation_venue_id": hex::encode(trusted_venue_id),
-            "trusted_defmi_receipt_public": hex::encode(native_receipt_key.verifying_key().to_bytes())
+            "trusted_defmi_receipt_public": hex::encode(native_receipt_key.hybrid_public_key()),
+            "qomm_pretrade_ack_fingerprint": null
         });
         write_json(&node_dir.join("config.json"), &config, 0o600)?;
         public_nodes.push(ClusterNodePublic {
@@ -543,7 +602,7 @@ fn provision(root: &Path) -> Result<(), String> {
         0o600,
     )?;
     let public = ClusterPublicConfig {
-        version: 4,
+        version: 5,
         market_id: MARKET.into(),
         program: PROGRAM.into(),
         settlement_release_threshold: SETTLEMENT_KEY_THRESHOLD,
@@ -558,7 +617,8 @@ fn provision(root: &Path) -> Result<(), String> {
     for (path, key, config, scope, credential, dispatch) in corporate_journals {
         if dispatch {
             oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
-                path.with_file_name("dispatch.enc"), &key,
+                path.with_file_name("dispatch.enc"),
+                &key,
             )?;
         }
         let journal = oclob_node::corporate_journal::NativeCorporateJournal::initialize(
@@ -574,7 +634,7 @@ fn write_identity(
     container_directory: &str,
     tls_key: &PKey<Private>,
     certificate: &X509,
-    application_key: &[u8; 32],
+    application_key: &[u8; 64],
 ) -> Result<(), String> {
     write_private(
         &directory.join("tls-key.pem"),
@@ -586,7 +646,7 @@ fn write_identity(
     )?;
     write_private(&directory.join("application-key.raw"), application_key)?;
     let identity = ClientIdentityConfig {
-        version: 1,
+        version: 2,
         tls_certificate: PathBuf::from(format!("{container_directory}/tls.pem")),
         tls_private_key: PathBuf::from(format!("{container_directory}/tls-key.pem")),
         tls_ca: PathBuf::from("/public/ca.pem"),

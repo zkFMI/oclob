@@ -3,7 +3,7 @@
 //! not corporate credentials, a settlement key or an encrypted journal.
 use crate::market_network::{read_record, write_record, MarketEndpoint};
 use crate::network::{certificate_fingerprint, load_owner_private_key, ClusterPublicConfig};
-use crate::public_depth::{read, FinalizedPublicBook};
+use crate::public_depth::{read, FinalizedPublicBook, MAX_PUBLIC_BOOK_BYTES};
 use openssl::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use serde::{Deserialize, Serialize};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -11,7 +11,9 @@ use std::path::Path;
 use std::time::Duration;
 
 const REQUEST_BYTES: usize = 1024;
-const RESPONSE_BYTES: usize = 128 * 1024;
+// The response adds a small fixed JSON envelope and four-byte record header to
+// the independently bounded compact public-book payload.
+const RESPONSE_BYTES: usize = MAX_PUBLIC_BOOK_BYTES + 1024;
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -63,14 +65,14 @@ pub(crate) fn exchange(
         .accept(tcp)
         .map_err(|_| "public depth TLS handshake failed")?;
     let request: Request = read_record(&mut stream, REQUEST_BYTES)?;
-    if request.version != 1 {
+    if request.version != 2 {
         return Err("public depth request version invalid".into());
     }
     let book = read(path)?;
     if let Some(book) = &book {
         book.verify(cluster, crate::market_runtime::now()?, 0)?;
     }
-    write_record(&mut stream, &Response { version: 1, book }, RESPONSE_BYTES)
+    write_record(&mut stream, &Response { version: 2, book }, RESPONSE_BYTES)
 }
 pub fn fetch(
     endpoint: &MarketEndpoint,
@@ -111,9 +113,9 @@ pub fn fetch(
     if certificate_fingerprint(&peer.to_der().map_err(err)?) != endpoint.certificate_sha256 {
         return Err("public depth TLS pin mismatch".into());
     }
-    write_record(&mut stream, &Request { version: 1 }, REQUEST_BYTES)?;
+    write_record(&mut stream, &Request { version: 2 }, REQUEST_BYTES)?;
     let response: Response = read_record(&mut stream, RESPONSE_BYTES)?;
-    if response.version != 1 {
+    if response.version != 2 {
         return Err("public depth response version invalid".into());
     }
     let book = response.book.ok_or("no finalized public book yet")?;

@@ -6,6 +6,7 @@ use oclob_node::market_runtime::NativeMarketRuntime;
 use oclob_node::network::{
     load_secret_32, server_tls_context, ClientIdentityConfig, ClusterPublicConfig,
 };
+use oclob_settlement::native::{claim_authorization_evidence, NativeFillAuthorizationRequest};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -180,7 +181,11 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
     let http = manifest["contract_id"] == "oclob-native-http-v1";
     let depth = http || manifest["contract_id"] == "oclob-native-depth-v1";
     if manifest["contract_sha256"] != hash
-        || (!depth && manifest["contract_id"] != "oclob-native-market-v1")
+        || (!depth
+            && !matches!(
+                manifest["contract_id"].as_str(),
+                Some("oclob-native-market-v1" | "oclob-native-market-v2")
+            ))
         || manifest["stage"] != "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC"
     {
         return Err("resident market acceptance preflight failed".into());
@@ -249,6 +254,14 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
         return Err("actual market crash and process replacement were not observed".into());
     }
     let id = last.certificate.commitment.hex();
+    let signed_requests: Vec<NativeFillAuthorizationRequest> = journal
+        .get(&format!("signed:{id}"))?
+        .ok_or("signed native fill requests absent")?;
+    let (claim_signatures, claim_key_fingerprints) =
+        claim_authorization_evidence(&signed_requests)?;
+    if signed_requests.len() != matched.len() {
+        return Err("signed claim authorization evidence differs from settled fills".into());
+    }
     let fault: Value = journal
         .get(&format!("fault-observation:{id}"))?
         .ok_or("canonical fault observation absent")?;
@@ -261,7 +274,12 @@ fn acceptance(journal: &MarketJournal) -> Result<(), String> {
     let mut result = json!({"native_note_settlement":true,"contract_sha256":hash,"manifest_id":manifest["manifest_id"],
         "admitted_orders":expected_rounds,"completed_market_rounds":rounds.len(),"autonomously_settled_fills":matched.len(),
         "trade_notional":notional,"node_finality_observations":last.finality_observations,
-        "post_match_participant_signatures":0,"restart_did_not_duplicate_settlement":true,
+        "post_match_participant_signatures":claim_signatures,
+        "claim_authorization_response_signatures":claim_signatures,
+        "fresh_claim_authorization_keys":claim_key_fingerprints.len(),
+        "claim_authorization_key_fingerprints":claim_key_fingerprints.iter().map(hex::encode).collect::<Vec<_>>(),
+        "post_match_financial_approval_signatures":0,
+        "restart_did_not_duplicate_settlement":true,
         "canonical_response_loss_recovered":true,"service_processes":ids,
         "native_transaction_id":last.transaction_id,"native_after_root":hex::encode(last.canonical_root.ok_or("canonical root absent")?),
         "status":"smoke_only","independent_operators":false,"wan_evidence":false});

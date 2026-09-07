@@ -1,6 +1,6 @@
 //! Native-note path. This module never reads corporate wallet configuration.
 use super::*;
-use ed25519_dalek::{Signature, Signer};
+use ed25519_dalek::{Signature, SigningKey};
 use oclob_node::native_admission::{AdmissionAuthority, AdmissionRpcServer};
 use oclob_node::network::{server_tls_context, Principal};
 use qomm_defmi::application_reservation::ApplicationReserveScope;
@@ -22,6 +22,31 @@ struct LabFunding {
     notes: Vec<Value>,
 }
 
+fn has_distinct_claim_authorization_keys(result: &Value, expected: usize) -> bool {
+    let Some(values) = result["claim_authorization_key_fingerprints"].as_array() else {
+        return false;
+    };
+    if values.len() != expected {
+        return false;
+    }
+    let mut fingerprints = std::collections::BTreeSet::new();
+    for value in values {
+        let Some(value) = value.as_str() else {
+            return false;
+        };
+        let Ok(bytes) = hex::decode(value) else {
+            return false;
+        };
+        let Ok(fingerprint) = <[u8; 32]>::try_from(bytes) else {
+            return false;
+        };
+        if !fingerprints.insert(fingerprint) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Reuse the known-working ANR startup, but keep its five validators alive
 /// while separate corporate and matching containers connect over mTLS.
 pub(super) fn serve(options: &Options) -> RunResult<Value> {
@@ -39,14 +64,17 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                     | "oclob-native-recovery-v1"
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
+                    | "oclob-native-finality-v2"
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
+                    | "oclob-native-lifecycle-v2"
                     | "oclob-native-worker-v1"
                     | "oclob-native-expiry-v1"
                     | "oclob-native-expiry-v2"
                     | "oclob-native-deferred-v1"
                     | "oclob-native-market-v1"
+                    | "oclob-native-market-v2"
                     | "oclob-native-depth-v1"
                     | "oclob-native-http-v1"
             )
@@ -111,6 +139,9 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         jurisdiction: "LAB".into(),
         operator_entity_commitment: digest(b"oclob-native-lab-operator-v1"),
         public_key: issuer_signer.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_signer.to_bytes()),
+        ),
         permitted_asset_ids: assets,
         policy_digest: policy,
         valid_from: now,
@@ -122,6 +153,9 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
         kind: GuarantorKind::SelfGuaranteed,
         name: "OCLOB laboratory funding authority".into(),
         public_key: issuer_signer.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_signer.to_bytes()),
+        ),
         risk_policy_digest: policy,
     };
     bridge.register_guarantor(&guarantor, &approve(guarantor.statement()?)?)?;
@@ -142,9 +176,13 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
             valid_from: now,
             valid_until: now + 3600,
             nonce: entry.facility,
-            guarantor_signature: Signature::from_bytes(&[0; 64]),
+            guarantor_signature: Vec::new(),
         };
-        grant.guarantor_signature = issuer_signer.sign(&grant.guarantor_message()?);
+        grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            &issuer_signer,
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_signer.to_bytes()),
+            &grant.guarantor_message()?,
+        )?;
         bridge.grant_credit_facility(&grant, &approve(grant.statement()?)?)?;
         for note in &entry.notes {
             let output = NoteOutput::from_body(note)?;
@@ -156,8 +194,12 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
                 output,
                 proof_digest: policy,
                 issuer_signature: Signature::from_bytes(&[0; 64]),
+                issuer_pq_signature: vec![0; 3309],
             }
-            .sign_issuer(&issuer_signer)?;
+            .sign_issuer(
+                &issuer_signer,
+                &zkfmi_crypto::test_support::entity_pq_signer(&issuer_signer.to_bytes()),
+            )?;
             bridge.issue_note(&issuance, &approve(issuance.statement()?)?)?;
         }
     }
@@ -179,8 +221,14 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     wait_for_roots(&clients, clients[0].state_root()?, Duration::from_secs(30))?;
     let tls = server_tls_context("/defmi/tls.pem", "/defmi/tls-key.pem", "/public/ca.pem")?;
     let principals: Vec<Principal> = read_json_limited(Path::new("/defmi/principals.json"))?;
-    let receipt_issuer =
-        SigningKey::from_bytes(&load_secret_32(Path::new("/defmi/receipt-key.raw"))?);
+    let receipt_issuer = std::sync::Arc::new(
+        oclob_core::application_crypto::SigningKey::from_bytes(&load_application_signing_seed(
+            Path::new("/defmi/receipt-key.raw"),
+        )?)
+        .raw_hybrid_signer(),
+    );
+    let private_tag_key =
+        zeroize::Zeroizing::new(load_secret_32(Path::new("/defmi/admission-tag-key.raw"))?);
     let (eligibility, _) = deterministic_demo_environment(MARKET)?;
     let service = AdmissionRpcServer::start(
         "0.0.0.0:9443".parse()?,
@@ -191,6 +239,7 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
             authorizer,
             governance_signers: signers,
             receipt_issuer,
+            private_tag_key,
             scope: scope.clone(),
             eligibility,
         },
@@ -229,16 +278,25 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     } else if result["native_note_settlement"] != true {
         return Err(failure("native settlement result is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-market-v1"
-        && (result["admitted_orders"] != 3
-            || result["completed_market_rounds"] != 3
-            || result["autonomously_settled_fills"] != 2
-            || result["trade_notional"] != 9030
-            || result["node_finality_observations"] != 14
-            || result["post_match_participant_signatures"] != 0
-            || result["restart_did_not_duplicate_settlement"] != true
-            || result["canonical_response_loss_recovered"] != true
-            || result["contract_sha256"] != contract_hash)
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-market-v1" | "oclob-native-market-v2")
+    ) && (result["admitted_orders"] != 3
+        || result["completed_market_rounds"] != 3
+        || result["autonomously_settled_fills"] != 2
+        || result["trade_notional"] != 9030
+        || result["node_finality_observations"] != 14
+        || (manifest["contract_id"] == "oclob-native-market-v1"
+            && result["post_match_participant_signatures"] != 0)
+        || (manifest["contract_id"] == "oclob-native-market-v2"
+            && (result["post_match_participant_signatures"] != 4
+                || result["claim_authorization_response_signatures"] != 4
+                || result["fresh_claim_authorization_keys"] != 8
+                || !has_distinct_claim_authorization_keys(&result, 8)
+                || result["post_match_financial_approval_signatures"] != 0))
+        || result["restart_did_not_duplicate_settlement"] != true
+        || result["canonical_response_loss_recovered"] != true
+        || result["contract_sha256"] != contract_hash)
     {
         return Err(failure("resident native market acceptance is incomplete"));
     }
@@ -264,12 +322,22 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     {
         return Err(failure("native HTTP book acceptance is incomplete"));
     }
-    if manifest["contract_id"] == "oclob-native-finality-v1"
-        && (result["node_observed_canonical_finality"] != 7
-            || result["unsettled_and_unobserved_finality_rejected_by_all_nodes"] != true
-            || result["substituted_canonical_fill_rejected_by_all_nodes"] != true
-            || result["canonical_observation_retry_unchanged"] != true
-            || result["recovered_note_funded_next_order"] != true)
+    if matches!(
+        manifest["contract_id"].as_str(),
+        Some("oclob-native-finality-v1" | "oclob-native-finality-v2")
+    ) && (result["node_observed_canonical_finality"] != 7
+        || result["unsettled_and_unobserved_finality_rejected_by_all_nodes"] != true
+        || result["substituted_canonical_fill_rejected_by_all_nodes"] != true
+        || result["canonical_observation_retry_unchanged"] != true
+        || result["recovered_note_funded_next_order"] != true
+        || (manifest["contract_id"] == "oclob-native-finality-v1"
+            && result["post_match_participant_signatures"] != 0)
+        || (manifest["contract_id"] == "oclob-native-finality-v2"
+            && (result["post_match_participant_signatures"] != 2
+                || result["claim_authorization_response_signatures"] != 2
+                || result["fresh_claim_authorization_keys"] != 4
+                || !has_distinct_claim_authorization_keys(&result, 4)
+                || result["post_match_financial_approval_signatures"] != 0)))
     {
         return Err(failure("native finality/reuse acceptance is incomplete"));
     }
@@ -296,14 +364,22 @@ pub(super) fn serve(options: &Options) -> RunResult<Value> {
     }
     if matches!(
         manifest["contract_id"].as_str(),
-        Some("oclob-native-lifecycle-v1" | "oclob-native-worker-v1")
+        Some("oclob-native-lifecycle-v1" | "oclob-native-lifecycle-v2" | "oclob-native-worker-v1")
     ) && (result["completed_native_rounds"] != 2
         || result["completed_native_releases"] != 2
         || result["recipient_claims_redeemed"] != 9
         || result["final_facility_sequences"] != json!([8, 5])
         || result["expiry_wallet"]["unfilled_releases_recovered"] != 1
         || result["node_restart_state_preserved"] != true
-        || result["cancellation_refund_funded_expiry_order"] != true)
+        || result["cancellation_refund_funded_expiry_order"] != true
+        || (manifest["contract_id"] == "oclob-native-lifecycle-v1"
+            && result["post_match_participant_signatures"] != 0)
+        || (manifest["contract_id"] == "oclob-native-lifecycle-v2"
+            && (result["post_match_participant_signatures"] != 6
+                || result["claim_authorization_response_signatures"] != 6
+                || result["fresh_claim_authorization_keys"] != 12
+                || !has_distinct_claim_authorization_keys(&result, 12)
+                || result["post_match_financial_approval_signatures"] != 0)))
     {
         return Err(failure(
             "native cancellation/expiry lifecycle is incomplete",

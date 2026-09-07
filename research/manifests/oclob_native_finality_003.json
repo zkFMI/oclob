@@ -1,0 +1,41 @@
+{
+  "manifest_id": "oclob-native-finality-pqc-custody-003",
+  "contract_id": "oclob-native-finality-v2",
+  "contract_path": "research/oclob_native_finality_v2_contract.json",
+  "contract_sha256": "308d47bfc84c19784dc6606bf17db783f4d7579a4b48b5c97a12654599cf4886",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The new corporate claim-key journal and proof-node response verification have not completed the actual wallet redemption and validator restart journey in current native images.",
+  "causal_hypothesis": "One participant-owned signed response per side, retained across retry and embedded in the fill request, will let all seven nodes finalize the single fill and both wallets redeem the four independently authorized claim legs.",
+  "single_intended_change": "Run the existing single-fill finality and wallet acceptance with current source while measuring the two signed participant responses and four fresh claim keys separately from financial approvals.",
+  "baseline": "The v1 finality scenario previously established one 40-at-100 fill, seven node observations, wallet reuse and validator restart; current OCLOB deterministic gates cover journal exact retry, ACL separation and proof-node substitution rejection.",
+  "evidence_boundary": "The deterministic standard gate proves exact randomized response persistence across corporate API retry and process restart. This native run measures actual API issuance, request provenance at proof nodes, claim redemption and validator restart; its receipt must cite both evidence sources.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_processes": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "fills": 1
+  },
+  "primary_metric": "node_observed_canonical_finality",
+  "point_prediction": {
+    "node_observed_canonical_finality": 7,
+    "post_match_participant_signatures": 2,
+    "claim_authorization_response_signatures": 2,
+    "fresh_claim_authorization_keys": 4,
+    "post_match_financial_approval_signatures": 0,
+    "recovered_note_funded_next_order": true,
+    "validator_restart_recovered": true
+  },
+  "most_likely_prediction_error": "The actual API may carry a response or retained signer that differs from the deterministic custody fixture, preventing exact redemption or proof-node verification.",
+  "rejection_rules": [
+    "contract or synchronized source hash differs",
+    "response signature count differs from two",
+    "fresh key count differs from four or any fingerprint repeats",
+    "any post-match financial approval signature",
+    "wallet redemption, seven-node observation, exact retry or five-validator restart regresses"
+  ],
+  "promotion_rules": [
+    "smoke_only; configured read service, single host and lab credentials preclude production or independent-operator claims"
+  ],
+  "command": "zkfmi-crypto/scripts/pqc-native-acceptance.sh (finality phase)"
+}

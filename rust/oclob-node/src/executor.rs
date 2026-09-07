@@ -1,7 +1,7 @@
 //! One-party MP-SPDZ execution and signed, public-only receipts.
 
 use crate::PreparedPartyInput;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_mpc::{
     matching_program, parse_result, public_output_digest, MAX_CORRUPT_NODES, MPC_PARTIES,
@@ -22,12 +22,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const ROUND_PLAN_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-ROUND-PLAN:v1";
-const PARTY_RECEIPT_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-PARTY-RECEIPT:v1";
-const ARTIFACT_DOMAIN: &[u8] = b"OCLOB:MP-SPDZ-ARTIFACT:v1";
-const PROOF_SLOT_METADATA_DOMAIN: &[u8] = b"OCLOB:PROOF-SLOT-METADATA:v1";
-const VERSION: u16 = 1;
-const PROOF_SLOT_METADATA_VERSION: u16 = 2;
+const ROUND_PLAN_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-ROUND-PLAN:v2";
+const PARTY_RECEIPT_DOMAIN: &[u8] = b"OCLOB:DISTRIBUTED-PARTY-RECEIPT:v2";
+const ARTIFACT_DOMAIN: &[u8] = b"OCLOB:MP-SPDZ-ARTIFACT:v2";
+const PROOF_SLOT_METADATA_DOMAIN: &[u8] = b"OCLOB:PROOF-SLOT-METADATA:v2";
+const VERSION: u16 = 2;
+const PROOF_SLOT_METADATA_VERSION: u16 = 3;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 /// Owner-only binding between an extracted proof handoff and the exact public
@@ -75,7 +75,10 @@ impl ProofSlotMetadata {
     }
 
     pub(crate) fn verify_signature(&self, expected_signer: Digest32) -> bool {
-        if self.signer != expected_signer || self.signature.len() != 64 {
+        if self.version != PROOF_SLOT_METADATA_VERSION
+            || self.signer != expected_signer
+            || self.signature.len() != oclob_core::application_crypto::SIGNATURE_BYTES
+        {
             return false;
         }
         let Ok(key) = VerifyingKey::from_bytes(&expected_signer) else {
@@ -88,9 +91,13 @@ impl ProofSlotMetadata {
             .is_ok()
     }
 
-    pub(crate) fn sign(&mut self, key: &SigningKey) {
+    pub(crate) fn sign(&mut self, key: &SigningKey) -> Result<(), PartyExecutionError> {
         self.signer = key.verifying_key().to_bytes();
-        self.signature = key.sign(&self.signature_body()).to_bytes().to_vec();
+        self.signature = key
+            .try_sign(&self.signature_body())
+            .map_err(|_| PartyExecutionError::Receipt)?
+            .to_bytes();
+        Ok(())
     }
 }
 
@@ -133,7 +140,11 @@ impl RoundPlan {
             signature: Vec::new(),
         };
         plan.round_id = plan.derived_round_id();
-        plan.signature = coordinator.sign(&plan.signature_body()).to_bytes().to_vec();
+        plan.signature = coordinator
+            .try_sign(&plan.signature_body())
+            .map_err(|_| PartyExecutionError::Receipt)?
+            .to_bytes()
+            .to_vec();
         plan.verify(issued_at)?;
         Ok(plan)
     }
@@ -248,6 +259,28 @@ pub struct NodeExecutionReceipt {
 }
 
 impl NodeExecutionReceipt {
+    pub(crate) fn verify_stored_signature(&self) -> bool {
+        if self.version != VERSION {
+            return false;
+        }
+        let Ok(key) = VerifyingKey::from_bytes(&self.signer) else {
+            return false;
+        };
+        let Ok(signature) = Signature::try_from(self.signature.as_slice()) else {
+            return false;
+        };
+        key.verify_strict(&self.signature_body(), &signature)
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn signed_fixture(mut self, key: &SigningKey) -> Self {
+        self.version = VERSION;
+        self.signer = key.verifying_key().to_bytes();
+        self.signature = key.try_sign(&self.signature_body()).unwrap().to_bytes();
+        self
+    }
+
     pub fn verify(
         &self,
         plan: &RoundPlan,
@@ -517,7 +550,8 @@ impl PartyExecutor {
         };
         receipt.signature = self
             .signing_key
-            .sign(&receipt.signature_body())
+            .try_sign(&receipt.signature_body())
+            .map_err(|_| PartyExecutionError::Receipt)?
             .to_bytes()
             .to_vec();
         receipt.verify(plan, self.party, &self.signing_key.verifying_key())?;
@@ -625,7 +659,7 @@ impl PartyExecutor {
                         })
                     }),
             };
-            metadata.sign(&self.signing_key);
+            metadata.sign(&self.signing_key)?;
             let encoded = serde_json::to_vec(&metadata).map_err(|_| PartyExecutionError::Output)?;
             write_exclusive(&proof_directory.join("metadata.json"), &encoded)?;
         }
@@ -836,7 +870,7 @@ mod tests {
 
     #[test]
     fn round_plan_is_commitment_only_and_tamper_evident() {
-        let key = SigningKey::from_bytes(&[3; 32]);
+        let key = SigningKey::from_bytes(&[3; 64]);
         let mut ordering = OrderingCommittee::deterministic_for_demo().unwrap();
         let certificate = ordering
             .certify("JGB10Y-JPY", OrderCommitment([4; 32]), 1_060, 1_000)
@@ -863,7 +897,7 @@ mod tests {
 
     #[test]
     fn coordinator_cannot_make_a_four_vote_certificate_executable() {
-        let key = SigningKey::from_bytes(&[3; 32]);
+        let key = SigningKey::from_bytes(&[3; 64]);
         let mut ordering = OrderingCommittee::deterministic_for_demo().unwrap();
         let mut certificate = ordering
             .certify("JGB10Y-JPY", OrderCommitment([4; 32]), 1_060, 1_000)

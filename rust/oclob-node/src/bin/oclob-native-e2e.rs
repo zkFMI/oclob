@@ -1,7 +1,10 @@
 //! Live native-note settlement coordinator. No issuer or participant secrets.
+#![recursion_limit = "256"]
+
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use oclob_core::application_crypto::SigningKey;
 use oclob_edge::SealedReservationAuthority;
+use oclob_node::corporate_api::request_claim_authorizations;
 use oclob_node::edge_client::{
     collect_order_certificate, collect_threshold_capability_release, execute_agreed_round,
     finalize_agreed_private_state, EdgeAdmissionReceipt,
@@ -11,16 +14,17 @@ use oclob_node::native_finality::{
     aggregate_finality, NativeFinalityRecord, NativeFinalityRequest,
 };
 use oclob_node::network::{
-    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig, NetworkError,
-    NodeRpcClient,
+    client_tls_context, load_application_signing_seed, ClientIdentityConfig, ClusterPublicConfig,
+    NetworkError, NodeRpcClient,
 };
 use oclob_node::PrivateStateFinality;
 use oclob_settlement::collaborative::{
     collaborative_job_id, load_fill, prove_fill, CollaborativeFillRequest,
 };
 use oclob_settlement::native::{
-    certify_native_fill, native_batch_binding, prepare_native_fill, project_pending_native_head,
-    NativeFillAuthorizationRequest, NativeReservationAuthority,
+    certify_native_fill, claim_authorization_evidence, native_batch_binding,
+    native_claim_authorization_issue, prepare_native_fill, project_pending_native_head,
+    NativeFillAuthorizationRequest, NativeFillClaimAuthorizations, NativeReservationAuthority,
 };
 use oclob_settlement::pretrade::PrivateAdmissionClient;
 use qomm_defmi::application_reservation::ApplicationReserveScope;
@@ -33,7 +37,7 @@ use qomm_transport::proof_client::ProofPartyTlsClient;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -70,9 +74,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | "oclob-native-recovery-v1"
                     | "oclob-native-wallet-v1"
                     | "oclob-native-finality-v1"
+                    | "oclob-native-finality-v2"
                     | "oclob-native-multifill-v1"
                     | "oclob-native-cycle-v1"
                     | "oclob-native-lifecycle-v1"
+                    | "oclob-native-lifecycle-v2"
                     | "oclob-native-worker-v1"
                     | "oclob-native-expiry-v1"
                     | "oclob-native-expiry-v2"
@@ -97,7 +103,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     settlement.validate()?;
     let lifecycle = matches!(
         manifest["contract_id"].as_str(),
-        Some("oclob-native-lifecycle-v1" | "oclob-native-worker-v1")
+        Some("oclob-native-lifecycle-v1" | "oclob-native-lifecycle-v2" | "oclob-native-worker-v1")
     );
     if let Ok(phase) = std::env::var("OCLOB_NATIVE_LIFECYCLE_PHASE") {
         if !lifecycle {
@@ -143,7 +149,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let public = qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(&fs::read(
         "/handoff/native-committee.bin",
     )?)?;
-    let key = SigningKey::from_bytes(&load_secret_32(&coordinator.application_signing_key)?);
+    let key = SigningKey::from_bytes(&load_application_signing_seed(
+        &coordinator.application_signing_key,
+    )?);
     let tls = client_tls_context(
         &coordinator.tls_certificate,
         &coordinator.tls_private_key,
@@ -172,8 +180,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if scope.committee_key_digest != <[u8; 32]>::from(Sha256::digest(public.serialize()?)) {
         return Err("native scope has another MPC committee".into());
     }
-    let issuer_bytes: [u8; 32] = read("/public/native-issuer.json")?;
-    let issuer = VerifyingKey::from_bytes(&issuer_bytes)?;
+    let issuer: Vec<u8> = read("/public/native-issuer.json")?;
+    if issuer.len() != 1984 {
+        return Err("legacy issuer key requires PQC re-enrollment".into());
+    }
     let client = private.chain()?;
     if std::env::var("OCLOB_NATIVE_WALLET_FINALIZE")
         .ok()
@@ -410,6 +420,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 json!({"job_id": hex::encode(job)}),
             )?;
         }
+        let claim_issue = native_claim_authorization_issue(
+            &proof,
+            maker_authority,
+            &taker_authority,
+            &maker_head,
+            &taker_head,
+        )?;
+        let prior_fills = requests
+            .iter()
+            .map(|request: &NativeFillAuthorizationRequest| request.fill.clone())
+            .collect::<Vec<_>>();
+        let payer_authority =
+            if maker_authority.permit.reservation_id == claim_issue.payer.reservation_id {
+                maker_authority
+            } else {
+                &taker_authority
+            };
+        let payee_authority =
+            if maker_authority.permit.reservation_id == claim_issue.payee.reservation_id {
+                maker_authority
+            } else {
+                &taker_authority
+            };
+        let claim_authorizations = NativeFillClaimAuthorizations {
+            payer: request_claim_authorizations(
+                &payer_authority.claim_authorization_endpoint,
+                &coordinator,
+                claim_issue.payer.reservation_id,
+                &claim_issue,
+                &prior_fills,
+                payer_authority.order_signer,
+            )?,
+            payee: request_claim_authorizations(
+                &payee_authority.claim_authorization_endpoint,
+                &coordinator,
+                claim_issue.payee.reservation_id,
+                &claim_issue,
+                &prior_fills,
+                payee_authority.order_signer,
+            )?,
+        };
         let mut fill = prepare_native_fill(
             &proof,
             scope.clone(),
@@ -417,6 +468,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &taker_authority,
             &maker_head,
             &taker_head,
+            &claim_authorizations,
             *slot == slots.len() - 1,
         )?;
         fill.batch = native_batch_binding(
@@ -433,6 +485,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             fill,
             maker: maker_authority.clone(),
             taker: taker_authority.clone(),
+            claim_authorizations,
         };
         let mut substituted = request.clone();
         substituted.fill.mpc_result_digest[0] ^= 1;
@@ -658,9 +711,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if repeated != finalized {
         return Err("exact private-head finalization retry changed signed state receipts".into());
     }
+    let (claim_signatures, claim_key_fingerprints) = claim_authorization_evidence(&requests)?;
     let mut result = json!({"native_note_settlement": true, "contract_sha256": contract_hash,
         "manifest_id": manifest["manifest_id"], "verdict": "smoke_only", "mpc_nodes": 7,
-        "post_match_participant_signatures": 0, "raw_order_capability_opened": false,
+        "post_match_participant_signatures": claim_signatures,
+        "claim_authorization_response_signatures": claim_signatures,
+        "fresh_claim_authorization_keys": claim_key_fingerprints.len(),
+        "claim_authorization_key_fingerprints": claim_key_fingerprints.iter().map(hex::encode).collect::<Vec<_>>(),
+        "post_match_financial_approval_signatures": 0, "raw_order_capability_opened": false,
         "canonical_transaction": accepted.tx_id, "canonical_height": accepted.height,
         "exact_retry_did_not_apply_twice": true, "native_after_root": hex::encode(accepted.after_root),
         "substituted_mpc_output_rejected_by_resident_node": true,
@@ -821,6 +879,50 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
     let reuse: EdgeAdmissionReceipt = read("/handoff/reuse-taker.json")?;
     reuse.verify(cluster, now()?)?;
     let source: Value = read("/handoff/reuse-taker.corporate.json")?;
+    let first_claim_signatures = first["claim_authorization_response_signatures"]
+        .as_u64()
+        .ok_or("first native round lacks claim response evidence")?;
+    let next_claim_signatures = next["claim_authorization_response_signatures"]
+        .as_u64()
+        .ok_or("next native round lacks claim response evidence")?;
+    let first_claim_fingerprints = first["claim_authorization_key_fingerprints"]
+        .as_array()
+        .ok_or("first native round lacks claim key fingerprints")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("first native round has an invalid claim key fingerprint")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_claim_fingerprints = next["claim_authorization_key_fingerprints"]
+        .as_array()
+        .ok_or("next native round lacks claim key fingerprints")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("next native round has an invalid claim key fingerprint")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut all_claim_fingerprints = BTreeSet::new();
+    for fingerprint in first_claim_fingerprints
+        .iter()
+        .chain(&next_claim_fingerprints)
+    {
+        let decoded: [u8; 32] = hex::decode(fingerprint)?
+            .try_into()
+            .map_err(|_| "claim authorization key fingerprint has incorrect length")?;
+        if !all_claim_fingerprints.insert(decoded) {
+            return Err("claim authorization key was reused across native rounds".into());
+        }
+    }
+    let first_claim_keys = u64::try_from(first_claim_fingerprints.len())
+        .map_err(|_| "first native round claim key count overflow")?;
+    let next_claim_keys = u64::try_from(next_claim_fingerprints.len())
+        .map_err(|_| "next native round claim key count overflow")?;
     if first["contract_sha256"] != contract_hash
         || next["contract_sha256"] != contract_hash
         || first["native_note_settlement"] != true
@@ -829,6 +931,16 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
         || next["atomically_settled_fills"] != 1
         || first["node_observed_canonical_finality"] != 14
         || next["node_observed_canonical_finality"] != 7
+        || first_claim_signatures != 4
+        || next_claim_signatures != 2
+        || first_claim_keys != 8
+        || next_claim_keys != 4
+        || first["post_match_participant_signatures"] != first_claim_signatures
+        || next["post_match_participant_signatures"] != next_claim_signatures
+        || first["fresh_claim_authorization_keys"] != first_claim_keys
+        || next["fresh_claim_authorization_keys"] != next_claim_keys
+        || first["post_match_financial_approval_signatures"] != 0
+        || next["post_match_financial_approval_signatures"] != 0
         || next["trade_price"] != 101
         || next["trade_quantity"] != 1
         || next["maker_head_sequence_before"] != 1
@@ -889,6 +1001,16 @@ fn finalize_cycle_acceptance<C: AvalancheClient>(
     first["next_match"] = next;
     first["completed_native_rounds"] = json!(2);
     first["total_native_fills"] = json!(3);
+    first["post_match_participant_signatures"] =
+        json!(first_claim_signatures + next_claim_signatures);
+    first["claim_authorization_response_signatures"] =
+        json!(first_claim_signatures + next_claim_signatures);
+    first["fresh_claim_authorization_keys"] = json!(first_claim_keys + next_claim_keys);
+    first["claim_authorization_key_fingerprints"] = json!(all_claim_fingerprints
+        .into_iter()
+        .map(hex::encode)
+        .collect::<Vec<_>>());
+    first["post_match_financial_approval_signatures"] = json!(0);
     first["recipient_claims_redeemed"] = json!(8);
     first["private_facility_witnesses_recovered"] = json!(4);
     first["recovered_note_funded_next_order"] = json!(true);

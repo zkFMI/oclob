@@ -942,7 +942,7 @@ impl ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use oclob_core::{authorize_order, Side, TimeInForce};
     use oclob_dekyx::deterministic_demo_environment;
     use rand::rngs::OsRng;
@@ -978,7 +978,7 @@ mod tests {
             [13; 32],
         )
         .unwrap();
-        let authority = authorize_order(&order, 2_100, &SigningKey::from_bytes(&[41; 32])).unwrap();
+        let authority = authorize_order(&order, 2_100, &SigningKey::from_bytes(&[41; 64])).unwrap();
         let evidence = wallet
             .present(order.commitment().0, [14; 32], 2_000, &mut OsRng)
             .unwrap();
@@ -1046,7 +1046,7 @@ mod tests {
         )
         .unwrap();
         let maker_authority =
-            authorize_order(&maker, 2_100, &SigningKey::from_bytes(&[51; 32])).unwrap();
+            authorize_order(&maker, 2_100, &SigningKey::from_bytes(&[51; 64])).unwrap();
         let maker_evidence = seller_wallet
             .present(maker.commitment().0, [61; 32], 2_000, &mut OsRng)
             .unwrap();
@@ -1068,7 +1068,7 @@ mod tests {
         )
         .unwrap();
         let taker_authority =
-            authorize_order(&taker, 2_100, &SigningKey::from_bytes(&[52; 32])).unwrap();
+            authorize_order(&taker, 2_100, &SigningKey::from_bytes(&[52; 64])).unwrap();
         let taker_evidence = buyer_wallet
             .present(taker.commitment().0, [62; 32], 2_000, &mut OsRng)
             .unwrap();

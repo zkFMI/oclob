@@ -6,7 +6,8 @@ license.workspace = true
 description = "Outcome-first OCLOB rough end-to-end acceptance runner"
 
 [dependencies]
-zkfmi-crypto.workspace = true
+zeroize = "1.8"
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
 oclob-core.workspace = true
 oclob-dekyx.workspace = true
 oclob-edge.workspace = true

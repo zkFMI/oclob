@@ -1,12 +1,12 @@
 //! Coordinator-only acceptance client for the seven-container OCLOB cluster.
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{SigningKey, VerifyingKey};
 use oclob_core::{MpcBatchResult, MAX_MATCH_SLOTS};
 use oclob_node::edge_client::{collect_order_certificate, EdgeAdmissionReceipt};
 use oclob_node::executor::{NodeExecutionReceipt, RoundPlan};
 use oclob_node::network::{
-    client_tls_context, load_secret_32, ClientIdentityConfig, ClientTlsConfig, ClusterPublicConfig,
-    NodeRpcClient,
+    client_tls_context, load_application_signing_seed, ClientIdentityConfig, ClientTlsConfig,
+    ClusterPublicConfig, NodeRpcClient,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -50,7 +50,8 @@ fn run() -> Result<(), String> {
         return Err("edge handoff does not describe two distinct orders in this market".into());
     }
     let coordinator = SigningKey::from_bytes(
-        &load_secret_32(&identity.application_signing_key).map_err(|error| error.to_string())?,
+        &load_application_signing_seed(&identity.application_signing_key)
+            .map_err(|error| error.to_string())?,
     );
     let tls = client_tls_context(
         &identity.tls_certificate,

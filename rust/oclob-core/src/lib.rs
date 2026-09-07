@@ -5,21 +5,23 @@
 
 #![forbid(unsafe_code)]
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+pub mod application_crypto;
+
+use crate::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 
-const ORDER_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:ORDER-COMMITMENT:v1";
-const ORDER_AUTHORITY_DOMAIN: &[u8] = b"OCLOB:ORDER-AUTHORITY:v1";
-const PRIVATE_BOOK_DOMAIN: &[u8] = b"OCLOB:PRIVATE-BOOK:v1";
-const PUBLIC_BOOK_DOMAIN: &[u8] = b"OCLOB:PUBLIC-BOOK:v1";
-const ORDER_CONTROL_DOMAIN: &[u8] = b"OCLOB:ORDER-CONTROL:v1";
-const CANCELLATION_DOMAIN: &[u8] = b"OCLOB:CANCELLATION:v1";
-const CANCELLATION_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:CANCELLATION-COMMITMENT:v1";
-const EXPIRY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:EXPIRY-COMMITMENT:v1";
-const SECRET_ORDER_WIRE_MAGIC: &[u8; 8] = b"OCLOBOR1";
+const ORDER_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:ORDER-COMMITMENT:v2";
+const ORDER_AUTHORITY_DOMAIN: &[u8] = b"OCLOB:ORDER-AUTHORITY:v2";
+const PRIVATE_BOOK_DOMAIN: &[u8] = b"OCLOB:PRIVATE-BOOK:v2";
+const PUBLIC_BOOK_DOMAIN: &[u8] = b"OCLOB:PUBLIC-BOOK:v2";
+const ORDER_CONTROL_DOMAIN: &[u8] = b"OCLOB:ORDER-CONTROL:v2";
+const CANCELLATION_DOMAIN: &[u8] = b"OCLOB:CANCELLATION:v2";
+const CANCELLATION_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:CANCELLATION-COMMITMENT:v2";
+const EXPIRY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:EXPIRY-COMMITMENT:v2";
+const SECRET_ORDER_WIRE_MAGIC: &[u8; 8] = b"OCLOBOR2";
 const MAX_SECRET_ORDER_WIRE_BYTES: usize = 512;
 
 pub type Digest32 = [u8; 32];
@@ -215,7 +217,7 @@ impl SecretOrder {
             ));
         }
         Ok(Self {
-            version: 1,
+            version: 2,
             order_id: controls.order_id,
             ephemeral_public_key: controls.ephemeral_public_key,
             market_id,
@@ -325,7 +327,7 @@ impl SecretOrder {
 
         let mut payload = SecretWireCursor::new(payload);
         let version = payload.u16()?;
-        if version != 1 {
+        if version != 2 {
             return Err(OrderError::Invalid(
                 "secret order wire version is unsupported",
             ));
@@ -501,7 +503,11 @@ pub fn authorize_order(
         commitment,
         authorization_deadline,
         verifying_key: signing_key.verifying_key().to_bytes(),
-        signature: signing_key.sign(&body).to_bytes().to_vec(),
+        signature: signing_key
+            .try_sign(&body)
+            .map_err(|_| OrderError::Authority)?
+            .to_bytes()
+            .to_vec(),
     })
 }
 
@@ -1545,8 +1551,8 @@ mod tests {
 
     #[test]
     fn canonical_transition_keeps_the_resting_price_and_remainder() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
-        let taker_key = SigningKey::from_bytes(&[42; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
+        let taker_key = SigningKey::from_bytes(&[42; 64]);
         let resting = order(Side::Sell, 100, 100, TimeInForce::GoodTilCancelled, 1);
         let arriving = order(Side::Buy, 101, 40, TimeInForce::ImmediateOrCancel, 2);
         let mut book = PrivateBook::new("JGB10Y-JPY").unwrap();
@@ -1596,8 +1602,8 @@ mod tests {
 
     #[test]
     fn batch_uses_better_price_before_earlier_worse_price() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
-        let taker_key = SigningKey::from_bytes(&[42; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
+        let taker_key = SigningKey::from_bytes(&[42; 64]);
         let worse = order(Side::Sell, 101, 100, TimeInForce::GoodTilCancelled, 3);
         let better = order(Side::Sell, 100, 100, TimeInForce::GoodTilCancelled, 4);
         let arriving = order(Side::Buy, 101, 150, TimeInForce::ImmediateOrCancel, 5);
@@ -1632,7 +1638,7 @@ mod tests {
 
     #[test]
     fn same_price_keeps_certificate_order() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
         let first = order(Side::Sell, 100, 10, TimeInForce::GoodTilCancelled, 6);
         let second = order(Side::Sell, 100, 10, TimeInForce::GoodTilCancelled, 7);
         let arriving = order(Side::Buy, 100, 15, TimeInForce::ImmediateOrCancel, 8);
@@ -1653,8 +1659,8 @@ mod tests {
 
     #[test]
     fn gtc_non_cross_rests_while_ioc_non_cross_does_not() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
-        let buyer_key = SigningKey::from_bytes(&[42; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
+        let buyer_key = SigningKey::from_bytes(&[42; 64]);
         let ask = order(Side::Sell, 110, 10, TimeInForce::GoodTilCancelled, 9);
         let gtc = order(Side::Buy, 100, 5, TimeInForce::GoodTilCancelled, 10);
         let mut book = PrivateBook::new("JGB10Y-JPY").unwrap();
@@ -1760,8 +1766,8 @@ mod tests {
 
     #[test]
     fn changed_mpc_result_cannot_mutate_the_book() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
-        let taker_key = SigningKey::from_bytes(&[42; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
+        let taker_key = SigningKey::from_bytes(&[42; 64]);
         let resting = order(Side::Sell, 100, 10, TimeInForce::GoodTilCancelled, 13);
         let arriving = order(Side::Buy, 100, 5, TimeInForce::ImmediateOrCancel, 14);
         let mut book = PrivateBook::new("JGB10Y-JPY").unwrap();
@@ -1791,7 +1797,7 @@ mod tests {
 
     #[test]
     fn cancellation_competes_in_sequence_and_needs_the_committed_secret() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
         let resting = order(Side::Sell, 100, 10, TimeInForce::GoodTilCancelled, 11);
         let mut book = PrivateBook::new("JGB10Y-JPY").unwrap();
         book.insert_resting(
@@ -1821,7 +1827,7 @@ mod tests {
 
     #[test]
     fn expiry_is_a_canonical_ordered_state_transition() {
-        let maker_key = SigningKey::from_bytes(&[41; 32]);
+        let maker_key = SigningKey::from_bytes(&[41; 64]);
         let expired = order(Side::Sell, 100, 10, TimeInForce::GoodTilCancelled, 15);
         let live = SecretOrder::new(
             "JGB10Y-JPY",

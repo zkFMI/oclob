@@ -6,7 +6,7 @@ use crate::corporate::{
 };
 use crate::network::ClientIdentityConfig;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{SecretOrder, Side};
 use oclob_dekyx::{AnonymousPresentation, DemoEligibilityWallet};
 use oclob_settlement::pretrade::{select_funding_ring, CorporateFunding, PrivateReserveRequest};
@@ -29,7 +29,8 @@ use zkpi_defmi_sdk::reservation::order_authorization_commitment;
 pub struct CorporateReserveAuthorization {
     pub mandate: ApplicationReserveMandate,
     pub order_wire: Vec<u8>,
-    pub signing_key: [u8; 32],
+    #[serde(with = "oclob_core::application_crypto::secret_serde")]
+    pub signing_key: [u8; 64],
     pub eligibility_commitment: [u8; 32],
     pub order_authorization_salt: [u8; 32],
     pub reserve_reblinding: [u8; 32],
@@ -66,7 +67,7 @@ impl CorporateReserveAuthorization {
         let side_blinding = Scalar::random(&mut rand::rngs::OsRng);
         let side = u64::from(order.side() == Side::Sell);
         let mandate = ApplicationReserveMandate {
-            version: 1,
+            version: 2,
             scope,
             request_commitment: order_authorization_commitment(order.commitment().0, salt)
                 .map_err(err)?,
@@ -83,10 +84,10 @@ impl CorporateReserveAuthorization {
             settlement_terms_commitment: key.commit_u64(side, &side_blinding).compress().to_bytes(),
             valid_from: now,
             valid_until: order.expires_at(),
-            participant_public: signer.verifying_key().to_bytes(),
+            participant_public: signer.hybrid_public_key(),
             signature: Vec::new(),
         }
-        .sign(signer)?;
+        .sign(&signer.raw_hybrid_signer())?;
         let identity = eligibility
             .present_context(
                 mandate.identity_context(eligibility.scope_digest())?,
@@ -130,9 +131,7 @@ impl CorporateReserveAuthorization {
             || mandate.participant_handle != handle.point.compress().to_bytes()
             || mandate.participant_handle != order.participant_handle()
             || mandate.participant_public
-                != SigningKey::from_bytes(&self.signing_key)
-                    .verifying_key()
-                    .to_bytes()
+                != SigningKey::from_bytes(&self.signing_key).hybrid_public_key()
             || mandate.request_commitment
                 != order_authorization_commitment(
                     order.commitment().0,

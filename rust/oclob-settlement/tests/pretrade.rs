@@ -1,6 +1,6 @@
 //! Unit-level real-cryptography checks; live chain evidence is a separate gate.
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_dekyx::deterministic_demo_environment;
 use oclob_settlement::pretrade::{select_funding_ring, CorporateFunding, PrivateReserveRequest};
 use qomm_defmi::application_reservation::ApplicationReserveMandate;
@@ -71,7 +71,7 @@ fn request_with_pool(
     let entity = enrollment.subject_line_id().map_err(err)?;
     let signer = SigningKey::generate(&mut OsRng);
     let mandate = ApplicationReserveMandate {
-        version: 1,
+        version: 2,
         scope: ApplicationReserveScope {
             application_binding: oclob_manifest_v1().digest().map_err(err)?,
             venue_id: [1; 32],
@@ -92,10 +92,10 @@ fn request_with_pool(
         settlement_terms_commitment: commit(1, 11_u64),
         valid_from: 100,
         valid_until: 1000,
-        participant_public: signer.verifying_key().to_bytes(),
+        participant_public: signer.hybrid_public_key(),
         signature: vec![],
     }
-    .sign(&signer)?;
+    .sign(&signer.raw_hybrid_signer())?;
     let presentation = identity
         .present_context(
             mandate.identity_context(identity.scope_digest())?,

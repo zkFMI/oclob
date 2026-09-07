@@ -6,7 +6,7 @@ use crate::network::{
     NodeCapabilityRelease, NodePrivateStateReceipt, NodeRpcClient,
 };
 use crate::PrivateStateFinality;
-use ed25519_dalek::VerifyingKey;
+use oclob_core::application_crypto::VerifyingKey;
 use oclob_core::{Digest32, MpcBatchResult, OrderCommitment};
 use oclob_edge::{
     reconstruct_settlement_capability_key, EdgeOrderBundle, EdgeOrderManifest,
@@ -38,7 +38,7 @@ impl EdgeAdmissionReceipt {
 
     pub fn verify(&self, cluster: &ClusterPublicConfig, now: u64) -> Result<(), EdgeClientError> {
         cluster.validate()?;
-        if self.version != 2
+        if self.version != 3
             || self.manifest.market_id != cluster.market_id
             || self.node_generations.contains(&0)
             || self.order_share_digests.contains(&[0; 32])
@@ -210,7 +210,7 @@ impl EdgeDistributor {
         }
         node_receipts.sort_by_key(|receipt| receipt.party);
         let receipt = EdgeAdmissionReceipt {
-            version: 2,
+            version: 3,
             receipt_digest: receipt_digest(
                 &manifest,
                 &generations,
@@ -320,7 +320,7 @@ impl ThresholdCapabilityRelease {
         manifest: &EdgeOrderManifest,
         expected_venue: Digest32,
         expected_defmi: Digest32,
-        trusted_signer: &VerifyingKey,
+        trusted_signer: &[u8],
         now: u64,
     ) -> Result<oclob_edge::VerifiedReservationAuthority, EdgeClientError> {
         envelope
@@ -634,7 +634,7 @@ pub(crate) fn receipt_digest(
     node_receipts: &[NodeAdmissionReceipt],
 ) -> Digest32 {
     let mut hash = Sha256::new();
-    hash.update(b"OCLOB:EDGE-ADMISSION-RECEIPT:v2");
+    hash.update(b"OCLOB:EDGE-ADMISSION-RECEIPT:v3");
     hash.update(manifest.commitment.0);
     hash.update(manifest.signer);
     for (party, generation) in generations.iter().enumerate() {

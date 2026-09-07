@@ -1,0 +1,33 @@
+# Participant-owned claim-key services. They mount only the corporate process
+# journal; the market certificate is ACL-bound to the one issuance operation.
+services:
+  maker-api:
+    extends:
+      file: docker-compose.native.yml
+      service: maker-worker
+    networks:
+      oclob-private:
+        aliases: [oclob-maker-api]
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/maker-api.json
+    command: [oclob-corporate-api]
+    healthcheck:
+      test: [CMD, oclob-corporate-api, --ping]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+  taker-api:
+    extends:
+      file: docker-compose.native.yml
+      service: taker-worker
+    networks:
+      oclob-private:
+        aliases: [oclob-taker-api]
+    environment:
+      OCLOB_CORPORATE_API_CONFIG: /public/taker-api.json
+    command: [oclob-corporate-api]
+    healthcheck:
+      test: [CMD, oclob-corporate-api, --ping]
+      interval: 2s
+      timeout: 10s
+      retries: 10

@@ -83,11 +83,11 @@ impl Fixture {
             .into_iter()
             .map(|(id, share)| (id, frost::keys::KeyPackage::try_from(share).unwrap()))
             .collect();
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+        let issuer = oclob_core::application_crypto::SigningKey::from_bytes(&[31; 64]);
         let trust = NativeReservationTrust {
             venue_id: [32; 32],
             defmi_id: [33; 32],
-            issuer: issuer.verifying_key(),
+            issuer: issuer.hybrid_public_key(),
         };
         let pq_committee = zkfmi_crypto::test_support::committee(
             Sha256::digest(public.serialize().unwrap()).into(),
@@ -103,8 +103,10 @@ impl Fixture {
         };
         let make_authority = |index: u8, quantity: u64, blind: u64, delta: u64| {
             let point = key.g * Scalar::from(11 + u64::from(index));
+            let order_signer =
+                oclob_core::application_crypto::SigningKey::from_bytes(&[90 + index; 64]);
             let permit = ReservationPermit {
-                version: 2,
+                version: 3,
                 role: ReservationRole::Application,
                 application_binding: scope.application_binding,
                 venue_id: trust.venue_id,
@@ -134,13 +136,19 @@ impl Fixture {
                 reserve_receipt_digest: [56 + index; 32],
                 reservation_sequence: 1,
                 valid_until: 2_000,
-                signer_public: issuer.verifying_key().to_bytes(),
+                signer_public: issuer.hybrid_public_key(),
                 signature: vec![],
             }
-            .sign(&issuer)
+            .sign(&issuer.raw_hybrid_signer())
             .unwrap();
             let delta = Scalar::from(delta);
-            let admission = ReservationAdmission::from_permit(&permit, &delta, &issuer).unwrap();
+            let admission = ReservationAdmission::from_permit(
+                &permit,
+                &delta,
+                &issuer.raw_hybrid_signer(),
+                &[91; 32],
+            )
+            .unwrap();
             let binding = ExecutedReservationBinding {
                 order_commitment: [58 + index; 32],
                 source_order_commitment: permit.order_commitment,
@@ -148,6 +156,7 @@ impl Fixture {
                 participant_handle: permit.participant_handle,
                 amount_commitment: admission.amount_commitment,
                 side_commitment: admission.side_commitment,
+                order_signer: order_signer.verifying_key().to_bytes(),
                 valid_until: 2_000,
             };
             let head = ApplicationSpendHead {
@@ -163,17 +172,25 @@ impl Fixture {
                     admission,
                     permit,
                     reserve_reblinding: delta.to_bytes(),
+                    claim_authorization_endpoint: ClaimAuthorizationEndpoint {
+                        host: "claim-authority.test".into(),
+                        port: 9890 + u16::from(index),
+                        server_name: "claim-authority.test".into(),
+                        certificate_sha256: [99 + index; 32],
+                    },
+                    order_signer: order_signer.verifying_key().to_bytes(),
                 },
                 binding,
                 head,
+                order_signer,
             )
         };
-        let (maker, maker_binding, maker_head) = if maker_is_payer {
+        let (maker, maker_binding, maker_head, maker_order_signer) = if maker_is_payer {
             make_authority(0, 4_040, 17, 29)
         } else {
             make_authority(0, 60, 13, 23)
         };
-        let (taker, taker_binding, taker_head) = if maker_is_payer {
+        let (taker, taker_binding, taker_head, taker_order_signer) = if maker_is_payer {
             make_authority(1, 60, 13, 23)
         } else {
             make_authority(1, 4_040, 17, 29)
@@ -238,6 +255,45 @@ impl Fixture {
             sign(&keys, &public, &payment_digest),
             zkfmi_crypto::test_support::approve(&pq_committee, &payment_digest, 1_000),
         );
+        let claim_issue =
+            native_claim_authorization_issue_from_sequences(&instruction, &maker, &taker, 0, 0)
+                .unwrap();
+        let make_claim_authorizations =
+            |reservation_id: [u8; 32], signer: &ApplicationSigningKey| {
+                let expected = claim_issue.expected_for(reservation_id).unwrap();
+                NativeParticipantClaimAuthorizations {
+                    version: CLAIM_AUTHORIZATION_ISSUE_VERSION,
+                    reservation_id,
+                    sequence: 0,
+                    claims: expected.map(|(leg, recipient_commitment)| {
+                        NativeClaimAuthorizationCommitment {
+                            leg,
+                            recipient_commitment,
+                            authorization:
+                                qomm_defmi::claim_redemption::NoteClaimAuthorization::generate(
+                                    recipient_commitment,
+                                    NOW,
+                                    2_000,
+                                )
+                                .unwrap()
+                                .commitment()
+                                .unwrap(),
+                        }
+                    }),
+                    signature: Vec::new(),
+                }
+                .sign(&claim_issue, signer)
+                .unwrap()
+            };
+        let (payer_order_signer, payee_order_signer) = if maker_is_payer {
+            (&maker_order_signer, &taker_order_signer)
+        } else {
+            (&taker_order_signer, &maker_order_signer)
+        };
+        let claim_authorizations = NativeFillClaimAuthorizations {
+            payer: make_claim_authorizations(claim_issue.payer.reservation_id, payer_order_signer),
+            payee: make_claim_authorizations(claim_issue.payee.reservation_id, payee_order_signer),
+        };
         let sec_refund_blind = Scalar::from(13_u64 + 23) - amount_blind;
         let cash_refund_blind = Scalar::from(17_u64 + 29) - cash_blind;
         let dvp = DvpProofs {
@@ -273,6 +329,7 @@ impl Fixture {
                         Scalar::from(value) + Scalar::from(7_u64) * x + Scalar::from(9_u64) * x * x,
                         blind + Scalar::from(17_u64) * x + Scalar::from(19_u64) * x * x,
                         &recipient,
+                        &zkfmi_crypto::test_support::opening_recipient_public(),
                         &mut OsRng,
                     )
                     .unwrap()
@@ -280,12 +337,21 @@ impl Fixture {
                 .collect();
             let envelope = ApplicationOpening::from_domain(
                 &OpeningEnvelope::new(context, 3, recipient, shares).unwrap(),
+                instruction.nullifier(),
+                claim_authorizations
+                    .authorization(match leg {
+                        "securities_delivery" => NativeClaimLeg::SecuritiesDelivery,
+                        "securities_refund" => NativeClaimLeg::SecuritiesRefund,
+                        "cash_delivery" => NativeClaimLeg::CashDelivery,
+                        "cash_refund" => NativeClaimLeg::CashRefund,
+                        _ => unreachable!(),
+                    })
+                    .unwrap(),
             )
             .unwrap();
             let own = &envelope.shares[0];
             openings.insert(leg.to_owned(), json!({ "party": own.party, "context": hex::encode(context),
-                "recipient_view": hex::encode(envelope.recipient_view), "ephemeral": hex::encode(own.ephemeral),
-                "masked_value": hex::encode(own.masked_value), "masked_blinding": hex::encode(own.masked_blinding) }));
+                "recipient_view": hex::encode(envelope.recipient_view), "recipient_public": own.recipient_public, "sealed": own.sealed }));
             envelope
         };
         let envelopes = [
@@ -326,6 +392,7 @@ impl Fixture {
                 fill,
                 maker,
                 taker,
+                claim_authorizations,
             },
             securities_reserve,
             cash_reserve,
@@ -414,6 +481,61 @@ fn completed_proof_can_certify_exact_native_fill_without_participant_signature()
 }
 
 #[test]
+fn native_claim_authorizations_are_pinned_to_participants_openings_and_local_execution() {
+    let f = Fixture::new();
+    f.verify(&f.request, &f.execution).unwrap();
+
+    let mut missing = serde_json::to_value(&f.request).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("claim_authorizations");
+    assert!(serde_json::from_value::<NativeFillAuthorizationRequest>(missing).is_err());
+
+    let mut swapped = f.request.clone();
+    std::mem::swap(
+        &mut swapped.claim_authorizations.payer,
+        &mut swapped.claim_authorizations.payee,
+    );
+    assert!(f.verify(&swapped, &f.execution).is_err());
+
+    let mut reused = f.request.clone();
+    reused.claim_authorizations.payee.claims[0].authorization =
+        reused.claim_authorizations.payer.claims[0].authorization;
+    assert!(f.verify(&reused, &f.execution).is_err());
+
+    let mut tampered_signature = f.request.clone();
+    tampered_signature.claim_authorizations.payer.signature[0] ^= 1;
+    assert!(f.verify(&tampered_signature, &f.execution).is_err());
+
+    let mut substituted_opening = f.request.clone();
+    substituted_opening.fill.openings[0].claim_authorization =
+        substituted_opening.fill.openings[1].claim_authorization;
+    assert!(f.verify(&substituted_opening, &f.execution).is_err());
+
+    let mut wrong_local_signer = f.execution.clone();
+    wrong_local_signer.maker.order_signer[0] ^= 1;
+    assert!(f.verify(&f.request, &wrong_local_signer).is_err());
+
+    let mut legacy = serde_json::to_value(&f.request).unwrap();
+    legacy["claim_authorizations"]["payer"]
+        .as_object_mut()
+        .unwrap()
+        .remove("signature");
+    assert!(serde_json::from_value::<NativeFillAuthorizationRequest>(legacy).is_err());
+}
+
+#[test]
+fn claim_authorization_evidence_rejects_cross_fill_key_reuse() {
+    let f = Fixture::new();
+    let (responses, keys) = claim_authorization_evidence(std::slice::from_ref(&f.request)).unwrap();
+    assert_eq!(responses, 2);
+    assert_eq!(keys.len(), 4);
+    let error = claim_authorization_evidence(&[f.request.clone(), f.request]).unwrap_err();
+    assert!(error.contains("reused across fill requests"));
+}
+
+#[test]
 fn arriving_sell_closes_only_its_securities_reserve() {
     let f = Fixture::with_direction(true);
     assert!(f.request.fill.securities.close);
@@ -461,7 +583,7 @@ fn native_signing_rejects_changed_execution_authority_heads_openings_and_proofs(
             10 => request.fill.cash.previous_receipt[0] ^= 1,
             11 => request.maker.permit.signature[0] ^= 1,
             12 => request.maker.admission.signature[0] ^= 1,
-            13 => request.fill.openings[0].shares[0].masked_value = Scalar::ONE.to_bytes(),
+            13 => request.fill.openings[0].shares[0].sealed.tag[0] ^= 1,
             14 => {
                 request.fill.openings[0].shares.remove(0);
             }

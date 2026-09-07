@@ -32,7 +32,6 @@ pub mod executor;
 pub mod network;
 pub mod proof_network;
 
-use ed25519_dalek::VerifyingKey;
 use oclob_core::{Digest32, OrderCommitment, MAX_MATCH_SLOTS};
 use oclob_edge::{
     CapabilityKeyShare, EdgeOrderManifest, NodeDecryptionKey, SealedCapabilityKeyShare,
@@ -51,14 +50,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 9;
-const LEGACY_STORE_VERSION_V8: u16 = 8;
-const LEGACY_STORE_VERSION_V7: u16 = 7;
-const LEGACY_STORE_VERSION_V6: u16 = 6;
-const LEGACY_STORE_VERSION_V5: u16 = 5;
-const LEGACY_STORE_VERSION_V4: u16 = 4;
-const LEGACY_STORE_VERSION_V3: u16 = 3;
-const LEGACY_STORE_VERSION_V2: u16 = 2;
+const STORE_VERSION: u16 = 12;
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +60,8 @@ struct StoredRecord {
     #[serde(default)]
     sealed_capability_key_share: Option<SealedCapabilityKeyShare>,
     admitted_at: u64,
+    /// Exact randomized receipt returned after durable admission.
+    admission_receipt: Option<network::NodeAdmissionReceipt>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -121,16 +115,17 @@ struct PrivateRoundFinalization {
     transition_digest: Digest32,
     canonical_receipt_digest: Digest32,
     canonical_height: u64,
+    /// Exact randomized response returned after this private head is durable.
+    #[serde(deserialize_with = "deserialize_present_option")]
+    private_state_receipt: Option<network::NodePrivateStateReceipt>,
 }
 
-#[derive(Deserialize)]
-struct LegacyStoreStateV2 {
-    version: u16,
-    party: u16,
-    generation: u64,
-    records: BTreeMap<String, StoredRecord>,
-    #[serde(rename = "completed_rounds")]
-    _completed_rounds: BTreeMap<String, executor::NodeExecutionReceipt>,
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -242,7 +237,7 @@ pub struct NodeShareStore {
 struct ReservationTrust {
     venue_id: Digest32,
     defmi_id: Digest32,
-    signer: VerifyingKey,
+    signer: Vec<u8>,
 }
 
 impl NodeShareStore {
@@ -283,9 +278,9 @@ impl NodeShareStore {
         &mut self,
         venue_id: Digest32,
         defmi_id: Digest32,
-        signer: VerifyingKey,
+        signer: Vec<u8>,
     ) -> Result<(), NodeError> {
-        if venue_id == [0; 32] || defmi_id == [0; 32] {
+        if venue_id == [0; 32] || defmi_id == [0; 32] || signer.len() != 1984 {
             return Err(NodeError::Admission(
                 "trusted DeFMI reservation identity is zero".into(),
             ));
@@ -293,7 +288,7 @@ impl NodeShareStore {
         if self.reservation_trust.as_ref().is_some_and(|existing| {
             existing.venue_id != venue_id
                 || existing.defmi_id != defmi_id
-                || existing.signer.to_bytes() != signer.to_bytes()
+                || existing.signer != signer
         }) {
             return Err(NodeError::Admission(
                 "DeFMI reservation trust cannot change during one node generation".into(),
@@ -426,6 +421,7 @@ impl NodeShareStore {
             sealed,
             sealed_capability_key_share: Some(sealed_capability_key_share),
             admitted_at: now,
+            admission_receipt: None,
         };
         if let Some(existing) = self.state.records.get(&key) {
             return if existing.manifest == incoming.manifest
@@ -458,6 +454,57 @@ impl NodeShareStore {
         Ok(IngestOutcome::Stored {
             generation: self.state.generation,
         })
+    }
+
+    pub(crate) fn admission_receipt(
+        &mut self,
+        manifest: &EdgeOrderManifest,
+        key: &oclob_core::application_crypto::SigningKey,
+    ) -> Result<network::NodeAdmissionReceipt, NodeError> {
+        let id = manifest.commitment.hex();
+        let record = self.state.records.get(&id).ok_or(NodeError::Conflict)?;
+        let order_digest = record.sealed.wire_digest();
+        let capability_digest = record
+            .sealed_capability_key_share
+            .as_ref()
+            .ok_or(NodeError::Conflict)?
+            .wire_digest();
+        if let Some(receipt) = &record.admission_receipt {
+            receipt
+                .verify(
+                    manifest,
+                    self.state.party,
+                    order_digest,
+                    capability_digest,
+                    &key.verifying_key(),
+                )
+                .map_err(|error| NodeError::State(error.to_string()))?;
+            return Ok(receipt.clone());
+        }
+        let receipt = network::NodeAdmissionReceipt::sign(
+            self.state.party,
+            manifest,
+            order_digest,
+            capability_digest,
+            self.state.generation,
+            state_digest(&self.state)?,
+            key,
+        )
+        .map_err(|error| NodeError::State(error.to_string()))?;
+        self.state
+            .records
+            .get_mut(&id)
+            .ok_or(NodeError::Conflict)?
+            .admission_receipt = Some(receipt.clone());
+        if let Err(error) = self.persist() {
+            self.state
+                .records
+                .get_mut(&id)
+                .ok_or(NodeError::Conflict)?
+                .admission_receipt = None;
+            return Err(error);
+        }
+        Ok(receipt)
     }
 
     /// Persist one node's anti-equivocation decision before returning its
@@ -537,7 +584,7 @@ impl NodeShareStore {
         &mut self,
         certificate: &OrderCertificate,
         policy: CommitteePolicy,
-        keys: &BTreeMap<u16, ed25519_dalek::VerifyingKey>,
+        keys: &BTreeMap<u16, oclob_core::application_crypto::VerifyingKey>,
         now: u64,
     ) -> Result<u64, NodeError> {
         certificate
@@ -744,7 +791,7 @@ impl NodeShareStore {
             || receipt.result.slots.len() != MAX_MATCH_SLOTS
             || receipt.public_output_sha256 != public_output_digest(&receipt.result)
             || receipt.signer == [0; 32]
-            || receipt.signature.len() != 64
+            || !receipt.verify_stored_signature()
         {
             return Err(NodeError::Round(
                 "execution receipt is not a complete party result".into(),
@@ -816,7 +863,8 @@ impl NodeShareStore {
         &mut self,
         plan: &executor::RoundPlan,
         finality: &PrivateStateFinality,
-    ) -> Result<u64, NodeError> {
+        signing_key: &oclob_core::application_crypto::SigningKey,
+    ) -> Result<network::NodePrivateStateReceipt, NodeError> {
         finality.validate()?;
         if finality.round_id != plan.round_id {
             return Err(NodeError::PrivateState(
@@ -872,13 +920,34 @@ impl NodeShareStore {
             transition_digest: finality.transition_digest,
             canonical_receipt_digest: finality.canonical_receipt_digest,
             canonical_height: finality.canonical_height,
+            private_state_receipt: None,
         };
         if let Some(existing) = self.state.finalized_private_rounds.get(&key) {
-            return if existing == &candidate {
-                Ok(self.state.generation)
-            } else {
-                Err(NodeError::Conflict)
-            };
+            if existing.native_finality_required != candidate.native_finality_required
+                || existing.public_output_sha256 != candidate.public_output_sha256
+                || existing.transition_digest != candidate.transition_digest
+                || existing.canonical_receipt_digest != candidate.canonical_receipt_digest
+                || existing.canonical_height != candidate.canonical_height
+            {
+                return Err(NodeError::Conflict);
+            }
+            let stored = existing.private_state_receipt.as_ref().ok_or_else(|| {
+                NodeError::State("finalized private state lacks its signed receipt".into())
+            })?;
+            stored
+                .verify(
+                    &receipt,
+                    finality,
+                    self.state.party,
+                    &signing_key.verifying_key(),
+                )
+                .map_err(|error| NodeError::State(error.to_string()))?;
+            if stored.generation > self.state.generation {
+                return Err(NodeError::State(
+                    "private-state receipt refers to a future store generation".into(),
+                ));
+            }
+            return Ok(stored.clone());
         }
         if receipt.private_parent_digest != self.private_parent_digest(&plan.resting, plan.arriving)
         {
@@ -921,12 +990,32 @@ impl NodeShareStore {
         } else {
             self.state.private_heads.remove(&plan.arriving.hex());
         }
-        self.state.finalized_private_rounds.insert(key, candidate);
-        if let Err(error) = self.bump_generation().and_then(|_| self.persist()) {
+        self.state
+            .finalized_private_rounds
+            .insert(key.clone(), candidate);
+        let result: Result<network::NodePrivateStateReceipt, NodeError> = (|| {
+            self.bump_generation()?;
+            let signed = network::NodePrivateStateReceipt::sign(
+                self.state.party,
+                &receipt,
+                finality,
+                self.state.generation,
+                state_digest(&self.state)?,
+                signing_key,
+            )
+            .map_err(|error| NodeError::State(error.to_string()))?;
+            self.state
+                .finalized_private_rounds
+                .get_mut(&key)
+                .ok_or_else(|| NodeError::State("private finalization disappeared".into()))?
+                .private_state_receipt = Some(signed.clone());
+            self.persist()?;
+            Ok(signed)
+        })();
+        if result.is_err() {
             self.state = previous;
-            return Err(error);
         }
-        Ok(self.state.generation)
+        result
     }
 
     /// Open this node's capability-key share only after the exact signed round
@@ -1295,136 +1384,18 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
     if encoded[end..] != expected {
         return Err(NodeError::State("node share store checksum failed".into()));
     }
-    let mut value: serde_json::Value = serde_json::from_slice(&encoded[16..end])
+    let value: serde_json::Value = serde_json::from_slice(&encoded[16..end])
         .map_err(|_| NodeError::State("node share store payload is invalid".into()))?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| NodeError::State("node share store version is invalid".into()))?;
-    if (LEGACY_STORE_VERSION_V2..=LEGACY_STORE_VERSION_V8).contains(&version) {
-        if value.get("lifecycle").is_some() {
-            return Err(NodeError::State(
-                "legacy node store unexpectedly contains lifecycle history".into(),
-            ));
-        }
-        value["lifecycle"] = serde_json::json!({});
+    if version != STORE_VERSION {
+        return Err(NodeError::State("classical node store requires explicit authenticated PQC migration; existing state is preserved".into()));
     }
-    let (state, migrated) = match version {
-        STORE_VERSION => (
-            serde_json::from_value(value)
-                .map_err(|_| NodeError::State("node share store payload is invalid".into()))?,
-            false,
-        ),
-        LEGACY_STORE_VERSION_V8 => {
-            let mut legacy: StoreState = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy v8 node store payload is invalid".into()))?;
-            legacy.version = STORE_VERSION;
-            (legacy, true)
-        }
-        LEGACY_STORE_VERSION_V7 => {
-            if [
-                "private_heads",
-                "finalized_private_rounds",
-                "native_finalities",
-            ]
-            .iter()
-            .any(|field| {
-                value.get(field).is_some_and(|entries| {
-                    entries
-                        .as_object()
-                        .is_none_or(|entries| !entries.is_empty())
-                })
-            }) {
-                return Err(NodeError::State("v7 finalized private state requires explicit canonical reconciliation before upgrade".into()));
-            }
-            let mut legacy: StoreState = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy v7 node store payload is invalid".into()))?;
-            // V7 trusted coordinator assertions. Never bless old heads merely
-            // by upgrading their schema or fabricating an observation record.
-            legacy.version = STORE_VERSION;
-            (legacy, true)
-        }
-        LEGACY_STORE_VERSION_V6 | LEGACY_STORE_VERSION_V5 => {
-            let mut legacy: StoreState = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy v5 node store payload is invalid".into()))?;
-            if !legacy.records.is_empty() {
-                return Err(NodeError::State(
-                    "legacy node store must drain active orders before the admission privacy upgrade".into(),
-                ));
-            }
-            legacy.completed_rounds.clear();
-            legacy.ordering_sequence = 0;
-            legacy.ordering_head = [0; 32];
-            legacy.ordering_votes.clear();
-            legacy.ordered_commitments.clear();
-            legacy.private_heads.clear();
-            legacy.finalized_private_rounds.clear();
-            legacy.version = STORE_VERSION;
-            (legacy, true)
-        }
-        LEGACY_STORE_VERSION_V4 => {
-            let mut legacy: StoreState = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy v4 node store payload is invalid".into()))?;
-            if legacy.version != LEGACY_STORE_VERSION_V4 {
-                return Err(NodeError::State(
-                    "legacy v4 node store version is invalid".into(),
-                ));
-            }
-            // V4 receipts predate durable party-local post-match state. They
-            // must not authorize capability release after this migration.
-            legacy.completed_rounds.clear();
-            legacy.version = STORE_VERSION;
-            (legacy, true)
-        }
-        LEGACY_STORE_VERSION_V3 => {
-            let mut legacy: StoreState = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy v3 node store payload is invalid".into()))?;
-            if legacy.version != LEGACY_STORE_VERSION_V3 {
-                return Err(NodeError::State(
-                    "legacy v3 node store version is invalid".into(),
-                ));
-            }
-            legacy.completed_rounds.clear();
-            legacy.version = STORE_VERSION;
-            (legacy, true)
-        }
-        LEGACY_STORE_VERSION_V2 => {
-            let legacy: LegacyStoreStateV2 = serde_json::from_value(value)
-                .map_err(|_| NodeError::State("legacy node store payload is invalid".into()))?;
-            if legacy.version != LEGACY_STORE_VERSION_V2 {
-                return Err(NodeError::State(
-                    "legacy node store version is invalid".into(),
-                ));
-            }
-            (
-                StoreState {
-                    version: STORE_VERSION,
-                    party: legacy.party,
-                    generation: legacy.generation,
-                    records: legacy.records,
-                    // V2 receipts have no durable party-local post-match
-                    // state and cannot authorize a V5 settlement transition.
-                    completed_rounds: BTreeMap::new(),
-                    ordering_sequence: 0,
-                    ordering_head: [0; 32],
-                    ordering_votes: BTreeMap::new(),
-                    ordered_commitments: BTreeSet::new(),
-                    reservation_claims: BTreeMap::new(),
-                    private_heads: BTreeMap::new(),
-                    finalized_private_rounds: BTreeMap::new(),
-                    native_finalities: BTreeMap::new(),
-                    lifecycle: BTreeMap::new(),
-                },
-                true,
-            )
-        }
-        _ => {
-            return Err(NodeError::State(
-                "node share store belongs to an unsupported version".into(),
-            ))
-        }
-    };
+    let state: StoreState = serde_json::from_value(value)
+        .map_err(|_| NodeError::State("node share store payload is invalid".into()))?;
     if state.party != expected_party
         || (state.ordering_sequence == 0) != (state.ordering_head == [0; 32])
         || u64::try_from(state.ordered_commitments.len()).ok() != Some(state.ordering_sequence)
@@ -1519,7 +1490,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
             || receipt.result.slots.len() != MAX_MATCH_SLOTS
             || receipt.public_output_sha256 != public_output_digest(&receipt.result)
             || receipt.signer == [0; 32]
-            || receipt.signature.len() != 64
+            || !receipt.verify_stored_signature()
         {
             return Err(NodeError::State(
                 "node share store contains a misbound completed round".into(),
@@ -1533,8 +1504,8 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
         if !state.records.contains_key(commitment)
             || head.round_id == [0; 32]
             || head.private_state_sha256 == [0; 32]
-            || usize::from(head.wire_offset) > MAX_MATCH_SLOTS * 4
-            || usize::from(head.wire_offset) % 4 != 0
+            || usize::from(head.wire_offset) > MAX_MATCH_SLOTS * PRIVATE_ORDER_WIRES
+            || usize::from(head.wire_offset) % PRIVATE_ORDER_WIRES != 0
             || head.transition_digest == [0; 32]
             || head.canonical_receipt_digest == [0; 32]
             || head.canonical_height == 0
@@ -1580,8 +1551,34 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
                 "node share store contains a misbound private-state finalization".into(),
             ));
         }
+        let receipt = receipt.expect("checked completed receipt");
+        let signed = finalization.private_state_receipt.as_ref().ok_or_else(|| {
+            NodeError::State(
+                "node share store contains an unsigned private-state finalization".into(),
+            )
+        })?;
+        let signer = oclob_core::application_crypto::VerifyingKey::from_bytes(&signed.signer)
+            .map_err(|error| NodeError::State(error.to_string()))?;
+        signed
+            .verify(
+                receipt,
+                &PrivateStateFinality {
+                    round_id: receipt.round_id,
+                    public_output_sha256: finalization.public_output_sha256,
+                    transition_digest: finalization.transition_digest,
+                    canonical_receipt_digest: finalization.canonical_receipt_digest,
+                    canonical_height: finalization.canonical_height,
+                },
+                expected_party,
+                &signer,
+            )
+            .map_err(|error| NodeError::State(error.to_string()))?;
+        if signed.generation > state.generation {
+            return Err(NodeError::State(
+                "node share store contains a future private-state receipt".into(),
+            ));
+        }
         if finalization.native_finality_required {
-            let receipt = receipt.expect("checked completed receipt");
             let records = state.native_finalities.get(round).ok_or_else(|| {
                 NodeError::State("native finalized round lacks independent observations".into())
             })?;
@@ -1598,7 +1595,7 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
             )?;
         }
     }
-    Ok((state, migrated))
+    Ok((state, false))
 }
 
 fn reject_symlink(path: &Path) -> Result<(), NodeError> {
@@ -1611,7 +1608,16 @@ fn reject_symlink(path: &Path) -> Result<(), NodeError> {
 }
 
 fn state_digest(state: &StoreState) -> Result<Digest32, NodeError> {
-    serde_json::to_vec(state)
+    // Receipt signatures attest this semantic state; exclude their cache to
+    // avoid a self-referential digest and keep it stable after receipt persistence.
+    let mut semantic = state.clone();
+    for record in semantic.records.values_mut() {
+        record.admission_receipt = None;
+    }
+    for finalization in semantic.finalized_private_rounds.values_mut() {
+        finalization.private_state_receipt = None;
+    }
+    serde_json::to_vec(&semantic)
         .map(|payload| Sha256::digest(payload).into())
         .map_err(|error| NodeError::State(error.to_string()))
 }
@@ -1679,7 +1685,7 @@ mod native_lifecycle_tests;
 mod tests {
     use super::*;
     use curve25519_dalek::scalar::Scalar;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use oclob_core::{MpcBatchResult, MpcSlotResult, SecretOrder, Side, TimeInForce};
     use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
     use oclob_ordering::OrderingCommittee;
@@ -1733,6 +1739,23 @@ mod tests {
         let private = std::array::from_fn(|_| NodeDecryptionKey::generate().unwrap());
         let public = std::array::from_fn(|party| private[party].public_key().unwrap());
         (private, public)
+    }
+
+    fn zero_persistence_file(wires: usize) -> Vec<u8> {
+        let prime = ((1_u128 << 89) - 1).to_be_bytes();
+        let first = prime.iter().position(|byte| *byte != 0).unwrap();
+        let prime = &prime[first..];
+        let mut header = Vec::new();
+        header.extend_from_slice(b"Shamir gfp");
+        header.push(0);
+        header.extend_from_slice(&(prime.len() as u32).to_le_bytes());
+        header.extend_from_slice(prime);
+        header.extend_from_slice(&0_u32.to_le_bytes());
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.resize(bytes.len() + wires * 16, 0);
+        bytes
     }
 
     #[test]
@@ -1791,6 +1814,162 @@ mod tests {
     }
 
     #[test]
+    fn randomized_private_state_receipt_is_first_write_exact_after_restart_and_tamper_evident() {
+        let (private, public) = keyset();
+        let participant = SigningKey::generate(&mut rand::rngs::OsRng);
+        let coordinator = SigningKey::generate(&mut rand::rngs::OsRng);
+        let receipt_signer = SigningKey::generate(&mut rand::rngs::OsRng);
+        let bundle = EdgeOrderBundle::create(
+            &order(100, 40, 71),
+            [72; 32],
+            [73; 32],
+            &participant,
+            &public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let manifest = bundle.manifest().clone();
+        let delivery = bundle.into_deliveries();
+        let path = temp_path("private-receipt-retry");
+        let private_root = path.parent().unwrap().join("private-state");
+        let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
+        store
+            .ingest(
+                manifest.clone(),
+                delivery[0].1.clone(),
+                delivery[0].2.clone(),
+                1_900_000_000,
+            )
+            .unwrap();
+        let mut committee = OrderingCommittee::deterministic_for_demo().unwrap();
+        let plan = executor::RoundPlan::sign(
+            committee
+                .certify(
+                    "JGB10Y-JPY",
+                    manifest.commitment,
+                    1_900_000_100,
+                    1_900_000_000,
+                )
+                .unwrap(),
+            vec![],
+            1_900_000_000,
+            1_900_000_100,
+            &coordinator,
+        )
+        .unwrap();
+        let private_bytes = zero_persistence_file(PERSISTENCE_WIRES);
+        let private_digest: Digest32 = Sha256::digest(&private_bytes).into();
+        let round_root = private_root.join(hex::encode(plan.round_id));
+        fs::create_dir_all(&round_root).unwrap();
+        fs::write(round_root.join("Transactions-P0.data"), private_bytes).unwrap();
+        store.bind_private_state_root(&private_root).unwrap();
+        let result = MpcBatchResult {
+            slots: vec![
+                MpcSlotResult {
+                    matched: false,
+                    trade_price: 0,
+                    trade_quantity: 0,
+                };
+                MAX_MATCH_SLOTS
+            ],
+            arriving_remaining: 40,
+            public_levels: None,
+        };
+        let execution = executor::NodeExecutionReceipt {
+            version: 2,
+            party: 0,
+            round_id: plan.round_id,
+            generation: store.status().unwrap().generation,
+            round_commitment: [74; 32],
+            program_sha256: [75; 32],
+            artifact_sha256: [76; 32],
+            private_parent_digest: store.private_parent_digest(&[], manifest.commitment),
+            private_state_sha256: private_digest,
+            public_output_sha256: public_output_digest(&result),
+            result,
+            execution_ms: 1,
+            depth_attestation: None,
+            signer: receipt_signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .signed_fixture(&receipt_signer);
+        store.record_completed_round(execution.clone()).unwrap();
+        let finality = PrivateStateFinality {
+            round_id: plan.round_id,
+            public_output_sha256: execution.public_output_sha256,
+            transition_digest: [77; 32],
+            canonical_receipt_digest: [78; 32],
+            canonical_height: 9,
+        };
+
+        let first = store
+            .finalize_private_round(&plan, &finality, &receipt_signer)
+            .unwrap();
+        first
+            .verify(&execution, &finality, 0, &receipt_signer.verifying_key())
+            .unwrap();
+        let first_wire = serde_json::to_vec(&first).unwrap();
+        let saved = fs::read(&path).unwrap();
+        let retry = store
+            .finalize_private_round(&plan, &finality, &receipt_signer)
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&retry).unwrap(), first_wire);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+
+        drop(store);
+        let mut reopened = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
+        let restored = reopened
+            .finalize_private_round(&plan, &finality, &receipt_signer)
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), first_wire);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        assert!(reopened
+            .finalize_private_round(&plan, &finality, &SigningKey::from_bytes(&[99; 64]),)
+            .is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+
+        let original = reopened.state.clone();
+        reopened
+            .state
+            .finalized_private_rounds
+            .get_mut(&hex::encode(plan.round_id))
+            .unwrap()
+            .private_state_receipt
+            .as_mut()
+            .unwrap()
+            .signature = vec![0; 64];
+        reopened.persist().unwrap();
+        let legacy = fs::read(&path).unwrap();
+        assert!(NodeShareStore::open(&path, 0, private[0].clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), legacy);
+
+        reopened.state = original.clone();
+        reopened.state.version = 11;
+        reopened.persist().unwrap();
+        let v11 = fs::read(&path).unwrap();
+        assert!(NodeShareStore::open(&path, 0, private[0].clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), v11);
+
+        for offset in [14 + 1984, 14 + 1984 + 64] {
+            reopened.state = original.clone();
+            reopened
+                .state
+                .finalized_private_rounds
+                .get_mut(&hex::encode(plan.round_id))
+                .unwrap()
+                .private_state_receipt
+                .as_mut()
+                .unwrap()
+                .signature[offset] ^= 1;
+            reopened.persist().unwrap();
+            let corrupt = fs::read(&path).unwrap();
+            assert!(NodeShareStore::open(&path, 0, private[0].clone()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), corrupt);
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn node_requires_pinned_defmi_permit_and_rejects_reservation_reuse() {
         let (private, public) = keyset();
         let participant = Identity::from_seed([81; 32]).handle(b"defmi:oclob:v1");
@@ -1807,12 +1986,12 @@ mod tests {
         )
         .unwrap();
         let defmi_id = [84; 32];
-        let permit_signer = SigningKey::from_bytes(&[85; 32]);
+        let permit_signer = SigningKey::from_bytes(&[85; 64]);
         let side_blinding = Scalar::from(86_u64);
         let reserve_blinding = Scalar::from(87_u64);
         let key = Pedersen::new(b"qomm:defmi:v1");
         let permit = ReservationPermit {
-            version: 2,
+            version: 3,
             role: ReservationRole::Taker,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [88; 32],
@@ -1842,17 +2021,18 @@ mod tests {
             reserve_receipt_digest: [94; 32],
             reservation_sequence: 4,
             valid_until: 2_000_000_001,
-            signer_public: permit_signer.verifying_key().to_bytes(),
+            signer_public: permit_signer.hybrid_public_key(),
             signature: Vec::new(),
         }
-        .sign(&permit_signer)
+        .sign(&permit_signer.raw_hybrid_signer())
         .unwrap();
         let make_bundle = |permit: &ReservationPermit, signer: &SigningKey| {
             let reblinding = Scalar::from(103_u64);
             let admission = zkpi_defmi_sdk::admission::ReservationAdmission::from_permit(
                 permit,
                 &reblinding,
-                &permit_signer,
+                &permit_signer.raw_hybrid_signer(),
+                &[91; 32],
             )
             .unwrap();
             EdgeOrderBundle::create_with_reservation_admission(
@@ -1860,7 +2040,7 @@ mod tests {
                 &participant,
                 [95; 32],
                 &admission,
-                &permit_signer.verifying_key(),
+                &permit_signer.hybrid_public_key(),
                 side_blinding,
                 reserve_blinding + reblinding,
                 signer,
@@ -1870,14 +2050,14 @@ mod tests {
             )
             .unwrap()
         };
-        let first = make_bundle(&permit, &SigningKey::from_bytes(&[96; 32]));
+        let first = make_bundle(&permit, &SigningKey::from_bytes(&[96; 64]));
         let mut reissued = permit.clone();
         reissued.canonical_state_root = [98; 32];
         reissued.accepted_height += 1;
         reissued.signature.clear();
-        reissued = reissued.sign(&permit_signer).unwrap();
+        reissued = reissued.sign(&permit_signer.raw_hybrid_signer()).unwrap();
         assert_ne!(permit.digest().unwrap(), reissued.digest().unwrap());
-        let second = make_bundle(&reissued, &SigningKey::from_bytes(&[97; 32]));
+        let second = make_bundle(&reissued, &SigningKey::from_bytes(&[97; 64]));
         let first_manifest = first.manifest().clone();
         let second_manifest = second.manifest().clone();
         assert_ne!(first_manifest.commitment, second_manifest.commitment);
@@ -1898,7 +2078,7 @@ mod tests {
         let path = temp_path("permit-reuse");
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         store
-            .pin_reservation_trust([99; 32], defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust([99; 32], defmi_id, permit_signer.hybrid_public_key())
             .unwrap();
         assert!(store
             .ingest(
@@ -1911,7 +2091,7 @@ mod tests {
         drop(store);
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         store
-            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.hybrid_public_key())
             .unwrap();
         store
             .ingest(
@@ -1933,17 +2113,17 @@ mod tests {
         drop(store);
         let mut store = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         assert!(store
-            .pin_reservation_trust([99; 32], defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust([99; 32], defmi_id, permit_signer.hybrid_public_key())
             .is_err());
         store
-            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.hybrid_public_key())
             .unwrap();
         let claims = store.state.reservation_claims.clone();
         store.state.reservation_claims.clear();
         store.persist().unwrap();
         let mut incomplete = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         assert!(incomplete
-            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.hybrid_public_key())
             .is_err());
         assert!(incomplete.reservation_trust.is_none());
         drop(incomplete);
@@ -1953,7 +2133,7 @@ mod tests {
         drop(store);
         let mut reopened = NodeShareStore::open(&path, 0, private[0].clone()).unwrap();
         reopened
-            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.verifying_key())
+            .pin_reservation_trust(permit.venue_id, defmi_id, permit_signer.hybrid_public_key())
             .unwrap();
         // Native authority shares survive deadline until the node itself has
         // observed canonical release; pruning cannot bypass that requirement.
@@ -2149,23 +2329,28 @@ mod tests {
         let resting_output = public_output_digest(&resting_result);
         let resting_generation = store.status().unwrap().generation;
         store
-            .record_completed_round(executor::NodeExecutionReceipt {
-                version: 1,
-                party: 0,
-                round_id: resting_plan.round_id,
-                generation: resting_generation,
-                round_commitment: [34; 32],
-                program_sha256: [35; 32],
-                artifact_sha256: [36; 32],
-                private_parent_digest: [37; 32],
-                private_state_sha256: [40; 32],
-                public_output_sha256: resting_output,
-                result: resting_result,
-                execution_ms: 1,
-                depth_attestation: None,
-                signer: [38; 32],
-                signature: vec![39; 64],
-            })
+            .record_completed_round(
+                executor::NodeExecutionReceipt {
+                    version: 2,
+                    party: 0,
+                    round_id: resting_plan.round_id,
+                    generation: resting_generation,
+                    round_commitment: [34; 32],
+                    program_sha256: [35; 32],
+                    artifact_sha256: [36; 32],
+                    private_parent_digest: [37; 32],
+                    private_state_sha256: [40; 32],
+                    public_output_sha256: resting_output,
+                    result: resting_result,
+                    execution_ms: 1,
+                    depth_attestation: None,
+                    signer: [38; 32],
+                    signature: vec![39; 64],
+                }
+                .signed_fixture(
+                    &oclob_core::application_crypto::SigningKey::from_bytes(&[201; 64]),
+                ),
+            )
             .unwrap();
         let (released, output) = store
             .release_capability_key_share(&resting_plan, resting_manifest.commitment, 1_900_000_000)
@@ -2227,23 +2412,28 @@ mod tests {
         let ioc_output = public_output_digest(&ioc_result);
         let ioc_generation = store.status().unwrap().generation;
         store
-            .record_completed_round(executor::NodeExecutionReceipt {
-                version: 1,
-                party: 0,
-                round_id: ioc_plan.round_id,
-                generation: ioc_generation,
-                round_commitment: [43; 32],
-                program_sha256: [44; 32],
-                artifact_sha256: [45; 32],
-                private_parent_digest: [46; 32],
-                private_state_sha256: [49; 32],
-                public_output_sha256: ioc_output,
-                result: ioc_result,
-                execution_ms: 1,
-                depth_attestation: None,
-                signer: [47; 32],
-                signature: vec![48; 64],
-            })
+            .record_completed_round(
+                executor::NodeExecutionReceipt {
+                    version: 2,
+                    party: 0,
+                    round_id: ioc_plan.round_id,
+                    generation: ioc_generation,
+                    round_commitment: [43; 32],
+                    program_sha256: [44; 32],
+                    artifact_sha256: [45; 32],
+                    private_parent_digest: [46; 32],
+                    private_state_sha256: [49; 32],
+                    public_output_sha256: ioc_output,
+                    result: ioc_result,
+                    execution_ms: 1,
+                    depth_attestation: None,
+                    signer: [47; 32],
+                    signature: vec![48; 64],
+                }
+                .signed_fixture(
+                    &oclob_core::application_crypto::SigningKey::from_bytes(&[201; 64]),
+                ),
+            )
             .unwrap();
         assert!(store
             .release_capability_key_share(&ioc_plan, ioc_manifest.commitment, 1_900_000_000,)

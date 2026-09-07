@@ -17,7 +17,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
        libssl-dev libgmp-dev libsodium-dev libboost-dev libboost-thread-dev \
        libboost-filesystem-dev libboost-iostreams-dev libntl-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone https://github.com/shukob/qomm.git /tmp/qomm \
+RUN git clone https://github.com/zkFMI/qomm.git /tmp/qomm \
     && git -C /tmp/qomm checkout --detach "${QOMM_COMMIT}" \
     && test "$(git -C /tmp/qomm rev-parse HEAD)" = "${QOMM_COMMIT}" \
     && git clone https://github.com/data61/MP-SPDZ.git /opt/MP-SPDZ \
@@ -83,7 +83,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
        ca-certificates git build-essential clang cmake pkg-config protobuf-compiler libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone https://github.com/shukob/defmi.git /source/defmi \
+RUN git clone https://github.com/zkFMI/defmi.git /source/defmi \
     && git -C /source/defmi checkout --detach "${DEFMI_COMMIT}" \
     && test "$(git -C /source/defmi rev-parse HEAD)" = "${DEFMI_COMMIT}"
 WORKDIR /source/defmi/rust

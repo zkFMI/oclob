@@ -6,7 +6,6 @@
 
 use curve25519_dalek::scalar::Scalar;
 use dekyx_core::{AnonymousPresentation, DeKyxVerifier, EligibilityRequirement};
-use ed25519_dalek::SigningKey;
 use qomm_defmi::application_reservation::{
     ApplicationIdentityEvidence, ApplicationReserveMandate, ApplicationReserveScope,
     VerifiedApplicationNoteReservation,
@@ -26,6 +25,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::{
@@ -507,21 +507,23 @@ impl PrivateReserveRequest {
         bridge: &AvalancheNoteBridge<'_, C>,
         verified: &VerifiedApplicationNoteReservation,
         approval: &QuorumApproval,
-        issuer: &SigningKey,
+        issuer: &HybridSigner,
+        private_tag_key: &[u8; 32],
         now: u64,
     ) -> Result<FinalizedReservation, String> {
         if verified.reservation().binding != self.mandate.binding()? {
             return Err("verified reserve belongs to another private request".into());
         }
         bridge.reserve_application(verified, approval)?;
-        self.recover_finalized(bridge.client, issuer, now)
+        self.recover_finalized(bridge.client, issuer, private_tag_key, now)
     }
 
     /// Explicit recovery after a lost reply, not a silent retry with new funds.
     pub fn recover_finalized<C: AvalancheClient>(
         &self,
         client: &C,
-        issuer: &SigningKey,
+        issuer: &HybridSigner,
+        private_tag_key: &[u8; 32],
         now: u64,
     ) -> Result<FinalizedReservation, String> {
         self.validate_shape()?;
@@ -540,7 +542,8 @@ impl PrivateReserveRequest {
         .map_err(err)?;
         let delta = Option::<Scalar>::from(Scalar::from_canonical_bytes(self.reserve_reblinding))
             .ok_or("invalid reserve reblinding")?;
-        let admission = ReservationAdmission::from_permit(&permit, &delta, issuer).map_err(err)?;
+        let admission = ReservationAdmission::from_permit(&permit, &delta, issuer, private_tag_key)
+            .map_err(err)?;
         Ok(FinalizedReservation { permit, admission })
     }
 }

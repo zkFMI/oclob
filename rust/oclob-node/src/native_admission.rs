@@ -2,7 +2,6 @@
 //! Transport uses the existing pinned bounded resident-service codec and mTLS.
 
 use crate::network::{certificate_fingerprint, PeerRole, Principal, ServerTlsConfig};
-use ed25519_dalek::SigningKey;
 use oclob_dekyx::OclobEligibilityVerifier;
 use oclob_settlement::pretrade::{PrivateReserveRequest, MAX_PRETRADE_BYTES};
 use qomm_defmi::application_reservation::ApplicationReserveScope;
@@ -19,13 +18,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 
 /// Constructed by the DeFMI operator, not deserialized from an API request.
 pub struct AdmissionAuthority {
     pub client: AvalancheRpcClient,
     pub authorizer: QuorumAuthorizer,
     pub governance_signers: BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
-    pub receipt_issuer: SigningKey,
+    pub receipt_issuer: Arc<HybridSigner>,
+    pub private_tag_key: zeroize::Zeroizing<[u8; 32]>,
     pub scope: ApplicationReserveScope,
     pub eligibility: OclobEligibilityVerifier,
 }
@@ -50,6 +51,7 @@ impl AdmissionAuthority {
                     return serde_json::to_value(reserve.recover_finalized(
                         &self.client,
                         &self.receipt_issuer,
+                        &self.private_tag_key,
                         now,
                     )?)
                     .map_err(err);
@@ -58,9 +60,12 @@ impl AdmissionAuthority {
                 // a lost reply must not need the now-spent input notes or old
                 // facility generation. Recovery verifies the complete binding;
                 // it never issues a replacement reserve or new funding proof.
-                if let Ok(finalized) =
-                    reserve.recover_finalized(&self.client, &self.receipt_issuer, now)
-                {
+                if let Ok(finalized) = reserve.recover_finalized(
+                    &self.client,
+                    &self.receipt_issuer,
+                    &self.private_tag_key,
+                    now,
+                ) {
                     return serde_json::to_value(finalized).map_err(err);
                 }
                 let requirement = self.eligibility.requirement();
@@ -88,6 +93,7 @@ impl AdmissionAuthority {
                     &verified,
                     &approval,
                     &self.receipt_issuer,
+                    &self.private_tag_key,
                     now,
                 )?)
                 .map_err(err)
@@ -333,7 +339,7 @@ mod tests {
             },
         )
         .unwrap();
-        let signer = SigningKey::generate(&mut rand::rngs::OsRng);
+        let signer = oclob_core::application_crypto::SigningKey::generate(&mut rand::rngs::OsRng);
         let authority = AdmissionAuthority {
             client,
             authorizer: QuorumAuthorizer::new(
@@ -349,7 +355,8 @@ mod tests {
             )
             .unwrap(),
             governance_signers: BTreeMap::new(),
-            receipt_issuer: signer,
+            receipt_issuer: Arc::new(signer.raw_hybrid_signer()),
+            private_tag_key: zeroize::Zeroizing::new([81; 32]),
             scope: ApplicationReserveScope {
                 application_binding: [1; 32],
                 venue_id: [2; 32],

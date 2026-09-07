@@ -2,7 +2,7 @@
 use super::*;
 use crate::native_lifecycle::LifecycleCommand;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{SecretOrder, Side, TimeInForce};
 use oclob_edge::{EdgeOrderBundle, NodeEncryptionKey};
 use oclob_ordering::OrderingCommittee;
@@ -24,7 +24,7 @@ fn fixture() -> (
         .join(format!("oclob-lifecycle-{:016x}", rand::random::<u64>()))
         .join("shares.bin");
     let owner = SigningKey::generate(&mut rand::rngs::OsRng);
-    let issuer = SigningKey::from_bytes(&[42; 32]);
+    let issuer = SigningKey::from_bytes(&[42; 64]);
     let identity = Identity::from_seed([41; 32]).handle(b"defmi:oclob:v1");
     let order = SecretOrder::new(
         "JGB10Y-JPY",
@@ -43,7 +43,7 @@ fn fixture() -> (
     let reserve_blind = Scalar::from(6_u64);
     let delta = Scalar::from(7_u64);
     let permit = ReservationPermit {
-        version: 2,
+        version: 3,
         role: ReservationRole::Application,
         application_binding: zkpi_defmi_sdk::application::oclob_manifest_v1()
             .digest()
@@ -72,20 +72,24 @@ fn fixture() -> (
         reserve_receipt_digest: [55; 32],
         reservation_sequence: 1,
         valid_until: 2_000_000_000,
-        signer_public: issuer.verifying_key().to_bytes(),
+        signer_public: issuer.hybrid_public_key(),
         signature: Vec::new(),
     }
-    .sign(&issuer)
+    .sign(&issuer.raw_hybrid_signer())
     .unwrap();
-    let admission =
-        zkpi_defmi_sdk::admission::ReservationAdmission::from_permit(&permit, &delta, &issuer)
-            .unwrap();
+    let admission = zkpi_defmi_sdk::admission::ReservationAdmission::from_permit(
+        &permit,
+        &delta,
+        &issuer.raw_hybrid_signer(),
+        &[91; 32],
+    )
+    .unwrap();
     let bundle = EdgeOrderBundle::create_with_reservation_admission(
         &order,
         &identity,
         [56; 32],
         &admission,
-        &issuer.verifying_key(),
+        &issuer.hybrid_public_key(),
         side_blind,
         reserve_blind + delta,
         &owner,
@@ -98,7 +102,7 @@ fn fixture() -> (
     let deliveries = bundle.into_deliveries();
     let mut store = NodeShareStore::open(&path, 0, keys[0].clone()).unwrap();
     store
-        .pin_reservation_trust(permit.venue_id, permit.defmi_id, issuer.verifying_key())
+        .pin_reservation_trust(permit.venue_id, permit.defmi_id, issuer.hybrid_public_key())
         .unwrap();
     store
         .ingest(
@@ -125,7 +129,7 @@ fn owner_authorization_and_real_expiry_are_distinct() {
         1_900_000_001,
         1_900_000_100,
         [57; 32],
-        &SigningKey::from_bytes(&[58; 32])
+        &SigningKey::from_bytes(&[58; 64])
     )
     .is_err());
     assert!(LifecycleCommand::expire(
@@ -210,8 +214,8 @@ fn ordered_lifecycle_blocks_matching_and_survives_reopen() {
 }
 
 #[test]
-fn v9_requires_lifecycle_history_and_v8_has_explicit_empty_upgrade() {
-    let (mut store, _, _, key) = fixture();
+fn current_store_requires_lifecycle_history_and_preserves_legacy_v8() {
+    let (store, _, _, key) = fixture();
     let path = store.path.clone();
     let mut state = serde_json::to_value(&store.state).unwrap();
     state.as_object_mut().unwrap().remove("lifecycle");
@@ -225,12 +229,10 @@ fn v9_requires_lifecycle_history_and_v8_has_explicit_empty_upgrade() {
         Sha256::digest(&bytes).as_slice(),
     ]
     .concat();
-    fs::write(&path, encoded).unwrap();
+    fs::write(&path, &encoded).unwrap();
     drop(store);
-    store = NodeShareStore::open(&path, 0, key).unwrap();
-    assert_eq!(store.state.version, 9);
-    assert!(store.state.lifecycle.is_empty());
-    assert_eq!(store.state.records.len(), 1);
+    assert!(NodeShareStore::open(&path, 0, key).is_err());
+    assert_eq!(fs::read(&path).unwrap(), encoded);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
@@ -269,7 +271,7 @@ fn a_completed_unsettled_match_blocks_cancel_before_any_state_change() {
     store.state.completed_rounds.insert(
         hex::encode([61; 32]),
         executor::NodeExecutionReceipt {
-            version: 1,
+            version: 2,
             party: 0,
             round_id: [61; 32],
             generation: 1,
@@ -284,7 +286,10 @@ fn a_completed_unsettled_match_blocks_cancel_before_any_state_change() {
             depth_attestation: None,
             signer: owner.verifying_key().to_bytes(),
             signature: vec![0; 64],
-        },
+        }
+        .signed_fixture(&oclob_core::application_crypto::SigningKey::from_bytes(
+            &[201; 64],
+        )),
     );
     let command =
         LifecycleCommand::cancel(&manifest, 1_900_000_002, 1_900_000_100, [67; 32], &owner)

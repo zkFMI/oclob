@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{authorize_order, SecretOrder, Side, TimeInForce};
 use oclob_dekyx::deterministic_demo_environment;
 use oclob_service::OclobService;
@@ -121,8 +121,8 @@ fn run() -> Result<(), DemoError> {
     let mut service = OclobService::new(MARKET, &options.mp_spdz_root, eligibility)
         .map_err(|error| DemoError::Execution(error.to_string()))?;
     let (seller_handle, buyer_handle) = service.demo_participant_handles();
-    let maker_key = SigningKey::from_bytes(&[41; 32]);
-    let taker_key = SigningKey::from_bytes(&[42; 32]);
+    let maker_key = SigningKey::from_bytes(&[41; 64]);
+    let taker_key = SigningKey::from_bytes(&[42; 64]);
     let resting = SecretOrder::new_with_dekyx_nullifier(
         MARKET,
         Side::Sell,

@@ -27,7 +27,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const COLLABORATIVE_FILL_DOMAIN: &[u8] = b"OCLOB:COLLABORATIVE-FILL:v1";
-const MAX_METADATA_BYTES: u64 = 16 * 1024;
+const MAX_METADATA_BYTES: u64 = 64 * 1024;
 const MAX_PROOF_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -124,8 +124,7 @@ impl ProofLoadGuard {
             .chain_update(public_output)
             .finalize()
             .into();
-        if !matches!(metadata.version, 1 | 2)
-            || (metadata.version == 1 && metadata.native_fill.is_some())
+        if metadata.version != 3
             || metadata.party != self.party
             || metadata.round_id != round_id
             || usize::from(metadata.slot) != slot
@@ -534,7 +533,7 @@ fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -567,9 +566,9 @@ mod tests {
         let proof = b"bounded node-local proof shares";
         let proof_path = slot_dir.join(format!("Transactions-P{party}.data"));
         fs::write(&proof_path, proof).unwrap();
-        let signing = SigningKey::from_bytes(&[4; 32]);
+        let signing = SigningKey::from_bytes(&[4; 64]);
         let mut metadata = ProofSlotMetadata {
-            version: 1,
+            version: 3,
             party,
             round_id,
             slot: slot as u16,
@@ -581,7 +580,7 @@ mod tests {
             signature: Vec::new(),
             native_fill: None,
         };
-        metadata.sign(&signing);
+        metadata.sign(&signing).unwrap();
         fs::write(
             slot_dir.join("metadata.json"),
             serde_json::to_vec(&metadata).unwrap(),
@@ -620,9 +619,10 @@ mod tests {
             participant_handle: [14; 32],
             amount_commitment: [15; 32],
             side_commitment: [16; 32],
+            order_signer: [18; 32],
             valid_until: 2_000,
         };
-        metadata.version = 2;
+        metadata.version = 3;
         metadata.native_fill = Some(oclob_settlement::native::NativeFillExecution {
             maker: binding.clone(),
             taker: oclob_settlement::native::ExecutedReservationBinding {
@@ -631,7 +631,7 @@ mod tests {
             },
             taker_may_close: false,
         });
-        metadata.sign(&signing);
+        metadata.sign(&signing).unwrap();
         fs::write(
             slot_dir.join("metadata.json"),
             serde_json::to_vec(&metadata).unwrap(),
@@ -648,7 +648,7 @@ mod tests {
             guard.validate(&params).is_err(),
             "unsigned closure policy change accepted"
         );
-        metadata.sign(&signing);
+        metadata.sign(&signing).unwrap();
         fs::write(
             slot_dir.join("metadata.json"),
             serde_json::to_vec(&metadata).unwrap(),
@@ -656,7 +656,7 @@ mod tests {
         .unwrap();
         assert!(guard.validate(&params).is_ok());
         metadata.version = 1;
-        metadata.sign(&signing);
+        metadata.sign(&signing).unwrap();
         fs::write(
             slot_dir.join("metadata.json"),
             serde_json::to_vec(&metadata).unwrap(),

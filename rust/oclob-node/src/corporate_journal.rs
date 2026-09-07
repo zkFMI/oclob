@@ -5,7 +5,14 @@
 use crate::corporate::{CorporateNativeConfig, FacilityWitness, PreparedCorporateReserve};
 use crate::edge_client::{EdgeAdmissionReceipt, PreparedEdgeDelivery};
 use crate::network::ClusterPublicConfig;
+use oclob_core::application_crypto::SigningKey;
 use oclob_edge::SealedReservationAuthority;
+use oclob_settlement::native::{
+    NativeClaimAuthorizationCommitment, NativeClaimAuthorizationIssue, NativeClaimLeg,
+    NativeParticipantClaimAuthorizations, CLAIM_AUTHORIZATION_ISSUE_VERSION,
+};
+use qomm_defmi::claim_redemption::NoteClaimAuthorization;
+use qomm_defmi::note_chain::NoteClaim;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -20,7 +27,8 @@ const RECORD_BYTES: usize = 4 * 1024 * 1024;
 pub struct StoredCorporateIntent {
     pub input_digest: [u8; 32],
     pub order_wire: Vec<u8>,
-    pub signing_key: [u8; 32],
+    #[serde(with = "oclob_core::application_crypto::secret_serde")]
+    pub signing_key: [u8; 64],
     pub eligibility_commitment: [u8; 32],
     pub accepted_at: u64,
     pub expires_at: u64,
@@ -43,6 +51,182 @@ pub struct StoredCorporateDelivery {
     pub reserve_digest: [u8; 32],
     pub delivery: PreparedEdgeDelivery,
     pub authority: SealedReservationAuthority,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredClaimAuthorizationKey {
+    leg: NativeClaimLeg,
+    recipient_commitment: [u8; 32],
+    #[serde(with = "oclob_core::application_crypto::secret_serde")]
+    signing_key: [u8; 64],
+    authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment,
+}
+
+/// Private one-time claim signers. Only the encrypted CorporateOutbox may
+/// serialize this record; public RPC responses are reconstructed separately.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredClaimAuthorizations {
+    version: u16,
+    issue_view: [u8; 32],
+    reservation_id: [u8; 32],
+    sequence: u64,
+    not_before: u64,
+    not_after: u64,
+    order_signer: [u8; 32],
+    response_wire: Vec<u8>,
+    keys: [StoredClaimAuthorizationKey; 2],
+}
+
+impl StoredClaimAuthorizationKey {
+    fn restore(&self, not_before: u64, not_after: u64) -> Result<NoteClaimAuthorization, String> {
+        let authorization = NoteClaimAuthorization::from_signer(
+            self.recipient_commitment,
+            not_before,
+            not_after,
+            SigningKey::from_bytes(&self.signing_key).raw_hybrid_signer(),
+        )?;
+        if authorization.commitment()? != self.authorization {
+            return Err("stored claim authorization key differs from its public commitment".into());
+        }
+        Ok(authorization)
+    }
+}
+
+impl StoredClaimAuthorizations {
+    fn generate(
+        issue: &NativeClaimAuthorizationIssue,
+        reservation_id: [u8; 32],
+        now: u64,
+        order_signer: &SigningKey,
+    ) -> Result<Self, String> {
+        if now == u64::MAX {
+            return Err("claim authorization cannot start at the maximum timestamp".into());
+        }
+        let expected = issue.expected_for(reservation_id)?;
+        let build = |(leg, recipient_commitment)| {
+            let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+            let authorization = NoteClaimAuthorization::from_signer(
+                recipient_commitment,
+                now,
+                u64::MAX,
+                signing_key.raw_hybrid_signer(),
+            )?
+            .commitment()?;
+            Ok::<_, String>(StoredClaimAuthorizationKey {
+                leg,
+                recipient_commitment,
+                signing_key: signing_key.to_bytes(),
+                authorization,
+            })
+        };
+        let mut result = Self {
+            version: CLAIM_AUTHORIZATION_ISSUE_VERSION,
+            issue_view: issue.participant_view_digest(reservation_id)?,
+            reservation_id,
+            sequence: issue.sequence_for(reservation_id)?,
+            not_before: now,
+            not_after: u64::MAX,
+            order_signer: order_signer.verifying_key().to_bytes(),
+            response_wire: Vec::new(),
+            keys: [build(expected[0])?, build(expected[1])?],
+        };
+        let response = result.public_unsigned(issue)?.sign(issue, order_signer)?;
+        result.response_wire = serde_json::to_vec(&response).map_err(err)?;
+        result.public(issue, result.order_signer)?;
+        Ok(result)
+    }
+
+    fn retained_unsigned(&self) -> Result<NativeParticipantClaimAuthorizations, String> {
+        if self.version != CLAIM_AUTHORIZATION_ISSUE_VERSION
+            || self.issue_view == [0; 32]
+            || self.reservation_id == [0; 32]
+            || self.sequence == u64::MAX
+            || self.not_before >= self.not_after
+            || self.order_signer == [0; 32]
+            || self.keys[0].leg == self.keys[1].leg
+        {
+            return Err("stored claim authorization context is inconsistent".into());
+        }
+        let mut claims = Vec::with_capacity(2);
+        for key in &self.keys {
+            key.restore(self.not_before, self.not_after)?;
+            claims.push(NativeClaimAuthorizationCommitment {
+                leg: key.leg,
+                recipient_commitment: key.recipient_commitment,
+                authorization: key.authorization,
+            });
+        }
+        let response = NativeParticipantClaimAuthorizations {
+            version: self.version,
+            reservation_id: self.reservation_id,
+            sequence: self.sequence,
+            claims: claims
+                .try_into()
+                .map_err(|_| "stored claim authorization count is invalid")?,
+            signature: Vec::new(),
+        };
+        response.validate_shape()?;
+        Ok(response)
+    }
+
+    fn public_unsigned(
+        &self,
+        expected_issue: &NativeClaimAuthorizationIssue,
+    ) -> Result<NativeParticipantClaimAuthorizations, String> {
+        if self.issue_view != expected_issue.participant_view_digest(self.reservation_id)?
+            || self.sequence != expected_issue.sequence_for(self.reservation_id)?
+        {
+            return Err("stored claim authorization participant view is inconsistent".into());
+        }
+        let response = self.retained_unsigned()?;
+        response.validate(expected_issue)?;
+        Ok(response)
+    }
+
+    fn retained_public(&self) -> Result<NativeParticipantClaimAuthorizations, String> {
+        if self.response_wire.is_empty() || self.response_wire.len() > 64 * 1024 {
+            return Err("stored claim authorization response wire is invalid".into());
+        }
+        let response: NativeParticipantClaimAuthorizations =
+            serde_json::from_slice(&self.response_wire).map_err(err)?;
+        if serde_json::to_vec(&response).map_err(err)? != self.response_wire {
+            return Err("stored claim authorization response wire is not canonical".into());
+        }
+        let mut unsigned = response.clone();
+        unsigned.signature.clear();
+        if unsigned != self.retained_unsigned()? {
+            return Err(
+                "stored claim authorization response differs from its retained keys".into(),
+            );
+        }
+        response.verify_participant_view(self.issue_view, self.order_signer)?;
+        Ok(response)
+    }
+
+    fn public(
+        &self,
+        expected_issue: &NativeClaimAuthorizationIssue,
+        expected_signer: [u8; 32],
+    ) -> Result<NativeParticipantClaimAuthorizations, String> {
+        if self.order_signer != expected_signer
+            || self.issue_view != expected_issue.participant_view_digest(self.reservation_id)?
+            || self.sequence != expected_issue.sequence_for(self.reservation_id)?
+        {
+            return Err("stored claim authorization signer is inconsistent".into());
+        }
+        let response = self.retained_public()?;
+        let mut unsigned = response.clone();
+        unsigned.signature.clear();
+        if self.public_unsigned(expected_issue)? != unsigned {
+            return Err(
+                "stored claim authorization response differs from the requested claims".into(),
+            );
+        }
+        response.verify(expected_issue, expected_signer)?;
+        Ok(response)
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -667,7 +851,7 @@ impl NativeCorporateJournal {
             .stage(id, "delivery")?
             .ok_or("cancel has no saved delivery")?;
         if delivery.delivery.manifest != receipt.manifest
-            || ed25519_dalek::SigningKey::from_bytes(&intent.signing_key)
+            || oclob_core::application_crypto::SigningKey::from_bytes(&intent.signing_key)
                 .verifying_key()
                 .to_bytes()
                 != receipt.manifest.signer
@@ -694,7 +878,10 @@ impl NativeCorporateJournal {
         body: &T,
         intent: &StoredCorporateIntent,
     ) -> Result<T, String> {
-        if !matches!(stage, "reserve" | "admission" | "delivery" | "market") {
+        if !matches!(
+            stage,
+            "reserve" | "admission" | "delivery" | "market-input" | "market"
+        ) {
             return Err("unknown corporate submission stage".into());
         }
         self.put_first(
@@ -759,6 +946,121 @@ impl NativeCorporateJournal {
                     .ok_or("saved reserve disappeared".into())
             })
             .collect()
+    }
+
+    /// Resolve one locally admitted reservation without exposing another
+    /// participant's records. Claim keys may be issued only after the exact
+    /// reserve and its market admission receipt are durable.
+    pub fn admitted_reservation(
+        &self,
+        reservation_id: [u8; 32],
+    ) -> Result<
+        (
+            PreparedCorporateReserve,
+            oclob_settlement::pretrade::FinalizedReservation,
+        ),
+        String,
+    > {
+        let mut found = None;
+        for summary in self.outbox.summaries()? {
+            let Some(request_id) = summary.request_id.strip_prefix("reserve:") else {
+                continue;
+            };
+            let prepared: PreparedCorporateReserve = self
+                .get(&summary.request_id)?
+                .ok_or("saved reserve disappeared")?;
+            if prepared.request.mandate.hold_id != reservation_id {
+                continue;
+            }
+            if found.is_some() {
+                return Err("corporate journal contains duplicate reservation ownership".into());
+            }
+            let finalized = self
+                .stage(request_id, "admission")?
+                .ok_or("claim authorization reservation has no durable permit")?;
+            let _: EdgeAdmissionReceipt = self
+                .stage(request_id, "receipt")?
+                .ok_or("claim authorization reservation was not admitted to the market")?;
+            found = Some((prepared, finalized));
+        }
+        found.ok_or_else(|| "claim authorization reservation is not owned by this journal".into())
+    }
+
+    pub fn saved_claim_authorizations(
+        &self,
+        issue: &NativeClaimAuthorizationIssue,
+        reservation_id: [u8; 32],
+        expected_signer: [u8; 32],
+    ) -> Result<Option<NativeParticipantClaimAuthorizations>, String> {
+        let Some(stored): Option<StoredClaimAuthorizations> = self.get(
+            &claim_authorization_record_id(reservation_id, issue.sequence_for(reservation_id)?),
+        )?
+        else {
+            return Ok(None);
+        };
+        stored.public(issue, expected_signer).map(Some)
+    }
+
+    /// Persist both independently generated signer seeds before returning
+    /// their public commitments. A racing retry adopts and validates the first
+    /// encrypted record instead of returning newly generated keys.
+    pub fn issue_claim_authorizations(
+        &self,
+        issue: &NativeClaimAuthorizationIssue,
+        reservation_id: [u8; 32],
+        now: u64,
+        order_signer: &SigningKey,
+    ) -> Result<NativeParticipantClaimAuthorizations, String> {
+        if let Some(saved) = self.saved_claim_authorizations(
+            issue,
+            reservation_id,
+            order_signer.verifying_key().to_bytes(),
+        )? {
+            return Ok(saved);
+        }
+        let proposed =
+            StoredClaimAuthorizations::generate(issue, reservation_id, now, order_signer)?;
+        let stored: StoredClaimAuthorizations = self.put_first(
+            &claim_authorization_record_id(reservation_id, issue.sequence_for(reservation_id)?),
+            &proposed,
+            now,
+            u64::MAX,
+        )?;
+        stored.public(issue, order_signer.verifying_key().to_bytes())
+    }
+
+    /// Restore only the signer whose opaque public commitment was already
+    /// fixed in canonical claim state. Missing or conflicting custody fails;
+    /// recovery never manufactures a replacement key.
+    pub fn claim_authorization(&self, claim: &NoteClaim) -> Result<NoteClaimAuthorization, String> {
+        claim.validate()?;
+        let mut fingerprints = BTreeSet::new();
+        let mut found = None;
+        for summary in self.outbox.summaries()? {
+            if !summary.request_id.starts_with("claim-authorization:") {
+                continue;
+            }
+            let stored: StoredClaimAuthorizations = self
+                .get(&summary.request_id)?
+                .ok_or("stored claim authorization disappeared")?;
+            stored.retained_public()?;
+            for key in &stored.keys {
+                if !fingerprints.insert(key.authorization.key_fingerprint) {
+                    return Err("corporate journal reuses a claim authorization key".into());
+                }
+                if key.authorization.key_fingerprint != claim.authorization.key_fingerprint {
+                    continue;
+                }
+                if found.is_some()
+                    || key.recipient_commitment != claim.recipient_commitment
+                    || key.authorization != claim.authorization
+                {
+                    return Err("canonical claim substituted its participant authorization".into());
+                }
+                found = Some(key.restore(stored.not_before, stored.not_after)?);
+            }
+        }
+        found.ok_or_else(|| "canonical claim has no retained participant authorization".into())
     }
 
     pub fn claim_redemption(
@@ -849,9 +1151,9 @@ impl NativeCorporateJournal {
         };
         let bytes = self.outbox.signed_request(id, summary.request_digest)?;
         let record: BoundRecord<T> =
-            serde_json::from_slice(&bytes).map_err(|_| "corporate stage record is malformed")?;
-        if record.version != 1 || record.context != self.context {
-            return Err("corporate stage record belongs to another deployment".into());
+            serde_json::from_slice(&bytes).map_err(|_| "corporate stage record is malformed or uses legacy signing custody; explicit PQC migration is required")?;
+        if record.version != 2 || record.context != self.context {
+            return Err("corporate stage record has a legacy schema or belongs to another deployment; explicit migration is required".into());
         }
         Ok(Some(record.body))
     }
@@ -867,7 +1169,7 @@ impl NativeCorporateJournal {
             return Ok(stored);
         }
         let bytes = serde_json::to_vec(&BoundRecord {
-            version: 1,
+            version: 2,
             context: self.context,
             body,
         })
@@ -902,12 +1204,26 @@ fn record_id(stage: &str, id: &str) -> Result<String, String> {
                 | "reserve-send"
                 | "authorization"
                 | "authorization-end"
+                | "market-input"
                 | "market"
         )
     {
         return Err("corporate request ID or stage is invalid".into());
     }
     Ok(format!("{stage}:{id}"))
+}
+
+fn claim_authorization_record_id(reservation_id: [u8; 32], sequence: u64) -> String {
+    format!(
+        "claim-authorization:{}",
+        hex::encode(
+            Sha256::new()
+                .chain_update(b"OCLOB:CLAIM-AUTHORIZATION-RECORD:v1")
+                .chain_update(reservation_id)
+                .chain_update(sequence.to_be_bytes())
+                .finalize()
+        )
+    )
 }
 
 fn err(error: impl std::fmt::Display) -> String {
@@ -919,7 +1235,7 @@ mod tests {
     use super::*;
     use crate::network::ClusterNodePublic;
     use curve25519_dalek::scalar::Scalar;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use oclob_core::{SecretOrder, Side, TimeInForce};
     use oclob_edge::{EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey, MPC_PARTIES};
     use std::fs;
@@ -956,9 +1272,15 @@ mod tests {
             host: "unit-defmi".into(),
             port: 9443,
             server_name: "unit-defmi".into(),
+            claim_authorization_endpoint: oclob_edge::ClaimAuthorizationEndpoint {
+                host: "unit-claim-authority".into(),
+                port: 9890,
+                server_name: "unit-claim-authority".into(),
+                certificate_sha256: [31; 32],
+            },
             venue_id: [1; 32],
             defmi_id: [2; 32],
-            issuer_public: SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes(),
+            issuer_public: SigningKey::from_bytes(&[3; 64]).hybrid_public_key(),
             facility_id: [4; 32],
             asset_id: [5; 32],
             facility_values: [120, 0, 0],
@@ -969,7 +1291,7 @@ mod tests {
             identity_seed: [11; 32],
         };
         let cluster = ClusterPublicConfig {
-            version: 4,
+            version: 5,
             market_id: "CORPORATE-UNIT".into(),
             program: "oclob_match_v1".into(),
             settlement_release_threshold: 3,
@@ -985,7 +1307,7 @@ mod tests {
                         .unwrap()
                         .public_key()
                         .unwrap(),
-                    receipt_verifying_key: SigningKey::from_bytes(&[i as u8 + 51; 32])
+                    receipt_verifying_key: SigningKey::from_bytes(&[i as u8 + 51; 64])
                         .verifying_key()
                         .to_bytes(),
                 })
@@ -1011,7 +1333,7 @@ mod tests {
         StoredCorporateIntent {
             input_digest: [14; 32],
             order_wire: order.to_secret_wire(),
-            signing_key: [seed; 32],
+            signing_key: [seed; 64],
             eligibility_commitment: [15; 32],
             accepted_at: 100,
             expires_at: 1000,
@@ -1106,7 +1428,7 @@ mod tests {
         let intent = StoredCorporateIntent {
             input_digest: [seed; 32],
             order_wire: order.to_secret_wire(),
-            signing_key: [seed; 32],
+            signing_key: [seed; 64],
             eligibility_commitment: [15; 32],
             accepted_at: 100,
             expires_at: 1000,
@@ -1153,7 +1475,7 @@ mod tests {
             journal,
             queue,
             identity: crate::network::ClientIdentityConfig {
-                version: 1,
+                version: 2,
                 tls_certificate: "not-used.pem".into(),
                 tls_private_key: "not-used.key".into(),
                 tls_ca: "not-used-ca.pem".into(),
@@ -1371,6 +1693,156 @@ mod tests {
     }
 
     #[test]
+    fn claim_keys_and_randomized_signed_response_are_first_write_and_exact_after_restart() {
+        let files = Files::new();
+        let (config, cluster) = fixture();
+        let journal =
+            NativeCorporateJournal::initialize(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let signer = SigningKey::from_bytes(&[71; 64]);
+        let issue = NativeClaimAuthorizationIssue {
+            version: CLAIM_AUTHORIZATION_ISSUE_VERSION,
+            instruction_nullifier: [72; 32],
+            payer: oclob_settlement::native::NativeClaimReservation {
+                reservation_id: [73; 32],
+                participant_handle: [74; 32],
+                asset_id: [75; 32],
+                sequence: 4,
+            },
+            payee: oclob_settlement::native::NativeClaimReservation {
+                reservation_id: [76; 32],
+                participant_handle: [77; 32],
+                asset_id: [78; 32],
+                sequence: 9,
+            },
+        };
+        let mut unverified_counterparty = issue.clone();
+        unverified_counterparty.payee.participant_handle[0] ^= 1;
+        let payer = journal
+            .issue_claim_authorizations(
+                &unverified_counterparty,
+                issue.payer.reservation_id,
+                100,
+                &signer,
+            )
+            .unwrap();
+        let first_wire = serde_json::to_vec(&payer).unwrap();
+        let retry = journal
+            .issue_claim_authorizations(&issue, issue.payer.reservation_id, 101, &signer)
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&retry).unwrap(), first_wire);
+        payer
+            .verify(&issue, signer.verifying_key().to_bytes())
+            .unwrap();
+
+        let payee = journal
+            .issue_claim_authorizations(&issue, issue.payee.reservation_id, 100, &signer)
+            .unwrap();
+        assert_eq!(
+            payer.claims.map(|claim| claim.leg),
+            [
+                NativeClaimLeg::SecuritiesDelivery,
+                NativeClaimLeg::CashRefund,
+            ]
+        );
+        assert_eq!(
+            payee.claims.map(|claim| claim.leg),
+            [
+                NativeClaimLeg::SecuritiesRefund,
+                NativeClaimLeg::CashDelivery,
+            ]
+        );
+        let fingerprints = payer
+            .claims
+            .iter()
+            .chain(&payee.claims)
+            .map(|claim| claim.authorization.key_fingerprint)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(fingerprints.len(), 4);
+
+        let encrypted = fs::read(files.path()).unwrap();
+        assert!(!encrypted
+            .windows(first_wire.len())
+            .any(|window| window == first_wire));
+        drop(journal);
+        let reopened =
+            NativeCorporateJournal::open(files.path(), &[19; 32], &config, &cluster).unwrap();
+        let restored = reopened
+            .saved_claim_authorizations(
+                &issue,
+                issue.payer.reservation_id,
+                signer.verifying_key().to_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), first_wire);
+        let recipient_view =
+            curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT * Scalar::from(17_u64);
+        let recipient_key = zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&[81; 96]);
+        let recipient_public = zkfmi_crypto::traits::KemDecapsulator::public_key(&recipient_key);
+        let context = [82; 32];
+        let share = qomm_proofs::opening_envelope::encrypt_opening_share(
+            context,
+            1,
+            Scalar::from(3_u64),
+            Scalar::from(5_u64),
+            &recipient_view,
+            &recipient_public,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let mut claim = NoteClaim {
+            claim_id: [1; 32],
+            asset_id: issue.payee.asset_id,
+            value_commitment: [2; 32],
+            recipient_commitment: payer.claims[0].recipient_commitment,
+            authorization: payer.claims[0].authorization,
+            source_hold_id: issue.payee.reservation_id,
+            kind: qomm_defmi::note_chain::NoteClaimKind::Delivery,
+            opening_envelope: qomm_proofs::opening_envelope::OpeningEnvelope::new(
+                context,
+                1,
+                recipient_view,
+                vec![share],
+            )
+            .unwrap(),
+        };
+        claim.claim_id = claim.derived_id().unwrap();
+        let restored_signer = reopened.claim_authorization(&claim).unwrap();
+        assert_eq!(restored_signer.commitment().unwrap(), claim.authorization);
+
+        let mut conflicting = issue.clone();
+        conflicting.instruction_nullifier[0] ^= 1;
+        assert!(reopened
+            .issue_claim_authorizations(
+                &conflicting,
+                conflicting.payer.reservation_id,
+                102,
+                &signer,
+            )
+            .is_err());
+        let wrong_signer = SigningKey::from_bytes(&[79; 64]);
+        assert!(reopened
+            .saved_claim_authorizations(
+                &issue,
+                issue.payer.reservation_id,
+                wrong_signer.verifying_key().to_bytes(),
+            )
+            .is_err());
+
+        let mut next_issue = issue.clone();
+        next_issue.instruction_nullifier = [80; 32];
+        next_issue.payer.sequence += 1;
+        next_issue.payee.sequence += 1;
+        let next = reopened
+            .issue_claim_authorizations(&next_issue, next_issue.payer.reservation_id, 103, &signer)
+            .unwrap();
+        assert!(next
+            .claims
+            .iter()
+            .all(|claim| !fingerprints.contains(&claim.authorization.key_fingerprint)));
+    }
+
+    #[test]
     fn rejected_unprepared_authorization_is_fenced_and_advances_fifo_after_restart() {
         let files = Files::new();
         let (config, cluster) = fixture();
@@ -1475,7 +1947,7 @@ mod tests {
                 .unwrap());
         }
         let unavailable = crate::network::ClientIdentityConfig {
-            version: 1,
+            version: 2,
             tls_certificate: "/intentionally-missing".into(),
             tls_private_key: "/intentionally-missing".into(),
             tls_ca: "/intentionally-missing".into(),
@@ -1867,15 +2339,25 @@ mod tests {
                 .expect("valid fixture note encryption");
             NoteOutput::from_note(&note, config.asset_id, [0; 32]).unwrap()
         };
+        let claim_authorization = NoteClaimAuthorization::from_signer(
+            [46; 32],
+            1,
+            u64::MAX,
+            SigningKey::from_bytes(&[47; 64]).raw_hybrid_signer(),
+        )
+        .unwrap();
         // This unit tests durable bytes only; VM ownership verification is
         // covered by the real-signature DeFMI tests and live acceptance.
         let original = NoteClaimRedemption {
+            version: qomm_defmi::claim_redemption::VERSION,
             domain: "unit-chain".into(),
             before_root: [41; 32],
             operation_id: [42; 32],
             claim_id: [43; 32],
             output: build_output(),
+            authorization_key: claim_authorization.key_record().clone(),
             recipient_signature: vec![44; 64],
+            authorization_signature: vec![44; 64 + zkfmi_crypto::suite::ML_DSA_65_SIG_BYTES],
         };
         let stored = journal.save_claim_redemption(&original).unwrap();
         assert_eq!(stored, original);
@@ -1916,7 +2398,7 @@ mod tests {
             &order,
             [16; 32],
             [17; 32],
-            &SigningKey::from_bytes(&[21; 32]),
+            &SigningKey::from_bytes(&[21; 64]),
             &keys,
             &mut rand::rngs::OsRng,
         )

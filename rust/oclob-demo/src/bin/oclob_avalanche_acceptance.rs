@@ -6,7 +6,7 @@
 mod native_acceptance;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
 use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
 use oclob_edge::SealedSettlementCapability;
@@ -17,7 +17,8 @@ use oclob_node::edge_client::{
 };
 use oclob_node::executor::RoundPlan;
 use oclob_node::network::{
-    client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
+    client_tls_context, load_application_signing_seed, load_secret_32, ClientIdentityConfig,
+    ClusterPublicConfig,
 };
 use oclob_node::PrivateStateFinality;
 use oclob_ordering::{OrderCertificate, OrderingCommittee};
@@ -180,7 +181,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         .validate()
         .map_err(|error| failure(error.to_string()))?;
     let coordinator = SigningKey::from_bytes(
-        &load_secret_32(&coordinator_identity.application_signing_key)
+        &load_application_signing_seed(&coordinator_identity.application_signing_key)
             .map_err(|error| failure(error.to_string()))?,
     );
     let coordinator_tls = client_tls_context(
@@ -274,7 +275,8 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
         )
         .map_err(|error| failure(error.to_string()))?;
     let (authorizer, approval_keys) = committee(&options.chain_id)?;
-    let receipt_key = SigningKey::from_bytes(&digest(b"oclob-integrated-receipt-key-v1"));
+    let receipt_key =
+        zkfmi_crypto::test_support::hybrid_signer(&digest(b"oclob-integrated-receipt-key-v1"));
     let facility =
         DefmiFacility::open(&options.projection, authorizer, receipt_key).map_err(failure)?;
     let gateway = AvalancheCanonicalGateway::new(&facility, &clients, &approval_keys)?;
@@ -1269,8 +1271,8 @@ fn run_compatibility(options: &Options) -> RunResult<Value> {
         [2; 32],
         [32; 32],
     )?;
-    let maker_key = SigningKey::from_bytes(&[41; 32]);
-    let taker_key = SigningKey::from_bytes(&[42; 32]);
+    let maker_key = SigningKey::from_bytes(&[41; 64]);
+    let taker_key = SigningKey::from_bytes(&[42; 64]);
     let maker_authority = authorize_order(&maker, expires_at.saturating_add(60), &maker_key)?;
     let maker_eligibility = seller_wallet
         .present(
@@ -1281,7 +1283,8 @@ fn run_compatibility(options: &Options) -> RunResult<Value> {
         )
         .map_err(|error| failure(error.to_string()))?;
     let (authorizer, approval_keys) = committee(&options.chain_id)?;
-    let receipt_key = SigningKey::from_bytes(&digest(b"oclob-avalanche-receipt-key-v1"));
+    let receipt_key =
+        zkfmi_crypto::test_support::hybrid_signer(&digest(b"oclob-avalanche-receipt-key-v1"));
     let facility =
         DefmiFacility::open(&options.projection, authorizer, receipt_key).map_err(failure)?;
     let gateway = AvalancheCanonicalGateway::new(&facility, &clients, &approval_keys)?;

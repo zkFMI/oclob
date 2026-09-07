@@ -1,0 +1,18 @@
+{
+  "contract_id": "oclob-native-market-v2",
+  "objective": "Run the resident native market through an actual post-quantum claim-custody boundary: participants retain fresh per-fill claim signing seeds, expose only signed public commitments, and the market resumes an exact canonical request after process exit 75 without duplicating settlement.",
+  "primary_metric": "autonomously_settled_fills",
+  "truth_provider": "Participant corporate journals and hybrid-signed claim authorization responses embedded in proof-node requests; durable market journal; seven MPC node receipts; five live Avalanche validators and restart readback.",
+  "hard_constraints": [
+    "Queue two 60-unit sell orders priced 101 then 100 and one 90-unit buy at 101. Autonomous matching must allocate 30 to 101 and 60 to 100, notional 9030, in two atomic fills with 14 node finality observations.",
+    "Each fill obtains exactly one hybrid claim-authorization response from each participant. The two fills therefore contain four response signatures and eight mutually distinct one-time claim key fingerprints. These signatures authorize claim custody only; post-match financial approval signatures remain zero.",
+    "The market receives no claim signing seed. Each proof node verifies both response components against the order signer and the exact participant view before its FROST authorization.",
+    "The deterministic corporate-journal gate proves that a randomized signed response is persisted before reply and is byte-identical on retry and process restart. This native run must carry those exact persisted response bytes in each saved fill request; after actual post-canonical process exit 75, it resubmits the saved request bytes and recovers the same receipt without a duplicate trade.",
+    "Use current synchronized integration source and the verified PQC native base image by exact image ID. Retain source, contract, manifest and final image digests in the run receipt.",
+    "Run only in the dedicated project cache on Softbank. Do not publish corporate journals, claim seeds, raw orders, shares or private runtime state."
+  ],
+  "non_claims": [
+    "Single-host bounded functional acceptance is not WAN, independent-operator, HSM, performance, economic or production evidence.",
+    "The configured DeFMI read service and laboratory credential provisioning remain deployment trust boundaries."
+  ]
+}

@@ -1,6 +1,6 @@
 //! Demo corporate module: create a private order and fan out seven shares.
 
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{Digest32, SecretOrder, Side, TimeInForce};
 use oclob_dekyx::deterministic_demo_environment;
 use oclob_edge::{

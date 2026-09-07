@@ -6,7 +6,7 @@ use crate::network::{
     certificate_fingerprint, client_tls_context, ClientIdentityConfig, ClusterPublicConfig,
     ServerTlsConfig,
 };
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_edge::SealedReservationAuthority;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const REQUEST_BYTES: usize = 256 * 1024;
+// JSON byte arrays include the fixed 64 KiB authority plus seven hybrid
+// node receipts and the manifest/ingress signatures. Keep the transport padded.
+const REQUEST_BYTES: usize = 1024 * 1024;
 const RESPONSE_BYTES: usize = 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -48,7 +50,7 @@ pub struct MarketIngress {
 impl MarketIngress {
     fn statement(&self) -> Result<[u8; 32], String> {
         Ok(Sha256::new()
-            .chain_update(b"OCLOB:MARKET-INGRESS:v1")
+            .chain_update(b"OCLOB:MARKET-INGRESS:v2")
             .chain_update(
                 serde_json::to_vec(&(&self.version, &self.receipt, &self.authority))
                     .map_err(err)?,
@@ -65,23 +67,27 @@ impl MarketIngress {
             return Err("market input signer differs from admitted order".into());
         }
         let mut result = Self {
-            version: 1,
+            version: 2,
             receipt,
             authority,
             signature: Vec::new(),
         };
-        result.signature = key.sign(&result.statement()?).to_bytes().to_vec();
+        result.signature = key
+            .try_sign(&result.statement()?)
+            .map_err(|error| error.to_string())?
+            .to_bytes()
+            .to_vec();
         Ok(result)
     }
     pub fn digest(&self) -> Result<[u8; 32], String> {
         Ok(Sha256::new()
-            .chain_update(b"OCLOB:MARKET-INGRESS-DIGEST:v1")
+            .chain_update(b"OCLOB:MARKET-INGRESS-DIGEST:v2")
             .chain_update(serde_json::to_vec(self).map_err(err)?)
             .finalize()
             .into())
     }
     pub fn verify(&self, cluster: &ClusterPublicConfig, at: u64) -> Result<(), String> {
-        if self.version != 1 || !self.receipt.manifest.uses_pretrade_reservation() {
+        if self.version != 2 || !self.receipt.manifest.uses_pretrade_reservation() {
             return Err("market intake refuses legacy or unknown input".into());
         }
         self.receipt.verify(cluster, at).map_err(err)?;
@@ -102,6 +108,12 @@ struct Acknowledgement {
     accepted: bool,
     digest: [u8; 32],
     sequence: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct StoredMarketDispatch {
+    endpoint_digest: [u8; 32],
+    input: MarketIngress,
 }
 
 pub fn submit(
@@ -227,6 +239,52 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+fn persist_market_dispatch(
+    journal: &crate::corporate_journal::NativeCorporateJournal,
+    id: &str,
+    intent: &crate::corporate_journal::StoredCorporateIntent,
+    cluster: &ClusterPublicConfig,
+    endpoint_digest: [u8; 32],
+    receipt: &EdgeAdmissionReceipt,
+    authority: &SealedReservationAuthority,
+) -> Result<StoredMarketDispatch, String> {
+    let expected_statement = MarketIngress {
+        version: 2,
+        receipt: receipt.clone(),
+        authority: authority.clone(),
+        signature: Vec::new(),
+    }
+    .statement()?;
+    if let Some(saved) = journal.stage::<StoredMarketDispatch>(id, "market-input")? {
+        if saved.endpoint_digest != endpoint_digest
+            || saved.input.statement()? != expected_statement
+        {
+            return Err("market destination or original signed input changed".into());
+        }
+        saved.input.verify(cluster, intent.accepted_at)?;
+        return Ok(saved);
+    }
+    let candidate = MarketIngress::sign(
+        receipt.clone(),
+        authority.clone(),
+        &SigningKey::from_bytes(&intent.signing_key),
+    )?;
+    let saved: StoredMarketDispatch = journal.save_stage(
+        id,
+        "market-input",
+        &StoredMarketDispatch {
+            endpoint_digest,
+            input: candidate,
+        },
+        intent,
+    )?;
+    if saved.endpoint_digest != endpoint_digest || saved.input.statement()? != expected_statement {
+        return Err("market destination or original signed input changed".into());
+    }
+    saved.input.verify(cluster, intent.accepted_at)?;
+    Ok(saved)
+}
+
 /// Retry exact market handoff even if the corporate process died after all
 /// node acknowledgements. No new order, credential, funding proof or signature
 /// of financial terms is created: only the original order key signs its
@@ -257,19 +315,36 @@ pub fn publish_corporate_admissions(
             .stage(&id, "delivery")?
             .ok_or("market publishing lost encrypted authority")?;
         journal.verify_receipt(&receipt, &delivery, cluster, intent.accepted_at)?;
-        let input = MarketIngress::sign(
-            receipt,
-            delivery.authority,
-            &SigningKey::from_bytes(&intent.signing_key),
+        let acknowledged = journal.stage::<([u8; 32], [u8; 32])>(&id, "market")?;
+        if acknowledged.is_some()
+            && journal
+                .stage::<StoredMarketDispatch>(&id, "market-input")?
+                .is_none()
+        {
+            return Err(
+                "legacy market acknowledgement lacks its exact signed input; explicit reconciliation is required"
+                    .into(),
+            );
+        }
+        // ML-DSA signatures are randomized. Persist the exact signed transport
+        // before the first send, then reuse those bytes after every ambiguity.
+        let dispatch = persist_market_dispatch(
+            journal,
+            &id,
+            &intent,
+            cluster,
+            endpoint_digest,
+            &receipt,
+            &delivery.authority,
         )?;
-        let expected = (endpoint_digest, input.digest()?);
-        if let Some(saved) = journal.stage::<([u8; 32], [u8; 32])>(&id, "market")? {
+        let expected = (dispatch.endpoint_digest, dispatch.input.digest()?);
+        if let Some(saved) = acknowledged {
             if saved != expected {
                 return Err("market destination or original handoff changed".into());
             }
             continue;
         }
-        submit(&config.endpoint, identity, &input)?;
+        submit(&config.endpoint, identity, &dispatch.input)?;
         let saved: ([u8; 32], [u8; 32]) = journal.save_stage(&id, "market", &expected, &intent)?;
         if saved != expected {
             return Err("durable market handoff differs from acknowledgement".into());
@@ -281,6 +356,31 @@ pub fn publish_corporate_admissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Files(std::path::PathBuf);
+
+    impl Files {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "oclob-market-network-{}-{:016x}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> std::path::PathBuf {
+            self.0.join("corporate.enc")
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn fixed_market_records_reject_bad_size_padding_and_truncation() {
         let value = Acknowledgement {
@@ -301,5 +401,122 @@ mod tests {
         assert!(read_record::<Acknowledgement>(&mut changed.as_slice(), RESPONSE_BYTES).is_err());
         assert!(read_record::<Acknowledgement>(&mut &bytes[..100], RESPONSE_BYTES).is_err());
         assert!(write_record(&mut Vec::new(), &vec![99u8; REQUEST_BYTES], REQUEST_BYTES).is_err());
+    }
+
+    #[test]
+    fn randomized_market_signature_is_persisted_before_send_and_reused_after_restart() {
+        let files = Files::new();
+        let path = files.path();
+        let (cluster, fixture_input, signer) = crate::market_tests::fixture();
+        let config = crate::corporate::CorporateNativeConfig {
+            host: "unit-defmi".into(),
+            port: 9443,
+            server_name: "unit-defmi".into(),
+            claim_authorization_endpoint: oclob_edge::ClaimAuthorizationEndpoint {
+                host: "unit-claim-authority".into(),
+                port: 9890,
+                server_name: "unit-claim-authority".into(),
+                certificate_sha256: [31; 32],
+            },
+            venue_id: [1; 32],
+            defmi_id: [2; 32],
+            issuer_public: SigningKey::from_bytes(&[3; 64]).hybrid_public_key(),
+            facility_id: [4; 32],
+            asset_id: [5; 32],
+            facility_values: [120, 0, 0],
+            facility_blindings: [[6; 32], [7; 32], [8; 32]],
+            wallet_spend_secret: [9; 32],
+            wallet_opening_seed: vec![10; 96],
+            credential_custody_seed: vec![11; 96],
+            identity_seed: [12; 32],
+        };
+        let at = crate::market_runtime::now().unwrap();
+        let intent = crate::corporate_journal::StoredCorporateIntent {
+            input_digest: [13; 32],
+            order_wire: vec![14; 32],
+            signing_key: signer.to_bytes(),
+            eligibility_commitment: [15; 32],
+            accepted_at: at,
+            expires_at: fixture_input.receipt.manifest.retention_deadline,
+            reserve_send_tracking: true,
+        };
+        let id = "market-retry";
+        let journal = crate::corporate_journal::NativeCorporateJournal::initialize(
+            &path, &[16; 32], &config, &cluster,
+        )
+        .unwrap();
+        journal.save_intent(id, &intent).unwrap();
+        let endpoint = [17; 32];
+        let first = persist_market_dispatch(
+            &journal,
+            id,
+            &intent,
+            &cluster,
+            endpoint,
+            &fixture_input.receipt,
+            &fixture_input.authority,
+        )
+        .unwrap();
+        let first_wire = serde_json::to_vec(&first.input).unwrap();
+        assert!(first_wire.len() + 4 > 256 * 1024);
+        assert!(first_wire.len() + 4 <= REQUEST_BYTES);
+        let mut record = Vec::new();
+        write_record(&mut record, &first.input, REQUEST_BYTES).unwrap();
+        assert_eq!(record.len(), REQUEST_BYTES);
+
+        let retry = persist_market_dispatch(
+            &journal,
+            id,
+            &intent,
+            &cluster,
+            endpoint,
+            &fixture_input.receipt,
+            &fixture_input.authority,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_vec(&retry.input).unwrap(), first_wire);
+        drop(journal);
+
+        let journal = crate::corporate_journal::NativeCorporateJournal::open(
+            &path, &[16; 32], &config, &cluster,
+        )
+        .unwrap();
+        let restored = persist_market_dispatch(
+            &journal,
+            id,
+            &intent,
+            &cluster,
+            endpoint,
+            &fixture_input.receipt,
+            &fixture_input.authority,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_vec(&restored.input).unwrap(), first_wire);
+        assert!(persist_market_dispatch(
+            &journal,
+            id,
+            &intent,
+            &cluster,
+            [18; 32],
+            &fixture_input.receipt,
+            &fixture_input.authority,
+        )
+        .is_err());
+        let mut changed = serde_json::to_value(&fixture_input.authority).unwrap();
+        changed["ciphertext"][0] =
+            serde_json::json!(changed["ciphertext"][0].as_u64().unwrap() ^ 1);
+        let changed = serde_json::from_value(changed).unwrap();
+        assert!(persist_market_dispatch(
+            &journal,
+            id,
+            &intent,
+            &cluster,
+            endpoint,
+            &fixture_input.receipt,
+            &changed,
+        )
+        .is_err());
+        let saved: StoredMarketDispatch = journal.stage(id, "market-input").unwrap().unwrap();
+        assert_eq!(serde_json::to_vec(&saved.input).unwrap(), first_wire);
     }
 }

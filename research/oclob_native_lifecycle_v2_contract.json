@@ -1,0 +1,18 @@
+{
+  "contract_id": "oclob-native-lifecycle-v2",
+  "objective": "Complete the multi-round native corporate lifecycle with participant-owned dynamic claim custody, including two-fill atomic settlement, a refund-funded second settlement, cancellation, expiry, claim redemption and node restart.",
+  "primary_metric": "completed_native_releases",
+  "truth_provider": "Participant corporate journals and redeemed claims; six exact hybrid-signed claim authorization responses carried in proof requests; seven node stores and FROST parties; canonical DeFMI readback on five live validators.",
+  "hard_constraints": [
+    "Three fills across two rounds contain exactly six participant claim-authorization response signatures and twelve mutually distinct one-time claim key fingerprints. Post-match financial approval signatures remain zero.",
+    "Each participant issues exactly two fresh claim keys for its reservation sequence. The deterministic corporate-journal gate proves that seeds and the exact randomized signed response are persisted before reply and returned byte-identically after retry and process restart; this native run verifies that those persisted responses traverse the actual API and canonical three-fill lifecycle.",
+    "Complete the prior two-round three-fill cycle, redeem nine cumulative claims, cancel the carried maker remainder, spend its exact refund, expire the later order and complete two canonical releases.",
+    "Reject cancellation overtaking unfinished matching, wrong or stale heads, substituted claim commitments, incomplete node observations and state changes on retry.",
+    "All seven node states must match before and after actual restart; five validator roots must agree across validator restart.",
+    "Use current synchronized integration source and the verified PQC native base image by exact image ID; retain source, contract, manifest and image digests. Do not export private journals, claim seeds, shares or note openings."
+  ],
+  "non_claims": [
+    "Single-host functional acceptance is not WAN, independent-operator, HSM, performance, economic or production evidence.",
+    "Configured canonical services and laboratory credentials remain trust boundaries; generalized HA and concurrent unattended queue recovery remain separate work."
+  ]
+}

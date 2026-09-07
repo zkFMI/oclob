@@ -6,6 +6,7 @@ license.workspace = true
 description = "Threshold zkPI issuance and atomic DeFMI DvP for OCLOB fills"
 
 [dependencies]
+zkfmi-crypto.workspace = true
 oclob-core.workspace = true
 oclob-edge.workspace = true
 oclob-ordering.workspace = true

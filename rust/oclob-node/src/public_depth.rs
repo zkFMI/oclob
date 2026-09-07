@@ -4,7 +4,7 @@
 use crate::edge_client::AgreedRoundExecution;
 use crate::executor::RoundPlan;
 use crate::network::{ClusterPublicConfig, NodePrivateStateReceipt};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{validate_public_levels, Digest32, MpcBatchResult, MpcPriceLevel};
 use oclob_mpc::{matching_program, public_depth_digest, public_output_digest};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+
+/// Fixed upper bound for a compact serialized public book with seven hybrid
+/// depth attestations and, when matched, seven hybrid finality receipts.
+pub const MAX_PUBLIC_BOOK_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +48,7 @@ impl DepthAttestation {
         let levels = result.public_levels.as_ref().ok_or("MPC depth absent")?;
         validate_public_levels(levels)?;
         let mut value = Self {
-            version: 1,
+            version: 2,
             party,
             market_id: plan.market_id.clone(),
             sequence: plan.sequence,
@@ -59,13 +63,17 @@ impl DepthAttestation {
             signer: key.verifying_key().to_bytes(),
             signature: Vec::new(),
         };
-        value.signature = key.sign(&value.body()?).to_bytes().to_vec();
+        value.signature = key
+            .try_sign(&value.body()?)
+            .map_err(|error| error.to_string())?
+            .to_bytes()
+            .to_vec();
         Ok(value)
     }
     fn body(&self) -> Result<Vec<u8>, String> {
         // Fixed tuple excludes signature; domain separates this from all other receipts.
         Ok([
-            b"OCLOB:PUBLIC-DEPTH-ATTESTATION:v1".as_slice(),
+            b"OCLOB:PUBLIC-DEPTH-ATTESTATION:v2".as_slice(),
             &serde_json::to_vec(&(
                 self.version,
                 self.party,
@@ -86,7 +94,7 @@ impl DepthAttestation {
         .concat())
     }
     pub fn verify(&self, key: &VerifyingKey) -> Result<(), String> {
-        if self.version != 1
+        if self.version != 2
             || self.party >= 7
             || self.market_id.is_empty()
             || self.market_id.len() > 64
@@ -138,7 +146,7 @@ impl FinalizedPublicBook {
             }
         }
         let book = Self {
-            version: 1,
+            version: 2,
             market_id: plan.market_id.clone(),
             sequence: plan.sequence,
             round_id: plan.round_id,
@@ -171,7 +179,7 @@ impl FinalizedPublicBook {
     ) -> Result<(), String> {
         cluster.validate().map_err(err)?;
         validate_public_levels(&self.levels)?;
-        if self.version != 1
+        if self.version != 2
             || self.market_id != cluster.market_id
             || self.sequence < minimum_sequence
             || self.attestations.len() != cluster.nodes.len()
@@ -235,7 +243,7 @@ impl FinalizedPublicBook {
 /// journal repairs a crash between durable completion and this public export.
 pub fn publish(path: &Path, book: &FinalizedPublicBook) -> Result<(), String> {
     let bytes = serde_json::to_vec(book).map_err(err)?;
-    if bytes.len() > 128 * 1024 {
+    if bytes.len() > MAX_PUBLIC_BOOK_BYTES {
         return Err("public book exceeds size bound".into());
     }
     if fs::read(path).ok().as_deref() == Some(&bytes) {
@@ -266,10 +274,10 @@ pub fn read(path: &Path) -> Result<Option<FinalizedPublicBook>, String> {
         Err(e) => return Err(err(e)),
     };
     let mut bytes = Vec::new();
-    file.take(128 * 1024 + 1)
+    file.take(MAX_PUBLIC_BOOK_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(err)?;
-    if bytes.len() > 128 * 1024 {
+    if bytes.len() > MAX_PUBLIC_BOOK_BYTES {
         return Err("public book exceeds size bound".into());
     }
     serde_json::from_slice(&bytes).map(Some).map_err(err)

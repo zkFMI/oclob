@@ -51,6 +51,7 @@ pub fn recover_wallet(
     let mut refund_ids = std::collections::BTreeSet::new();
     for snapshot in &claims {
         let claim = snapshot.claim()?;
+        let valid_at = crate::market_runtime::now()?;
         let redemption = match journal.claim_redemption(claim.claim_id)? {
             Some(saved) => saved,
             None => {
@@ -73,23 +74,27 @@ pub fn recover_wallet(
                     .take(claim.opening_envelope.threshold)
                     .map(|s| s.party)
                     .collect::<Vec<_>>();
+                let authorization = journal.claim_authorization(&claim)?;
                 let request = redeem_claim(
                     &claim,
                     &key,
                     32,
                     &handle.secret,
+                    wallet.opening_key(),
                     &wallet.address,
                     &quorum,
                     domain,
                     client.state_root()?,
                     operation,
+                    &authorization,
+                    valid_at,
                     &mut rand::rngs::OsRng,
                 )?;
                 // Save the exact signature/output before a state-changing RPC.
                 journal.save_claim_redemption(&request)?
             }
         };
-        redemption.verify(&claim, domain)?;
+        redemption.verify(&claim, domain, valid_at)?;
         let current = client.note_claim_snapshot(claim.claim_id)?;
         if current.status == "active" {
             bridge.redeem_note_claim(&redemption)?;
@@ -257,7 +262,7 @@ pub fn recover_facility<C: AvalancheClient>(
                     .take(envelope.threshold)
                     .map(|s| s.party)
                     .collect::<Vec<_>>();
-                envelope.decrypt_u64(&handle.secret, &quorum, 32)?
+                envelope.decrypt_u64(&handle.secret, &config.note_opening_key()?, &quorum, 32)?
             } else {
                 let page = client.note_claim_page(head.binding.hold_id, None, 128)?;
                 if page.state_root != root || page.next.is_some() {
@@ -279,7 +284,7 @@ pub fn recover_facility<C: AvalancheClient>(
                     .take(envelope.threshold)
                     .map(|s| s.party)
                     .collect::<Vec<_>>();
-                envelope.decrypt_u64(&handle.secret, &quorum, 32)?
+                envelope.decrypt_u64(&handle.secret, &config.note_opening_key()?, &quorum, 32)?
             };
         if key
             .commit_u64(remaining, &remaining_blind)

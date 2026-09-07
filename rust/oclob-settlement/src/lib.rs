@@ -1245,7 +1245,7 @@ impl SettlementEngine {
 
     pub fn new_with_transition_committee<R: RngCore + CryptoRng>(
         rng: &mut R,
-        keys: &BTreeMap<u16, ed25519_dalek::VerifyingKey>,
+        keys: &BTreeMap<u16, oclob_core::application_crypto::VerifyingKey>,
         policy: CommitteePolicy,
     ) -> Result<Self, SettlementError> {
         let transition_committee_trust_root = committee_trust_root(keys, policy)
@@ -3154,7 +3154,7 @@ impl Default for SettlementEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use oclob_core::application_crypto::SigningKey;
     use oclob_core::{OrderCommitment, PublicFill};
     use oclob_ordering::OrderingCommittee;
     use oclob_proofs::{
@@ -3236,7 +3236,7 @@ mod tests {
             .map(|node_id| {
                 (
                     node_id,
-                    SigningKey::from_bytes(&[(node_id as u8).saturating_add(40); 32]),
+                    SigningKey::from_bytes(&[(node_id as u8).saturating_add(40); 64]),
                 )
             })
             .collect::<Vec<_>>();

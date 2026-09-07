@@ -1,0 +1,48 @@
+{
+  "manifest_id": "oclob-native-market-pqc-custody-003",
+  "contract_id": "oclob-native-market-v2",
+  "contract_path": "research/oclob_native_market_v2_contract.json",
+  "contract_sha256": "0e01378323b129f6fdd92aa7a59d353b2a034fbc1cf404a895bbd6a4e619a185",
+  "stage": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "current_bottleneck": "The participant-owned claim authorization boundary passes deterministic Rust gates but has not run through the resident market crash and restart journey on current synchronized native images.",
+  "causal_hypothesis": "Persisting each randomized signed participant response before reply and carrying it in the exact saved fill request will preserve the two-fill 9030 settlement across exit 75 while every proof node verifies four response signatures and eight fresh claim keys.",
+  "single_intended_change": "Run the existing resident market acceptance on current integration source and count claim custody evidence from the durable signed requests instead of reporting the old zero-signature field.",
+  "baseline": "OCLOB standard gate 20260906T075758Z-oclob passed settlement release 6, node lib 74, all-target check and strict Clippy (log SHA256 9bdc59114b73dd0ee29365074b45efbdc69957238aa53dec1d15d1014ac7b135); the prior v1 resident scenario established two fills, 9030 notional, exit 75 recovery and validator restart without the new custody measurement.",
+  "evidence_boundary": "The deterministic standard gate proves exact randomized response persistence across corporate API retry and process restart. This native run measures actual API issuance, durable fill-request carriage, exit-75 request replay, canonical settlement and validator restart; its receipt must cite both evidence sources.",
+  "evaluation_population": {
+    "operator_hosts": 1,
+    "corporate_processes": 2,
+    "mpc_nodes": 7,
+    "validators": 5,
+    "orders": 3,
+    "fills": 2
+  },
+  "primary_metric": "autonomously_settled_fills",
+  "point_prediction": {
+    "admitted_orders": 3,
+    "completed_market_rounds": 3,
+    "autonomously_settled_fills": 2,
+    "trade_notional": 9030,
+    "node_finality_observations": 14,
+    "post_match_participant_signatures": 4,
+    "claim_authorization_response_signatures": 4,
+    "fresh_claim_authorization_keys": 8,
+    "post_match_financial_approval_signatures": 0,
+    "actual_post_canonical_exit": 75,
+    "restart_did_not_duplicate_settlement": true
+  },
+  "most_likely_prediction_error": "A participant response or its retained key may be bound to the wrong projected sequence on the second fill, causing node verification or later recovery to reject the batch.",
+  "rejection_rules": [
+    "contract or synchronized source hash differs",
+    "unverified or mutable native base image",
+    "wrong price-priority allocation or notional",
+    "response signature count differs from four",
+    "fresh key count differs from eight or any fingerprint repeats",
+    "any post-match financial approval signature",
+    "missing actual exit 75, exact retry, five-validator agreement or restart"
+  ],
+  "promotion_rules": [
+    "smoke_only after every contract constraint; no WAN, independent-operator, HSM, performance, economic or production promotion"
+  ],
+  "command": "zkfmi-crypto/scripts/pqc-native-acceptance.sh (market phase)"
+}

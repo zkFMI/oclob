@@ -9,8 +9,7 @@ use crate::{
     CanonicalAccountOpening, CanonicalSettlementAcceptance, PreparedCanonicalTransition,
     SettlementError,
 };
-#[cfg(test)]
-use ed25519_dalek::SigningKey;
+
 use qomm_defmi::avalanche::{AvalancheClient, FacilityAvalancheBridge};
 use qomm_defmi::facility::{
     AccountOpening, AssetDefinition, AssetKind, DefmiFacility, QuorumApproval, SettlementOrder,
@@ -426,7 +425,7 @@ mod tests {
         let facility = DefmiFacility::open(
             root.join("projection.sqlite3"),
             QuorumAuthorizer::new(nodes, 3, 1, "unit-chain").unwrap(),
-            SigningKey::from_bytes(&[99; 32]),
+            zkfmi_crypto::test_support::hybrid_signer(&[99; 32]),
         )
         .unwrap();
         for asset in asset_definitions(prepared.market_id()) {

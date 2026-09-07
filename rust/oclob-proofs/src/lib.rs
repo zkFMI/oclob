@@ -4,7 +4,7 @@
 
 #![forbid(unsafe_code)]
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{BookTransition, CancellationTransition, Digest32, ExpiryTransition, PublicFill};
 use oclob_mpc::{MpcBatchReceipt, MpcReceipt};
 use oclob_ordering::{CommitteePolicy, OrderCertificate};
@@ -13,11 +13,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-const STATEMENT_DOMAIN: &[u8] = b"OCLOB:TRANSITION-STATEMENT:v2";
-const FILL_DOMAIN: &[u8] = b"OCLOB:PUBLIC-FILL:v1";
-const COMMITTEE_TRUST_DOMAIN: &[u8] = b"OCLOB:TRANSITION-COMMITTEE:v1";
-const CANCELLATION_STATEMENT_DOMAIN: &[u8] = b"OCLOB:CANCELLATION-STATEMENT:v1";
-const EXPIRY_STATEMENT_DOMAIN: &[u8] = b"OCLOB:EXPIRY-STATEMENT:v1";
+const STATEMENT_DOMAIN: &[u8] = b"OCLOB:TRANSITION-STATEMENT:v3";
+const FILL_DOMAIN: &[u8] = b"OCLOB:PUBLIC-FILL:v2";
+const COMMITTEE_TRUST_DOMAIN: &[u8] = b"OCLOB:TRANSITION-COMMITTEE:v2";
+const CANCELLATION_STATEMENT_DOMAIN: &[u8] = b"OCLOB:CANCELLATION-STATEMENT:v2";
+const EXPIRY_STATEMENT_DOMAIN: &[u8] = b"OCLOB:EXPIRY-STATEMENT:v2";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TransitionStatement {
@@ -283,11 +283,16 @@ impl ExpiryProof {
             attestations: signers
                 .iter()
                 .take(policy.ordering_quorum)
-                .map(|(node_id, key)| TransitionAttestation {
-                    node_id: *node_id,
-                    signature: key.sign(&digest).to_bytes().to_vec(),
+                .map(|(node_id, key)| {
+                    Ok(TransitionAttestation {
+                        node_id: *node_id,
+                        signature: key
+                            .try_sign(&digest)
+                            .map_err(|_| ProofError::InvalidSignature)?
+                            .to_bytes(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, ProofError>>()?,
         })
     }
 
@@ -338,11 +343,16 @@ impl CancellationProof {
             attestations: signers
                 .iter()
                 .take(policy.ordering_quorum)
-                .map(|(node_id, key)| TransitionAttestation {
-                    node_id: *node_id,
-                    signature: key.sign(&digest).to_bytes().to_vec(),
+                .map(|(node_id, key)| {
+                    Ok(TransitionAttestation {
+                        node_id: *node_id,
+                        signature: key
+                            .try_sign(&digest)
+                            .map_err(|_| ProofError::InvalidSignature)?
+                            .to_bytes(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, ProofError>>()?,
         })
     }
 
@@ -391,11 +401,16 @@ impl TransitionProof {
         let attestations = signers
             .iter()
             .take(policy.ordering_quorum)
-            .map(|(node_id, key)| TransitionAttestation {
-                node_id: *node_id,
-                signature: key.sign(&digest).to_bytes().to_vec(),
+            .map(|(node_id, key)| {
+                Ok(TransitionAttestation {
+                    node_id: *node_id,
+                    signature: key
+                        .try_sign(&digest)
+                        .map_err(|_| ProofError::InvalidSignature)?
+                        .to_bytes(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ProofError>>()?;
         Ok(Self {
             statement,
             attestations,

@@ -1,0 +1,18 @@
+{
+  "contract_id": "oclob-native-finality-v2",
+  "objective": "Complete the single-fill corporate wallet and five-validator finality journey while proving that participant-owned one-time claim authorization survives into every proof-node request and later redemption.",
+  "primary_metric": "node_observed_canonical_finality",
+  "truth_provider": "Two participant corporate journals, exact hybrid-signed claim authorization responses, seven node-local signed MPC/finality records, canonical DeFMI transactions, private wallet redemption and five live Avalanche validator roots.",
+  "hard_constraints": [
+    "The one settled fill contains exactly two participant claim-authorization response signatures and four mutually distinct one-time claim key fingerprints. Post-match financial approval signatures remain zero.",
+    "The deterministic corporate-journal gate proves encrypted-seed retention and byte-identical randomized signed responses on retry and process restart. This native run must carry the persisted response bytes through the actual corporate API and canonical settlement path. The coordinator receives no seed and proof nodes independently verify response provenance.",
+    "All seven nodes reject unobserved or substituted canonical evidence without changing state, then record the exact accepted fill and preserve it across repeat observation.",
+    "The 40-at-100 trade, three claim redemptions or repeats, refund-funded next order, seven admissions, five equal validator roots and actual validator restart must all pass.",
+    "Use current synchronized integration source and the verified PQC native base image by exact image ID; retain source, contract, manifest and image digests.",
+    "Do not export corporate journals, claim seeds, note openings or private runtime state."
+  ],
+  "non_claims": [
+    "The configured canonical read service is a trust boundary rather than a validator light client.",
+    "This single-host functional acceptance does not establish independent operators, WAN, HSM, HA, performance, economic or production readiness."
+  ]
+}

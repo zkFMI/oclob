@@ -5,9 +5,11 @@ use crate::market_journal::MarketJournal;
 use crate::market_network::MarketIngress;
 use crate::network::{ClusterNodePublic, ClusterPublicConfig, NodeAdmissionReceipt};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
+use oclob_core::application_crypto::SigningKey;
 use oclob_core::{SecretOrder, Side, TimeInForce};
-use oclob_edge::{EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey};
+use oclob_edge::{
+    ClaimAuthorizationEndpoint, EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey,
+};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::handles::Identity;
 use std::fs;
@@ -20,9 +22,9 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
     let node_keys: [NodeEncryptionKey; 7] =
         std::array::from_fn(|_| NodeDecryptionKey::generate().unwrap().public_key().unwrap());
     let signers: [SigningKey; 7] =
-        std::array::from_fn(|i| SigningKey::from_bytes(&[i as u8 + 51; 32]));
+        std::array::from_fn(|i| SigningKey::from_bytes(&[i as u8 + 51; 64]));
     let cluster = ClusterPublicConfig {
-        version: 4,
+        version: 5,
         market_id: "JGB10Y-JPY".into(),
         program: "oclob_match_v1".into(),
         settlement_release_threshold: 3,
@@ -52,13 +54,13 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
         [43; 32],
     )
     .unwrap();
-    let issuer = SigningKey::from_bytes(&[44; 32]);
-    let signer = SigningKey::from_bytes(&[45; 32]);
+    let issuer = SigningKey::from_bytes(&[44; 64]);
+    let signer = SigningKey::from_bytes(&[45; 64]);
     let side_blinding = Scalar::from(46u64);
     let reserve_blinding = Scalar::from(47u64);
     let key = Pedersen::new(b"qomm:defmi:v1");
     let permit = ReservationPermit {
-        version: 2,
+        version: 3,
         role: ReservationRole::Application,
         application_binding: zkpi_defmi_sdk::application::oclob_manifest_v1()
             .digest()
@@ -90,19 +92,25 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
         reserve_receipt_digest: [55; 32],
         reservation_sequence: 3,
         valid_until: at + 601,
-        signer_public: issuer.verifying_key().to_bytes(),
+        signer_public: issuer.hybrid_public_key(),
         signature: Vec::new(),
     }
-    .sign(&issuer)
+    .sign(&issuer.raw_hybrid_signer())
     .unwrap();
     let reblinding = Scalar::from(101u64);
-    let admission = ReservationAdmission::from_permit(&permit, &reblinding, &issuer).unwrap();
+    let admission = ReservationAdmission::from_permit(
+        &permit,
+        &reblinding,
+        &issuer.raw_hybrid_signer(),
+        &[91; 32],
+    )
+    .unwrap();
     let bundle = EdgeOrderBundle::create_with_reservation_admission(
         &order,
         &participant,
         [56; 32],
         &admission,
-        &issuer.verifying_key(),
+        &issuer.hybrid_public_key(),
         side_blinding,
         reserve_blinding + reblinding,
         &signer,
@@ -112,7 +120,18 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
     )
     .unwrap();
     let authority = bundle
-        .seal_reservation_authority(&permit, &admission, reblinding, &mut rand::rngs::OsRng)
+        .seal_reservation_authority(
+            &permit,
+            &admission,
+            reblinding,
+            &ClaimAuthorizationEndpoint {
+                host: "claim-authority.test".into(),
+                port: 9890,
+                server_name: "claim-authority.test".into(),
+                certificate_sha256: [99; 32],
+            },
+            &mut rand::rngs::OsRng,
+        )
         .unwrap();
     let manifest = bundle.manifest().clone();
     let deliveries = bundle.into_deliveries();
@@ -134,7 +153,7 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
         })
         .collect::<Vec<_>>();
     let receipt = EdgeAdmissionReceipt {
-        version: 2,
+        version: 3,
         receipt_digest: receipt_digest(&manifest, &generations, &shares, &keys, &receipts),
         manifest,
         node_generations: generations,

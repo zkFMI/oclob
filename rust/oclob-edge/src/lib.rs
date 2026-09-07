@@ -12,7 +12,7 @@ use base64::Engine;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment, SecretOrder, TimeInForce};
 use openssl::symm::{Cipher, Crypter, Mode};
 use qomm_zk::pedersen::Pedersen;
@@ -37,28 +37,28 @@ pub const MAX_CORRUPT_PARTIES: usize = 2;
 pub const MATCH_FIELD_COUNT: usize = 6;
 pub const SETTLEMENT_FIELD_COUNT: usize = 2;
 pub const VSS_COEFFICIENTS: usize = MAX_CORRUPT_PARTIES + 1;
-pub const SEALED_SHARE_CLEAR_BYTES: usize = 8_192;
+pub const SEALED_SHARE_CLEAR_BYTES: usize = 64 * 1_024;
 pub const SETTLEMENT_KEY_THRESHOLD: usize = MAX_CORRUPT_PARTIES + 1;
 pub const SETTLEMENT_KEY_COEFFICIENTS: usize = SETTLEMENT_KEY_THRESHOLD;
-pub const SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES: usize = 1_024;
+pub const SEALED_CAPABILITY_KEY_SHARE_CLEAR_BYTES: usize = 32 * 1_024;
 pub const SEALED_SETTLEMENT_CAPABILITY_CLEAR_BYTES: usize = 64 * 1_024;
 
-const MANIFEST_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST:v1";
-const MANIFEST_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST-SIGNATURE:v1";
-const SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-SIGNATURE:v1";
-const SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-ENVELOPE:v1";
-const SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-CLEAR:v1";
-const SETTLEMENT_CAPABILITY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-COMMITMENT:v1";
-const SETTLEMENT_CAPABILITY_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-SIGNATURE:v1";
-const CAPABILITY_KEY_SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-SIGNATURE:v1";
-const CAPABILITY_KEY_SHARE_DIGEST_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-DIGEST:v1";
-const CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-ENVELOPE:v1";
-const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CLEAR:v1";
-const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v1";
-const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v1";
-const PREAUTHORIZED_SETTLEMENT_DOMAIN: &[u8] = b"OCLOB:PREAUTHORIZED-SETTLEMENT:v1";
-const RESERVATION_AUTHORITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:RESERVATION-AUTHORITY:v1";
-const VERSION: u16 = 6;
+const MANIFEST_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST:v2";
+const MANIFEST_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-MANIFEST-SIGNATURE:v2";
+const SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-SIGNATURE:v2";
+const SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-ENVELOPE:v2";
+const SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:EDGE-SHARE-CLEAR:v2";
+const SETTLEMENT_CAPABILITY_COMMITMENT_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-COMMITMENT:v2";
+const SETTLEMENT_CAPABILITY_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-SIGNATURE:v2";
+const CAPABILITY_KEY_SHARE_SIGNATURE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-SIGNATURE:v2";
+const CAPABILITY_KEY_SHARE_DIGEST_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-DIGEST:v2";
+const CAPABILITY_KEY_SHARE_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-ENVELOPE:v2";
+const CAPABILITY_KEY_SHARE_CLEAR_DOMAIN: &[u8] = b"OCLOB:CAPABILITY-KEY-SHARE-CLEAR:v2";
+const SETTLEMENT_CAPABILITY_ENVELOPE_DOMAIN: &[u8] = b"OCLOB:THRESHOLD-SETTLEMENT-CAPABILITY:v2";
+const SETTLEMENT_CAPABILITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:SETTLEMENT-CAPABILITY-CLEAR:v2";
+const PREAUTHORIZED_SETTLEMENT_DOMAIN: &[u8] = b"OCLOB:PREAUTHORIZED-SETTLEMENT:v2";
+const RESERVATION_AUTHORITY_CLEAR_DOMAIN: &[u8] = b"OCLOB:RESERVATION-AUTHORITY:v3";
+const VERSION: u16 = 7;
 
 /// Public information sent to the ordering coordinator. The field commitments
 /// are hiding Pedersen commitments; they cannot be brute-forced like plain
@@ -271,7 +271,7 @@ impl PartyOrderShare {
         manifest: &EdgeOrderManifest,
         expected_venue: Digest32,
         expected_defmi: Digest32,
-        trusted_signer: &VerifyingKey,
+        trusted_signer: &[u8],
         now: u64,
     ) -> Result<ReservationAdmission, EdgeError> {
         if !manifest.uses_pretrade_reservation() || self.reservation_admission.is_empty() {
@@ -404,7 +404,7 @@ pub struct NodeEncryptionKey(pub Vec<u8>);
 impl NodeEncryptionKey {
     pub fn fingerprint(&self) -> Digest32 {
         Sha256::new()
-            .chain_update(b"OCLOB:HYBRID-NODE-KEY:v1")
+            .chain_update(b"OCLOB:HYBRID-NODE-KEY:v2")
             .chain_update(&self.0)
             .finalize()
             .into()
@@ -855,18 +855,49 @@ impl SealedSettlementCapability {
 #[serde(transparent)]
 pub struct SealedReservationAuthority(SealedSettlementCapability);
 
+/// Pinned corporate endpoint that exposes only idempotent public claim-key
+/// commitments to the authenticated market coordinator.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimAuthorizationEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub server_name: String,
+    pub certificate_sha256: [u8; 32],
+}
+
+impl ClaimAuthorizationEndpoint {
+    pub fn validate(&self) -> Result<(), EdgeError> {
+        if self.host.is_empty()
+            || self.host.len() > 253
+            || !self.host.is_ascii()
+            || self.port == 0
+            || self.server_name.is_empty()
+            || self.server_name.len() > 253
+            || !self.server_name.is_ascii()
+            || self.certificate_sha256 == [0; 32]
+        {
+            return Err(EdgeError::Envelope);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReservationAuthorityClear {
     admission: ReservationAdmission,
     permit: ReservationPermit,
     reserve_reblinding: [u8; 32],
+    claim_authorization_endpoint: ClaimAuthorizationEndpoint,
 }
 
 pub struct VerifiedReservationAuthority {
     pub admission: ReservationAdmission,
     pub permit: ReservationPermit,
     pub reserve_reblinding: Scalar,
+    pub claim_authorization_endpoint: ClaimAuthorizationEndpoint,
+    pub order_signer: [u8; 32],
 }
 
 impl SealedReservationAuthority {
@@ -890,7 +921,7 @@ impl SealedReservationAuthority {
         manifest: &EdgeOrderManifest,
         expected_venue: Digest32,
         expected_defmi: Digest32,
-        trusted_signer: &VerifyingKey,
+        trusted_signer: &[u8],
         now: u64,
     ) -> Result<VerifiedReservationAuthority, EdgeError> {
         manifest.verify(now)?;
@@ -932,6 +963,7 @@ impl SealedReservationAuthority {
         })();
         clear.fill(0);
         let decoded = decoded?;
+        decoded.claim_authorization_endpoint.validate()?;
         if decoded.admission.venue_id != expected_venue {
             return Err(EdgeError::ReservationPermit);
         }
@@ -956,6 +988,8 @@ impl SealedReservationAuthority {
             admission: decoded.admission,
             permit: decoded.permit,
             reserve_reblinding,
+            claim_authorization_endpoint: decoded.claim_authorization_endpoint,
+            order_signer: manifest.signer,
         })
     }
 }
@@ -992,7 +1026,7 @@ pub struct EdgeOrderBundle {
 
 struct PreauthorizedReservation<'a> {
     permit: &'a ReservationAdmission,
-    trusted_signer: &'a VerifyingKey,
+    trusted_signer: &'a [u8],
     side_blinding: Scalar,
     reserve_blinding: Scalar,
     now: u64,
@@ -1055,7 +1089,7 @@ impl EdgeOrderBundle {
         handle: &Handle,
         eligibility_commitment: Digest32,
         permit: &ReservationAdmission,
-        trusted_signer: &VerifyingKey,
+        trusted_signer: &[u8],
         side_blinding: Scalar,
         reserve_blinding: Scalar,
         signer: &SigningKey,
@@ -1272,7 +1306,8 @@ impl EdgeOrderBundle {
         };
         manifest.commitment = manifest.derived_commitment();
         manifest.signature = signer
-            .sign(&manifest_signature_body(manifest.commitment))
+            .try_sign(&manifest_signature_body(manifest.commitment))
+            .map_err(|_| EdgeError::Signature)?
             .to_bytes()
             .to_vec();
         manifest.verify(0)?;
@@ -1295,7 +1330,11 @@ impl EdgeOrderBundle {
                 signer: signer_public,
                 signature: Vec::new(),
             };
-            share.signature = signer.sign(&share.signature_body()).to_bytes().to_vec();
+            share.signature = signer
+                .try_sign(&share.signature_body())
+                .map_err(|_| EdgeError::Signature)?
+                .to_bytes()
+                .to_vec();
             share.verify(&manifest, party as u16, 0)?;
             sealed.push(seal_share(&share, &node_keys[party], rng)?);
             let mut capability_key_share = CapabilityKeyShare {
@@ -1308,7 +1347,8 @@ impl EdgeOrderBundle {
                 signature: Vec::new(),
             };
             capability_key_share.signature = signer
-                .sign(&capability_key_share.signature_body())
+                .try_sign(&capability_key_share.signature_body())
+                .map_err(|_| EdgeError::Signature)?
                 .to_bytes()
                 .to_vec();
             capability_key_share.verify(&manifest, party as u16, 0)?;
@@ -1340,6 +1380,7 @@ impl EdgeOrderBundle {
         permit: &ReservationPermit,
         admission: &ReservationAdmission,
         reserve_reblinding: Scalar,
+        claim_authorization_endpoint: &ClaimAuthorizationEndpoint,
         rng: &mut R,
     ) -> Result<SealedReservationAuthority, EdgeError> {
         if !self.manifest.uses_pretrade_reservation() {
@@ -1349,10 +1390,12 @@ impl EdgeOrderBundle {
         admission
             .verify_authority(permit, &reserve_reblinding)
             .map_err(|_| EdgeError::ReservationPermit)?;
+        claim_authorization_endpoint.validate()?;
         let mut encoded = serde_json::to_vec(&ReservationAuthorityClear {
             admission: admission.clone(),
             permit: permit.clone(),
             reserve_reblinding: reserve_reblinding.to_bytes(),
+            claim_authorization_endpoint: claim_authorization_endpoint.clone(),
         })
         .map_err(|_| EdgeError::Envelope)?;
         let prefix = RESERVATION_AUTHORITY_CLEAR_DOMAIN.len();
@@ -1426,7 +1469,11 @@ impl EdgeOrderBundle {
             eligibility_evidence: eligibility_evidence.to_vec(),
             constant_blindings: self.constant_blindings,
             signer: self.manifest.signer,
-            signature: signer.sign(&signature_body).to_bytes().to_vec(),
+            signature: signer
+                .try_sign(&signature_body)
+                .map_err(|_| EdgeError::Signature)?
+                .to_bytes()
+                .to_vec(),
         };
         seal_settlement_clear(
             &clear,
@@ -2182,7 +2229,11 @@ mod tests {
         .is_err());
         let mut tampered = capability_key_shares[0].clone();
         tampered.value = (canonical_scalar(tampered.value).unwrap() + Scalar::ONE).to_bytes();
-        tampered.signature = signer.sign(&tampered.signature_body()).to_bytes().to_vec();
+        tampered.signature = signer
+            .try_sign(&tampered.signature_body())
+            .unwrap()
+            .to_bytes()
+            .to_vec();
         assert!(tampered.verify(&manifest, 0, 1_900_000_000).is_err());
         let settlement_key =
             reconstruct_settlement_capability_key(&manifest, &capability_key_shares, 1_900_000_000)
@@ -2344,13 +2395,13 @@ mod tests {
             [43; 32],
         )
         .unwrap();
-        let permit_signer = SigningKey::from_bytes(&[44; 32]);
-        let order_signer = SigningKey::from_bytes(&[45; 32]);
+        let permit_signer = SigningKey::from_bytes(&[44; 64]);
+        let order_signer = SigningKey::from_bytes(&[45; 64]);
         let side_blinding = Scalar::from(46_u64);
         let reserve_blinding = Scalar::from(47_u64);
         let key = vss_key();
         let permit = ReservationPermit {
-            version: 2,
+            version: 3,
             role: ReservationRole::Application,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [48; 32],
@@ -2380,20 +2431,25 @@ mod tests {
             reserve_receipt_digest: [55; 32],
             reservation_sequence: 3,
             valid_until: 2_000_000_001,
-            signer_public: permit_signer.verifying_key().to_bytes(),
+            signer_public: permit_signer.hybrid_public_key(),
             signature: Vec::new(),
         }
-        .sign(&permit_signer)
+        .sign(&permit_signer.raw_hybrid_signer())
         .unwrap();
         let reblinding = Scalar::from(101_u64);
-        let admission =
-            ReservationAdmission::from_permit(&permit, &reblinding, &permit_signer).unwrap();
+        let admission = ReservationAdmission::from_permit(
+            &permit,
+            &reblinding,
+            &permit_signer.raw_hybrid_signer(),
+            &[91; 32],
+        )
+        .unwrap();
         let bundle = EdgeOrderBundle::create_with_reservation_admission(
             &order,
             &participant,
             [56; 32],
             &admission,
-            &permit_signer.verifying_key(),
+            &permit_signer.hybrid_public_key(),
             side_blinding,
             reserve_blinding + reblinding,
             &order_signer,
@@ -2420,7 +2476,18 @@ mod tests {
             )
             .is_err());
         let authority = bundle
-            .seal_reservation_authority(&permit, &admission, reblinding, &mut rand::rngs::OsRng)
+            .seal_reservation_authority(
+                &permit,
+                &admission,
+                reblinding,
+                &ClaimAuthorizationEndpoint {
+                    host: "claim-authority.test".into(),
+                    port: 9890,
+                    server_name: "claim-authority.test".into(),
+                    certificate_sha256: [99; 32],
+                },
+                &mut rand::rngs::OsRng,
+            )
             .unwrap();
         let manifest = bundle.manifest().clone();
         let mut key_shares = Vec::new();
@@ -2438,7 +2505,7 @@ mod tests {
                     &manifest,
                     permit.venue_id,
                     [49; 32],
-                    &permit_signer.verifying_key(),
+                    &permit_signer.hybrid_public_key(),
                     1_900_000_000,
                 )
                 .unwrap();
@@ -2471,7 +2538,7 @@ mod tests {
                 &manifest,
                 permit.venue_id,
                 [49; 32],
-                &permit_signer.verifying_key(),
+                &permit_signer.hybrid_public_key(),
                 1_900_000_000,
             )
             .unwrap();
@@ -2483,7 +2550,7 @@ mod tests {
                 &manifest,
                 permit.venue_id,
                 [99; 32],
-                &permit_signer.verifying_key(),
+                &permit_signer.hybrid_public_key(),
                 1_900_000_000
             )
             .is_err());
@@ -2493,7 +2560,7 @@ mod tests {
                 &manifest,
                 [99; 32],
                 [49; 32],
-                &permit_signer.verifying_key(),
+                &permit_signer.hybrid_public_key(),
                 1_900_000_000
             )
             .is_err());
@@ -2505,7 +2572,7 @@ mod tests {
                 &manifest,
                 permit.venue_id,
                 [49; 32],
-                &permit_signer.verifying_key(),
+                &permit_signer.hybrid_public_key(),
                 1_900_000_000
             )
             .is_err());
@@ -2527,10 +2594,10 @@ mod tests {
             [63; 32],
         )
         .unwrap();
-        let permit_signer = SigningKey::from_bytes(&[64; 32]);
+        let permit_signer = SigningKey::from_bytes(&[64; 64]);
         let key = vss_key();
         let permit = ReservationPermit {
-            version: 2,
+            version: 3,
             role: ReservationRole::Maker,
             application_binding: oclob_manifest_v1().digest().unwrap(),
             venue_id: [65; 32],
@@ -2563,23 +2630,27 @@ mod tests {
             reserve_receipt_digest: [74; 32],
             reservation_sequence: 1,
             valid_until: 2_000_000_001,
-            signer_public: permit_signer.verifying_key().to_bytes(),
+            signer_public: permit_signer.hybrid_public_key(),
             signature: Vec::new(),
         }
-        .sign(&permit_signer)
+        .sign(&permit_signer.raw_hybrid_signer())
         .unwrap();
-        let admission =
-            ReservationAdmission::from_permit(&permit, &Scalar::from(102_u64), &permit_signer)
-                .unwrap();
+        let admission = ReservationAdmission::from_permit(
+            &permit,
+            &Scalar::from(102_u64),
+            &permit_signer.raw_hybrid_signer(),
+            &[91; 32],
+        )
+        .unwrap();
         assert!(EdgeOrderBundle::create_with_reservation_admission(
             &order,
             &participant,
             [75; 32],
             &admission,
-            &permit_signer.verifying_key(),
+            &permit_signer.hybrid_public_key(),
             Scalar::from(72_u64),
             Scalar::from(99_u64),
-            &SigningKey::from_bytes(&[76; 32]),
+            &SigningKey::from_bytes(&[76; 64]),
             &public,
             1_900_000_000,
             &mut rand::rngs::OsRng,
