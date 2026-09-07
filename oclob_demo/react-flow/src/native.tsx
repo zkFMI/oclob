@@ -12,15 +12,15 @@ function diagram(book: PublicBook | null, narrow: boolean): OclobGraphModel {
   const w = narrow ? 160 : 225;
   const nodes: OclobGraphModel['nodes'] = Array.from({ length: 7 }, (_, party) => ({
     id: `mpc-${party}`, type: 'matcher', x: narrow ? 95 + (party % 2) * 190 : 145 + (party % 2) * 265,
-    y: 55 + Math.floor(party / 2) * 105, w, h: 76, title: `MPC ${party + 1}`,
-    sub: book ? 'この板に署名済み' : '署名を確認できません',
+    y: 55 + Math.floor(party / 2) * 105, w, h: 76, title: `計算ノード ${party + 1}`,
+    sub: book ? 'この板に署名しています' : '署名を確認できません',
     classes: book ? [] : ['is-silent'],
   }));
   nodes.push({ id: 'feed', type: 'ledger', x: narrow ? 190 : 720, y: narrow ? 510 : 170,
-    w: narrow ? 320 : 280, h: 100, title: '公開板の配信', sub: book ? `検証した更新番号 ${book.sequence}` : '有効な公開板を待っています' });
+    w: narrow ? 320 : 280, h: 100, title: '公開板の配信', sub: book ? `確認済みの更新番号 ${book.sequence}` : '有効な公開板を待っています' });
   nodes.push({ id: 'defmi', type: 'zkpi', x: narrow ? 190 : 720, y: narrow ? 680 : 380,
-    w: narrow ? 320 : 280, h: 100, title: 'DeFMI 決済記録',
-    sub: !book ? '確認できません' : book.finality.length ? `台帳の高さ ${book.finality[0].height} を7ノードが確認` : 'この板の更新には決済がありません' });
+    w: narrow ? 320 : 280, h: 100, title: 'DeFMI 台帳の決済記録',
+    sub: !book ? '確認できません' : book.finality.length ? `台帳の ${book.finality[0].height} 回目の更新を 7 ノードが確認` : 'この板の更新には決済がありません' });
   const feed = nodes[7], defmi = nodes[8];
   const edges: OclobGraphModel['edges'] = nodes.slice(0, 7).map((node, index) => ({
     id: `${node.id}-feed`, source: node.id, target: 'feed',
@@ -88,23 +88,23 @@ function NativeApp({ Graph }: { Graph: GraphComponent }) {
   const model = useMemo(() => diagram(visible, narrow), [visible, narrow]);
   const options: OclobGraphOptions = {
     ariaLabel: '7台のMPCノードの署名とDeFMI決済記録から公開板を確認する構成',
-    phase: visible ? visible.sequence : status, phaseLabel: '証跡のつながり（通信の実況ではありません）',
+    phase: visible ? visible.sequence : status, phaseLabel: '線は確認の根拠のつながりです（通信の実況ではありません）',
     noRoundText: '', legend: [{ type: 'matcher', label: '計算ノードの署名' }, { type: 'ledger', label: '決済後の記録' }],
-    legendNotes: ['線は公開板を確認するための証跡の関係です。', 'ノードの稼働監視や送金中のアニメーションではありません。'], reducedMotion: true,
+    legendNotes: ['線は、公開板を確認するための根拠どうしの関係です。', 'ノードの稼働監視や、送金中のアニメーションではありません。'], reducedMotion: true,
   };
   return <div className="native-app">
-    <header className="native-header"><div><a className="native-brand" href="/">OCLOB</a><span className="native-mode">実サービス接続 · 読み取り専用</span></div>
+    <header className="native-header"><div><a className="native-brand" href="/">OCLOB</a><span className="native-mode">実際の公開板を表示 · 読み取り専用</span></div>
       <button type="button" disabled={busy} onClick={() => void refresh()}>{busy ? '確認中…' : '今すぐ確認'}</button></header>
     <main>
       <div className="native-heading"><div><h1>公開板と決済の確認</h1><p>{visible?.market ?? market.current ?? '市場を確認しています'}</p></div>
-        <span className={`native-status ${visible ? 'native-ok' : ''}`} role="status">{visible ? '有効な公開板を取得' : status === 'loading' ? '公開板を取得中' : book ? '公開板の有効期限切れ' : '公開板を確認できません'}</span></div>
+        <span className={`native-status ${visible ? 'native-ok' : ''}`} role="status">{visible ? '有効な公開板を表示中' : status === 'loading' ? '公開板を取得しています' : book ? '公開板の有効期限が切れました' : '公開板を確認できません'}</span></div>
       {!visible && <div className="native-notice" role={status === 'loading' ? 'status' : 'alert'}>
-        {status === 'loading' ? 'MPCノードの署名と決済後の記録を確認しています。' : 'まだ公開板がない、有効期限が切れた、または配信元に接続できない状態です。古い価格は表示しません。5秒ごとに再確認します。'}
+        {status === 'loading' ? '計算ノードの署名と決済後の記録を確認しています。' : 'まだ公開板がない、有効期限が切れた、または配信元に接続できない状態です。古い価格は表示しません。5 秒ごとに再確認します。'}
       </div>}
       <div className="native-layout">
         <aside><BookPanel book={visible}/>{visible && <EvidencePanel book={visible}/>}</aside>
-        <section className="native-panel native-network" aria-labelledby="network-title"><h2 id="network-title">どこで確認された公開板か</h2>
-          <p className="native-muted">7台の計算ノードが署名した同じ板を、決済後の記録と照合して配信します。</p>
+        <section className="native-panel native-network" aria-labelledby="network-title"><h2 id="network-title">この公開板はどこで確認されたか</h2>
+          <p className="native-muted">7 台の計算ノードが同じ板に署名し、決済後の記録と照合したものだけを配信します。</p>
           <div id="network-graph" style={{ height: narrow ? 870 : 650 }}><ReactFlowProvider><Graph key={narrow ? 'narrow' : 'wide'} model={model} options={options}/></ReactFlowProvider></div>
           <details className="native-limits"><summary>この画面で確認できること・できないこと</summary>
             <p>確認できるのは、公開価格・残数量・更新順序・計算ノードの署名・約定を伴う更新の決済後の記録です。</p>

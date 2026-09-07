@@ -127,8 +127,18 @@
 .qrf-particle-amber { fill: #f5b942; color: #f5b942; }
 .qrf-particle-blue { fill: #69a7ff; color: #69a7ff; }
 
-.qrf-edge-label { padding: 4px 8px; border: 1px solid rgba(87, 111, 146, .35); border-radius: 999px; color: #b1bdd0; background: rgba(8, 15, 27, .92); font-size: 11px; text-align: center; white-space: nowrap; }
+/* Label nodes are 180px wide so they can be centred on a point; the pill itself
+   must shrink to its text or it lies across the neighbouring cards. */
+#network-graph .react-flow__node-flowLabel { text-align: center; pointer-events: none; }
+.qrf-edge-label { display: inline-block; max-width: 100%; padding: 4px 8px; border: 1px solid rgba(87, 111, 146, .35); border-radius: 999px; color: #b1bdd0; background: rgba(8, 15, 27, .92); font-size: 11px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qrf-edge-label.strong { color: #e9f3ff; border-color: rgba(91, 191, 205, .55); }
+
+/* Small member cards (one MPC process, one validator): title only, centred. */
+.qrf-node.is-mini { display: flex; align-items: center; justify-content: center; padding: 4px; border-radius: 9px; }
+.qrf-node.is-mini .qrf-node-header { justify-content: center; }
+.qrf-node.is-mini .qrf-node-kind { flex: none; font-size: 12px; }
+.qrf-node.is-mini.is-stopped { border-style: dashed; color: #ff9aa6; opacity: .75; }
+.qrf-node.is-mini.is-stopped .qrf-node-kind { text-decoration: line-through; }
 
 .qrf-phase-panel { display: flex; align-items: center; gap: 7px; color: #d6e1f1; font-size: 13px; font-weight: 700; }
 .qrf-live-dot { width: 7px; height: 7px; border-radius: 50%; background: #45d7c8; box-shadow: 0 0 0 4px rgba(69, 215, 200, .12); }

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   Background,
@@ -14,6 +14,8 @@ import {
   type EdgeProps,
   type Node,
   type NodeProps,
+  useNodesInitialized,
+  useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './network.css';
@@ -163,7 +165,36 @@ TransactionEdge.displayName = 'TransactionEdge';
 const nodeTypes = { oclobNode: OclobNode, flowLabel: FlowLabel };
 const edgeTypes = { transaction: TransactionEdge };
 
-function FlowCanvas({ model, options }: { model: OclobGraphModel; options: OclobGraphOptions }) {
+const FIT_OPTIONS = { padding: 0.06, maxZoom: 1, duration: 0 };
+
+// `fitView` as a prop only runs once, when the nodes are first measured. The
+// legacy page re-renders the same root every 2.5 s and the column can change
+// width later (fonts, resize, role switch), so the right-hand nodes ended up
+// clipped. Refit whenever the model geometry or the canvas size changes.
+function RefitOnChange({ width, height }: { width: number; height: number }) {
+  const { fitView } = useReactFlow();
+  const initialized = useNodesInitialized();
+  const canvas = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!initialized) return;
+    const frame = window.requestAnimationFrame(() => { void fitView(FIT_OPTIONS); });
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialized, width, height, fitView]);
+  useEffect(() => {
+    canvas.current = document.querySelector<HTMLElement>('#network-graph .qrf-canvas');
+    if (!canvas.current || typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => { void fitView(FIT_OPTIONS); });
+    });
+    observer.observe(canvas.current);
+    return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+  }, [fitView]);
+  return null;
+}
+
+export function FlowCanvas({ model, options }: { model: OclobGraphModel; options: OclobGraphOptions }) {
   const nodes = useMemo<Node[]>(() => {
     const serviceNodes = model.nodes.map((item) => ({
       id: item.id,
@@ -245,7 +276,7 @@ function FlowCanvas({ model, options }: { model: OclobGraphModel; options: Oclob
           minZoom={0.18}
           maxZoom={1.8}
           fitView
-          fitViewOptions={{ padding: 0.04, maxZoom: 1 }}
+          fitViewOptions={FIT_OPTIONS}
           nodesConnectable={false}
           nodesDraggable={false}
           nodesFocusable={false}
@@ -257,6 +288,7 @@ function FlowCanvas({ model, options }: { model: OclobGraphModel; options: Oclob
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.3} color="#26354b" />
           <Controls showInteractive={false} position="bottom-right" />
+          <RefitOnChange width={model.W} height={model.H} />
         </ReactFlow>
       </div>
       <div className="qrf-footerbar">
@@ -282,8 +314,8 @@ function render(container: HTMLElement, model: OclobGraphModel, options: OclobGr
   // topology into a single 680px viewport. The page scrolls; the graph itself
   // remains pannable and zoomable.
   container.style.height = model.W < 560
-    ? `${Math.max(920, model.H + 144)}px`
-    : `${Math.max(680, Math.min(820, model.H + 160))}px`;
+    ? `${Math.max(920, model.H + 150)}px`
+    : `${Math.max(600, Math.min(720, model.H + 100))}px`;
   root.render(
     <ReactFlowProvider>
       <FlowCanvas model={model} options={options} />
