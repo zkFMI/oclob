@@ -5,14 +5,14 @@
 use crate::corporate::{CorporateNativeConfig, FacilityWitness, PreparedCorporateReserve};
 use crate::edge_client::{EdgeAdmissionReceipt, PreparedEdgeDelivery};
 use crate::network::ClusterPublicConfig;
+use defmi::claim_redemption::NoteClaimAuthorization;
+use defmi::note_chain::NoteClaim;
 use oclob_core::application_crypto::SigningKey;
 use oclob_edge::SealedReservationAuthority;
 use oclob_settlement::native::{
     NativeClaimAuthorizationCommitment, NativeClaimAuthorizationIssue, NativeClaimLeg,
     NativeParticipantClaimAuthorizations, CLAIM_AUTHORIZATION_ISSUE_VERSION,
 };
-use defmi::claim_redemption::NoteClaimAuthorization;
-use defmi::note_chain::NoteClaim;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -855,8 +855,7 @@ impl NativeCorporateJournal {
                 .verifying_key()
                 .to_bytes()
                 != receipt.manifest.signer
-            || command.reason
-                != defmi::application_settlement::ApplicationReleaseReason::Cancelled
+            || command.reason != defmi::application_settlement::ApplicationReleaseReason::Cancelled
         {
             return Err("cancel does not belong to the originally admitted corporate order".into());
         }
@@ -1780,7 +1779,7 @@ mod tests {
         let recipient_key = zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&[81; 96]);
         let recipient_public = zkfmi_crypto::traits::KemDecapsulator::public_key(&recipient_key);
         let context = [82; 32];
-        let share = qomm_proofs::opening_envelope::encrypt_opening_share(
+        let share = zkpi_proofs::opening_envelope::encrypt_opening_share(
             context,
             1,
             Scalar::from(3_u64),
@@ -1798,7 +1797,7 @@ mod tests {
             authorization: payer.claims[0].authorization,
             source_hold_id: issue.payee.reservation_id,
             kind: defmi::note_chain::NoteClaimKind::Delivery,
-            opening_envelope: qomm_proofs::opening_envelope::OpeningEnvelope::new(
+            opening_envelope: zkpi_proofs::opening_envelope::OpeningEnvelope::new(
                 context,
                 1,
                 recipient_view,

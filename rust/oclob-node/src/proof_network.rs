@@ -12,9 +12,6 @@ use oclob_settlement::collaborative::collaborative_job_id;
 use oclob_settlement::native::{
     NativeFillAuthorizationRequest, NativeFillVerifier, NativeReservationTrust,
 };
-use qomm_transport::proof_party::{
-    encode_bounded_response, read_bounded_request_line, ProofParty, ProofRequest, ProofResponse,
-};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -25,6 +22,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zkpi_committee::proof_party::{
+    encode_bounded_response, read_bounded_request_line, ProofParty, ProofRequest, ProofResponse,
+};
 
 const COLLABORATIVE_FILL_DOMAIN: &[u8] = b"OCLOB:COLLABORATIVE-FILL:v1";
 const MAX_METADATA_BYTES: u64 = 64 * 1024;

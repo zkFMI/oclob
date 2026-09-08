@@ -9,32 +9,32 @@ pub mod pretrade;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeInForce};
-use oclob_edge::VerifiedSettlementCapability;
-use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
-use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
 use defmi::ledger::Ledger;
 use defmi::settlement::{
     account_of, build_package, Defmi, Holdings, InstructionOpenings, CASH_RAIL, SECURITIES_RAIL,
 };
-use qomm_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions, ValueShares};
-use qomm_proofs::threshold_sigma::PartyId;
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::handles::{Handle, Identity};
-use zkpi::{
-    distributed_key_generation, frost, Bounds, PartialInstruction, Venue, AMOUNT_RANGE_CONTEXT,
-    PRICE_RANGE_CONTEXT,
-};
+use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeInForce};
+use oclob_edge::VerifiedSettlementCapability;
+use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
+use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
 use rand::rngs::OsRng;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::{Handle, Identity};
+use zkpi::{
+    distributed_key_generation, frost, Bounds, PartialInstruction, Venue, AMOUNT_RANGE_CONTEXT,
+    PRICE_RANGE_CONTEXT,
+};
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::finality::{
     accept_canonical_transition, CanonicalReadback, CanonicalTransition, ReadbackKind,
 };
+use zkpi_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions, ValueShares};
+use zkpi_proofs::threshold_sigma::PartyId;
 
 pub const RANGE_BITS: usize = 32;
 pub const PROOF_PARTIES: [PartyId; 7] = [1, 2, 3, 4, 5, 6, 7];
@@ -2297,12 +2297,12 @@ impl SettlementEngine {
                 ReservationKind::Securities => (
                     seller.handle.point,
                     buyer.handle.point,
-                    qomm_proofs::price_limit::PriceLimitDirection::MaximumBuyPrice,
+                    zkpi_proofs::price_limit::PriceLimitDirection::MaximumBuyPrice,
                 ),
                 ReservationKind::Cash => (
                     buyer.handle.point,
                     seller.handle.point,
-                    qomm_proofs::price_limit::PriceLimitDirection::MinimumSellPrice,
+                    zkpi_proofs::price_limit::PriceLimitDirection::MinimumSellPrice,
                 ),
             };
             if proof.limit_direction != expected_direction {
@@ -2979,7 +2979,7 @@ fn prove_range<R: RngCore + CryptoRng>(
     value: &ValueShares,
     context: &[u8],
     rng: &mut R,
-) -> Result<qomm_proofs::threshold_range::ThresholdRangeProof, SettlementError> {
+) -> Result<zkpi_proofs::threshold_range::ThresholdRangeProof, SettlementError> {
     let contributions = PROOF_QUORUM
         .iter()
         .map(|party| {

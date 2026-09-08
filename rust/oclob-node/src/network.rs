@@ -1765,12 +1765,12 @@ mod tests {
         replies: Vec<Option<serde_json::Value>>,
     ) -> (
         SocketAddr,
-        JoinHandle<Vec<qomm_transport::proof_party::ProofRequest>>,
+        JoinHandle<Vec<zkpi_committee::proof_party::ProofRequest>>,
     ) {
-        use qomm_transport::proof_party::{
+        use std::io::BufReader;
+        use zkpi_committee::proof_party::{
             encode_bounded_response, read_bounded_request_line, ProofRequest, ProofResponse,
         };
-        use std::io::BufReader;
         let tls = server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1848,7 +1848,7 @@ mod tests {
             "127.0.0.1",
             address.port(),
             "localhost",
-            qomm_transport::node_service::client_ssl_context(
+            zkpi_committee::node_service::client_ssl_context(
                 &files.participant_cert,
                 &files.participant_key,
                 &files.ca,

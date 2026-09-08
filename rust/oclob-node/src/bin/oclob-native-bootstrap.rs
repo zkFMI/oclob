@@ -1,12 +1,12 @@
 //! Pin a real resident-node DKG before either corporate process reserves funds.
 use oclob_node::network::{ClientIdentityConfig, ClusterPublicConfig};
 use oclob_settlement::collaborative::setup_frost;
-use qomm_transport::node_service::client_ssl_context;
-use qomm_transport::proof_client::ProofPartyTlsClient;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::Duration;
+use zkpi_committee::node_service::client_ssl_context;
+use zkpi_committee::proof_client::ProofPartyTlsClient;
 
 fn main() {
     if let Err(error) = run() {
@@ -47,7 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .finalize()
         .into();
     let public = setup_frost(&mut parties, session)?;
-    let pq_committee = qomm_transport::frost_coordinator::read_pq_committee(&mut parties, &public)?;
+    let pq_committee = zkpi_committee::frost_coordinator::read_pq_committee(&mut parties, &public)?;
     let mut output = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)

@@ -4,21 +4,21 @@
 //! independently observed by this node before it forgets the active order.
 
 use crate::{NodeError, NodeShareStore};
+use defmi::application_reservation::ApplicationReserveScope;
+use defmi::application_settlement::ApplicationNoteRelease;
+use defmi::application_settlement::ApplicationReleaseReason;
+use defmi::avalanche::{AvalancheClient, CanonicalApplicationReservation};
 use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{Digest32, OrderCommitment};
 use oclob_edge::EdgeOrderManifest;
 use oclob_ordering::OrderCertificate;
 use oclob_settlement::native::{NativeReservationAuthority, NativeReservationTrust};
 use oclob_settlement::pretrade::PrivateAdmissionClient;
-use defmi::application_reservation::ApplicationReserveScope;
-use defmi::application_settlement::ApplicationNoteRelease;
-use defmi::application_settlement::ApplicationReleaseReason;
-use defmi::avalanche::{AvalancheClient, CanonicalApplicationReservation};
-use qomm_transport::proof_party::{ApplicationControlAuthorization, ApplicationControlVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+use zkpi_committee::proof_party::{ApplicationControlAuthorization, ApplicationControlVerifier};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -420,7 +420,7 @@ impl crate::native_finality::NativeFinalityHandle {
         client: &PrivateAdmissionClient,
         trust: &NativeReservationTrust,
         request: &NativeReleaseRequest,
-        party: &mut qomm_transport::proof_party::ProofParty,
+        party: &mut zkpi_committee::proof_party::ProofParty,
         now: u64,
     ) -> Result<Digest32, String> {
         // Holding the local store lock keeps authorization serialized with
@@ -541,7 +541,7 @@ impl crate::native_finality::NativeFinalityHandle {
     }
 }
 
-pub fn certify_native_release<T: qomm_transport::proof_client::ProofPartyRpc>(
+pub fn certify_native_release<T: zkpi_committee::proof_client::ProofPartyRpc>(
     parties: &mut [T],
     request: &NativeReleaseRequest,
 ) -> Result<ApplicationNoteRelease, String> {
@@ -562,7 +562,7 @@ pub fn certify_native_release<T: qomm_transport::proof_client::ProofPartyRpc>(
     let public =
         zkpi::frost::keys::PublicKeyPackage::deserialize(&request.release.committee_public)
             .map_err(|e| e.to_string())?;
-    let signed = qomm_transport::frost_coordinator::distributed_hybrid_sign(
+    let signed = zkpi_committee::frost_coordinator::distributed_hybrid_sign(
         parties,
         &quorum,
         &message,

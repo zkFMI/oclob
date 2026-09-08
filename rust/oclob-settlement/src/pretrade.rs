@@ -5,7 +5,6 @@
 //! reservation from its own chain client before returning a signed permit.
 
 use curve25519_dalek::scalar::Scalar;
-use dekyx_core::{AnonymousPresentation, DeKyxVerifier, EligibilityRequirement};
 use defmi::application_reservation::{
     ApplicationIdentityEvidence, ApplicationReserveMandate, ApplicationReserveScope,
     VerifiedApplicationNoteReservation,
@@ -17,7 +16,7 @@ use defmi::facility::{
 };
 use defmi::note_chain::NoteOutput;
 use defmi::notes::{decode_spend_proof, encode_spend_proof, NoteLedger, Wallet};
-use zkfmi_zk::pedersen::Pedersen;
+use dekyx_core::{AnonymousPresentation, DeKyxVerifier, EligibilityRequirement};
 use rand::seq::SliceRandom;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -26,6 +25,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zkfmi_crypto::hybrid::signature::HybridSigner;
+use zkfmi_zk::pedersen::Pedersen;
 use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::{
@@ -39,7 +39,7 @@ pub const MAX_PRETRADE_BYTES: usize = 1024 * 1024;
 /// it is not an arbitrary-signature or arbitrary-HTTP forwarding service.
 #[derive(Clone)]
 pub struct PrivateAdmissionClient {
-    rpc: Arc<Mutex<qomm_transport::proof_client::ProofPartyTlsClient>>,
+    rpc: Arc<Mutex<zkpi_committee::proof_client::ProofPartyTlsClient>>,
     endpoint: String,
     timeout: Duration,
 }
@@ -49,7 +49,7 @@ impl PrivateAdmissionClient {
         host: &str,
         port: u16,
         server_name: &str,
-        tls: qomm_transport::node_service::ClientTlsConfig,
+        tls: zkpi_committee::node_service::ClientTlsConfig,
         timeout: Duration,
     ) -> Result<Self, String> {
         if host.is_empty() || server_name.is_empty() || port == 0 || timeout.is_zero() {
@@ -57,7 +57,7 @@ impl PrivateAdmissionClient {
         }
         Ok(Self {
             rpc: Arc::new(Mutex::new(
-                qomm_transport::proof_client::ProofPartyTlsClient::new(
+                zkpi_committee::proof_client::ProofPartyTlsClient::new(
                     host,
                     port,
                     tls,

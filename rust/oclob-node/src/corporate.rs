@@ -1,6 +1,10 @@
 //! Pretrade path owned by the corporate participant, not the coordinator.
 
 use curve25519_dalek::scalar::Scalar;
+use defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
+use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
+use defmi::facility::QuorumAuthorizer;
+use defmi::notes::Wallet;
 use oclob_core::application_crypto::SigningKey;
 use oclob_core::SecretOrder;
 use oclob_dekyx::DemoEligibilityWallet;
@@ -12,16 +16,12 @@ use oclob_settlement::pretrade::{
     select_funding_ring, CorporateFunding, FinalizedReservation, PrivateAdmissionClient,
     PrivateReserveRequest,
 };
-use defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
-use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge};
-use defmi::facility::QuorumAuthorizer;
-use defmi::notes::Wallet;
-use qomm_transport::node_service::client_ssl_context;
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::handles::Handle;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Handle;
+use zkpi_committee::node_service::client_ssl_context;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::order_authorization_commitment;
 

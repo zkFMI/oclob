@@ -2,14 +2,11 @@
 //! Transport uses the existing pinned bounded resident-service codec and mTLS.
 
 use crate::network::{certificate_fingerprint, PeerRole, Principal, ServerTlsConfig};
-use oclob_dekyx::OclobEligibilityVerifier;
-use oclob_settlement::pretrade::{PrivateReserveRequest, MAX_PRETRADE_BYTES};
 use defmi::application_reservation::ApplicationReserveScope;
 use defmi::avalanche::{AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient};
 use defmi::facility::QuorumAuthorizer;
-use qomm_transport::proof_party::{
-    encode_bounded_response, read_bounded_request_line, ProofRequest, ProofResponse,
-};
+use oclob_dekyx::OclobEligibilityVerifier;
+use oclob_settlement::pretrade::{PrivateReserveRequest, MAX_PRETRADE_BYTES};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufReader, Write};
@@ -19,6 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zkfmi_crypto::hybrid::signature::HybridSigner;
+use zkpi_committee::proof_party::{
+    encode_bounded_response, read_bounded_request_line, ProofRequest, ProofResponse,
+};
 
 /// Constructed by the DeFMI operator, not deserialized from an API request.
 pub struct AdmissionAuthority {
@@ -413,9 +413,7 @@ mod tests {
         );
         // Unit authorization boundary only: the real VM must still enforce
         // expiry and canonical head checks, exercised by the native Docker run.
-        use defmi::application_settlement::{
-            ApplicationNoteRelease, ApplicationReleaseReason,
-        };
+        use defmi::application_settlement::{ApplicationNoteRelease, ApplicationReleaseReason};
         let release = ApplicationNoteRelease {
             scope: authority.scope.clone(),
             before_root: [10; 32],

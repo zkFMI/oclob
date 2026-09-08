@@ -10,7 +10,6 @@ use oclob_node::network::{
 use oclob_node::proof_network::{ProofRpcServer, ProofRpcServerConfig};
 use oclob_node::NodeShareStore;
 use oclob_ordering::CommitteePolicy;
-use qomm_transport::proof_party::{ProofParty, ProofPartyConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs::{self, File};
@@ -19,12 +18,13 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
+use zkpi_committee::proof_party::{ProofParty, ProofPartyConfig};
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Config {
-    recipient_opening_keys: Vec<qomm_transport::proof_party::RecipientOpeningKey>,
+    recipient_opening_keys: Vec<zkpi_committee::proof_party::RecipientOpeningKey>,
     version: u16,
     party: u16,
     listen: SocketAddr,
@@ -165,7 +165,7 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "QOMM pre-trade ACK fingerprint is not hexadecimal".to_owned())?
                 .try_into()
                 .map_err(|_| "QOMM pre-trade ACK fingerprint must be 32 bytes".to_owned())?;
-            qomm_transport::application_crypto::VerifyingKey::from_bytes(&bytes)
+            zkpi_committee::application_crypto::VerifyingKey::from_bytes(&bytes)
                 .map_err(|error| error.to_string())?;
             Ok(bytes)
         })
@@ -193,7 +193,7 @@ fn run() -> Result<(), String> {
     let native_finality = config
         .native_finality_endpoint
         .map(|endpoint| {
-            let tls = qomm_transport::node_service::client_ssl_context(
+            let tls = zkpi_committee::node_service::client_ssl_context(
                 &config.tls_certificate,
                 &config.tls_private_key,
                 &config.tls_ca,

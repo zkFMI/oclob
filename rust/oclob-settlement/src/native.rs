@@ -5,11 +5,6 @@
 use crate::collaborative::{collaborative_job_id, CollaborativeFillProof, SIGNING_QUORUM};
 use curve25519_dalek::scalar::Scalar;
 
-use oclob_core::application_crypto::{
-    Signature as ApplicationSignature, Signer as _, SigningKey as ApplicationSigningKey,
-    VerifyingKey as ApplicationVerifyingKey,
-};
-use oclob_edge::{ClaimAuthorizationEndpoint, EdgeOrderManifest, VerifiedReservationAuthority};
 use defmi::application_reservation::ApplicationReserveScope;
 use defmi::application_settlement::{
     application_fill_group, point, ApplicationFillBatchBinding, ApplicationNoteFill,
@@ -19,16 +14,21 @@ use defmi::avalanche::CanonicalApplicationReservation;
 use defmi::note_chain::{
     note_claim_recipient_commitment, ClaimAuthorizationCommitment, NoteClaimKind,
 };
-use qomm_transport::frost_coordinator::distributed_hybrid_sign;
-use qomm_transport::proof_client::ProofPartyRpc;
-use qomm_transport::proof_codec::encode_dvp_proofs;
-use qomm_transport::proof_party::{
-    ApplicationStatementAuthorization, ApplicationStatementVerifier, CompletedApplicationProof,
+use oclob_core::application_crypto::{
+    Signature as ApplicationSignature, Signer as _, SigningKey as ApplicationSigningKey,
+    VerifyingKey as ApplicationVerifyingKey,
 };
-use zkfmi_zk::pedersen::Pedersen;
+use oclob_edge::{ClaimAuthorizationEndpoint, EdgeOrderManifest, VerifiedReservationAuthority};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi_committee::frost_coordinator::distributed_hybrid_sign;
+use zkpi_committee::proof_client::ProofPartyRpc;
+use zkpi_committee::proof_codec::encode_dvp_proofs;
+use zkpi_committee::proof_party::{
+    ApplicationStatementAuthorization, ApplicationStatementVerifier, CompletedApplicationProof,
+};
 use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::application::oclob_manifest_v1;
 use zkpi_defmi_sdk::reservation::{ReservationPermit, ReservationRole};
@@ -1218,9 +1218,8 @@ pub fn certify_native_fill<T: ProofPartyRpc>(
             return Err("native node authorized a different settlement".into());
         }
     }
-    let public =
-        zkpi::frost::keys::PublicKeyPackage::deserialize(&request.fill.committee_public)
-            .map_err(|error| error.to_string())?;
+    let public = zkpi::frost::keys::PublicKeyPackage::deserialize(&request.fill.committee_public)
+        .map_err(|error| error.to_string())?;
     let signed = distributed_hybrid_sign(
         parties,
         &SIGNING_QUORUM,

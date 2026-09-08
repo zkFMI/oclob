@@ -8,55 +8,55 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use merlin::Transcript;
 use defmi::asset_link::{self, AssetLinkProof};
 use defmi::settlement::{build_threshold_package_from_proofs, Sides, ThresholdDvpPackage};
-use qomm_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
-use qomm_proofs::price_limit::{
-    from_threshold as threshold_price_limit, threshold_context as price_limit_context,
-    PriceLimitDirection,
-};
-use qomm_proofs::threshold_gadgets::coefficient_commitments_from_evaluations;
-use qomm_proofs::threshold_range::{verify_threshold_range, ThresholdRangeProof};
-use qomm_transport::dvp_issuer::{
+use merlin::Transcript;
+use rand_core::OsRng;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use zkfmi_zk::pedersen::Pedersen;
+use zkfmi_zk::sigma::verify_product;
+use zkpi::{asset_scalar, frost, Bounds, Instruction, QuoteBinding, Venue};
+use zkpi_committee::dvp_issuer::{
     assemble_proofs as assemble_dvp_proofs, make_challenge as make_dvp_challenge,
     relation_statements_from_evaluations as dvp_relation_statements,
     statements_from_evaluations as dvp_statements, DvpProofs, DVP_CASH_REMAINDER_CONTEXT,
     DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
 };
-use qomm_transport::dvp_wire::{
+use zkpi_committee::dvp_wire::{
     decode as decode_dvp, encode as encode_dvp, Envelope as DvpEnvelope, Message as DvpMessage,
 };
-use qomm_transport::frost_coordinator::{
+use zkpi_committee::frost_coordinator::{
     distributed_frost_setup, distributed_hybrid_sign, frost_signing_job, read_pq_committee,
 };
-use qomm_transport::limit_issuer::{
+use zkpi_committee::limit_issuer::{
     assemble as assemble_limit, challenge as make_limit_challenge,
     relation_from_evaluations as limit_relations, statement_from_evaluations as limit_statement,
 };
-use qomm_transport::limit_wire::{
+use zkpi_committee::limit_wire::{
     decode as decode_limit, encode as encode_limit, Envelope as LimitEnvelope,
     Message as LimitMessage,
 };
-use qomm_transport::product_proof_coordinator::prove_standing_pool_remainder;
-use qomm_transport::proof_client::ProofPartyRpc;
-use qomm_transport::proof_codec::encode_threshold_range;
-use qomm_transport::standing_pool::STANDING_POOL_REMAINDER_CONTEXT;
-use qomm_transport::zkpi_issuer::{
+use zkpi_committee::product_proof_coordinator::prove_standing_pool_remainder;
+use zkpi_committee::proof_client::ProofPartyRpc;
+use zkpi_committee::proof_codec::encode_threshold_range;
+use zkpi_committee::standing_pool::STANDING_POOL_REMAINDER_CONTEXT;
+use zkpi_committee::zkpi_issuer::{
     assemble_ranges, build_partial_instruction, make_challenge as make_zkpi_challenge,
     relation_statements_from_evaluations as zkpi_relation_statements,
     statements_from_evaluations as zkpi_statements, ZkpiRangeProofs, ZkpiStatements,
 };
-use qomm_transport::zkpi_wire::{
+use zkpi_committee::zkpi_wire::{
     decode as decode_zkpi, encode as encode_zkpi, Envelope as ZkpiEnvelope, Message as ZkpiMessage,
 };
-use zkfmi_zk::pedersen::Pedersen;
-use zkfmi_zk::sigma::verify_product;
-use zkpi::{asset_scalar, frost, Bounds, Instruction, QuoteBinding, Venue};
-use rand_core::OsRng;
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use zkpi_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
+use zkpi_proofs::price_limit::{
+    from_threshold as threshold_price_limit, threshold_context as price_limit_context,
+    PriceLimitDirection,
+};
+use zkpi_proofs::threshold_gadgets::coefficient_commitments_from_evaluations;
+use zkpi_proofs::threshold_range::{verify_threshold_range, ThresholdRangeProof};
 
 const COMMITTEE_SIZE: usize = 7;
 const SHAMIR_THRESHOLD: usize = 2;

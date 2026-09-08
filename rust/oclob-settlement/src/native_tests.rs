@@ -2,19 +2,19 @@
 //! seven MPC processes, corporate services, or Avalanche consensus.
 use super::*;
 use merlin::Transcript;
-use qomm_proofs::opening_envelope::{encrypt_opening_share, opening_context, OpeningEnvelope};
-use qomm_proofs::threshold_range::{
-    deal_bits, joint_prove_range_from_contributions, ThresholdRangeProof,
-};
-use qomm_transport::dvp_issuer::{
-    DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
-};
+use rand_core::OsRng;
+use std::collections::BTreeMap;
 use zkfmi_zk::sigma::prove_product;
 use zkpi::{
     asset_scalar, frost, Bounds, PartialInstruction, AMOUNT_RANGE_CONTEXT, PRICE_RANGE_CONTEXT,
 };
-use rand_core::OsRng;
-use std::collections::BTreeMap;
+use zkpi_committee::dvp_issuer::{
+    DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
+};
+use zkpi_proofs::opening_envelope::{encrypt_opening_share, opening_context, OpeningEnvelope};
+use zkpi_proofs::threshold_range::{
+    deal_bits, joint_prove_range_from_contributions, ThresholdRangeProof,
+};
 
 const NOW: u64 = 1_000;
 

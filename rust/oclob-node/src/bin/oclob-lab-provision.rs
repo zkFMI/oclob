@@ -4,6 +4,8 @@
 //! their private keys independently and submit CSRs to an offline authority.
 
 use curve25519_dalek::scalar::Scalar;
+use defmi::note_chain::NoteOutput;
+use defmi::notes::{NoteLedger, Wallet};
 use oclob_core::application_crypto::SigningKey;
 use oclob_edge::{
     ClaimAuthorizationEndpoint, NodeDecryptionKey, MPC_PARTIES, SETTLEMENT_KEY_THRESHOLD,
@@ -23,10 +25,6 @@ use openssl::x509::extension::{
     SubjectKeyIdentifier,
 };
 use openssl::x509::{X509Builder, X509NameBuilder, X509};
-use defmi::note_chain::NoteOutput;
-use defmi::notes::{NoteLedger, Wallet};
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::handles::Identity;
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -35,6 +33,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 
 const PROGRAM: &str = "oclob_match_v1";
 const MARKET: &str = "JGB10Y-JPY";
@@ -504,7 +504,7 @@ fn provision(root: &Path) -> Result<(), String> {
                 .point
                 .compress()
                 .to_bytes();
-            Ok(qomm_transport::proof_party::RecipientOpeningKey {
+            Ok(zkpi_committee::proof_party::RecipientOpeningKey {
                 view,
                 public: zkfmi_crypto::traits::KemDecapsulator::public_key(
                     &config.note_opening_key()?,

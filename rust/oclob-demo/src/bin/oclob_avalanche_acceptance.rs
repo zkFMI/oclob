@@ -6,6 +6,9 @@
 mod native_acceptance;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
+use defmi::facility::{DefmiFacility, QuorumAuthorizer};
+use defmi::settlement::{build_threshold_package_from_proofs, Sides};
 use oclob_core::application_crypto::SigningKey;
 use oclob_core::{authorize_order, PublicFill, SecretOrder, Side, TimeInForce, MAX_MATCH_SLOTS};
 use oclob_dekyx::{deterministic_demo_environment, AnonymousPresentation};
@@ -33,12 +36,6 @@ use oclob_settlement::collaborative::{
 };
 use oclob_settlement::CollaborativeCanonicalAdmissionBatch;
 use oclob_settlement::{canonical_securities_asset_id, SettlementEngine};
-use defmi::avalanche::{AvalancheClient, AvalancheRpcClient};
-use defmi::facility::{DefmiFacility, QuorumAuthorizer};
-use defmi::settlement::{build_threshold_package_from_proofs, Sides};
-use qomm_proofs::price_limit::PriceLimitDirection;
-use qomm_transport::node_service::client_ssl_context as proof_tls_context;
-use qomm_transport::proof_client::ProofPartyTlsClient;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -50,6 +47,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zkpi_committee::node_service::client_ssl_context as proof_tls_context;
+use zkpi_committee::proof_client::ProofPartyTlsClient;
+use zkpi_proofs::price_limit::PriceLimitDirection;
 
 const MARKET: &str = "JGB10Y-JPY";
 const EXPECTED_VALIDATORS: usize = 5;
@@ -267,7 +267,7 @@ fn run_integrated(options: &Options, paths: &IntegratedPaths) -> RunResult<Value
     settlement
         .pin_collaborative_settlement_committee(
             collaborative_frost_public.clone(),
-            qomm_transport::frost_coordinator::read_pq_committee(
+            zkpi_committee::frost_coordinator::read_pq_committee(
                 &mut bootstrap_proof_parties,
                 &collaborative_frost_public,
             )
@@ -1564,8 +1564,7 @@ fn committee(
     QuorumAuthorizer,
     BTreeMap<String, defmi::governance::GovernanceSigner>,
 )> {
-    let keys =
-        defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
+    let keys = defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
     let nodes = keys
         .iter()
         .map(|(name, key)| (name.clone(), key.verifying_key()))
