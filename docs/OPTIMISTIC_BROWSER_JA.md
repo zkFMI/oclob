@@ -70,3 +70,11 @@ chain `bavr1tZbx6fZB3aptF1hYaT9T1JvBazjARY4mb11UftK9VKo4` の5台全てから、
 - [暫定方式](https://zkfmi.com/ja/docs/optimistic.html)、[予約から決済・回収まで](https://zkfmi.com/ja/docs/settlement-lifecycle.html)
 
 単一ホスト上の検証であり、独立運営者間の可用性、本番鍵管理、challengerの監視運用、経済的な担保額、秘密板の永続復旧は未確認または未実装である。
+
+## r5での再確認
+
+最新HTTP実装と起動スクリプトを使い、同じ売り100口、共同証明の買い20口、challengeなし40口、challengeあり20口を再実行した。最終残高は99,992,000円、在庫10,080口。5台ともheight 26、root 8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72だった。
+
+Pending中に実際のAPIパラメータ viewer=taker / viewer=operator で読み分け、買い手だけに100円×20口のprovisionalがあり、運営者にはprovisionalフィールドも私有残高もないことを照合した。従来のroleパラメータによる取得はoperatorへ既定化されるため、私有ビューの確認には使用しない。画面でも390px幅でchallengeを送り、決済後の資金・在庫を確認した。
+
+最終receiptは0f4663b2e4f24cbfabce7eab4e71c63007db4c668d6210678bb229bf02b0819a、claimは13dc2dae2e1d7c06ca63e83e9012fdc9fddba3cabbef14f12d1bfc0bf511e78e。[r5の観測記録](verification/OPTIMISTIC_BROWSER_R5_20260912.json) にバイナリhash、入力、保留中と確定後の残高、5台のreadbackを記録した。不確実なnativeエラーからの手動復旧運用は別の未確認事項である。

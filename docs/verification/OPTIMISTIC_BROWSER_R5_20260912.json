@@ -1,0 +1,240 @@
+{
+  "schema": "zkfmi-browser-observation/v1",
+  "observed_at": "2026-09-12T14:54:22.642766+00:00",
+  "verdict": "smoke_only",
+  "environment": "isolated Softbank L40S, synthetic assets and participants",
+  "runtime": "oclob-server r5 with native-service-r10 VM and launcher",
+  "server_sha256": "a8a53f4c801af99fadef94af3a307490e28034d6d2c4d0c72c30fd6c0f005118",
+  "source_boundary": "integration working tree; pre-existing UI changes remain unpublished; this record is not deployment of a source commit",
+  "chain_id": "2AaRG7sTK1BvaRLEf6ed4xhG7yraqDwpEpv8hL963Uf46zZzrn",
+  "inputs": {
+    "maker": {
+      "side": "sell",
+      "price": 100,
+      "quantity": 100,
+      "time_in_force": "GTC"
+    },
+    "takers": [
+      {
+        "mode": "joint_proof",
+        "limit": 101,
+        "quantity": 20,
+        "time_in_force": "IOC"
+      },
+      {
+        "mode": "optimistic",
+        "limit": 101,
+        "quantity": 40,
+        "time_in_force": "IOC",
+        "challenge": false
+      },
+      {
+        "mode": "optimistic",
+        "limit": 101,
+        "quantity": 20,
+        "time_in_force": "IOC",
+        "challenge": true
+      }
+    ]
+  },
+  "final_portfolio": {
+    "available_cash": 99992000,
+    "available_securities": 10080,
+    "cash": 99992000,
+    "reserved_cash": 0,
+    "reserved_securities": 0,
+    "securities": 10080
+  },
+  "final_execution": {
+    "canonical_height": 26,
+    "canonical_receipt": "0f4663b2e4f24cbfabce7eab4e71c63007db4c668d6210678bb229bf02b0819a",
+    "fills": [
+      {
+        "maker_order": [
+          179,
+          117,
+          60,
+          36,
+          84,
+          52,
+          41,
+          115,
+          40,
+          229,
+          12,
+          206,
+          122,
+          39,
+          147,
+          34,
+          186,
+          250,
+          237,
+          32,
+          23,
+          85,
+          174,
+          160,
+          36,
+          126,
+          128,
+          39,
+          135,
+          9,
+          49,
+          254
+        ],
+        "price": 100,
+        "quantity": 20,
+        "taker_order": [
+          101,
+          10,
+          142,
+          101,
+          229,
+          40,
+          25,
+          119,
+          155,
+          71,
+          103,
+          231,
+          148,
+          152,
+          82,
+          102,
+          140,
+          29,
+          116,
+          44,
+          184,
+          233,
+          137,
+          100,
+          8,
+          246,
+          198,
+          191,
+          209,
+          194,
+          150,
+          237
+        ]
+      }
+    ],
+    "mpc_execution_ms": 570.2329619999999,
+    "mpc_parties": 7,
+    "mpc_protocol": "MP-SPDZ malicious-shamir",
+    "order_commitment": "650a8e65e52819779b4767e7949852668c1d742cb8e9896408f6c6bfd1c296ed",
+    "ordering_signers": 5,
+    "post_match_signatures": 0,
+    "sequence": 4,
+    "settlement_authorization_quorum": 3,
+    "threshold_zkpi": true,
+    "transition_attestations": 0
+  },
+  "final_progress": {
+    "active": false,
+    "challenge_deadline": 1789224602,
+    "claim_id": "13dc2dae2e1d7c06ca63e83e9012fdc9fddba3cabbef14f12d1bfc0bf511e78e",
+    "mode": "optimistic",
+    "settled": true,
+    "stage": "assurance",
+    "status": {
+      "proof": [
+        21,
+        128,
+        1,
+        145,
+        139,
+        92,
+        231,
+        153,
+        69,
+        40,
+        192,
+        79,
+        117,
+        115,
+        118,
+        61,
+        248,
+        67,
+        217,
+        76,
+        44,
+        252,
+        40,
+        151,
+        201,
+        114,
+        64,
+        67,
+        115,
+        236,
+        136,
+        221
+      ],
+      "status": "finalized"
+    }
+  },
+  "native_readbacks": [
+    {
+      "height": 26,
+      "state_root": "8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72"
+    },
+    {
+      "height": 26,
+      "state_root": "8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72"
+    },
+    {
+      "height": 26,
+      "state_root": "8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72"
+    },
+    {
+      "height": 26,
+      "state_root": "8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72"
+    },
+    {
+      "height": 26,
+      "state_root": "8d00522d763d20f9b6df2230e6047ce5914f0de824d8a9061871ce7c68747c72"
+    }
+  ],
+  "pending_privacy": {
+    "api_parameter": "viewer",
+    "private_viewer": "taker",
+    "private_provisional": {
+      "fills": [
+        {
+          "price": 100,
+          "quantity": 20
+        }
+      ],
+      "settled": false
+    },
+    "private_portfolio": {
+      "available_cash": 99994000,
+      "available_securities": 10060,
+      "cash": 99994000,
+      "reserved_cash": 0,
+      "reserved_securities": 0,
+      "securities": 10060
+    },
+    "public_viewer": "operator",
+    "public_has_provisional": false,
+    "public_own": null
+  },
+  "artifacts": {
+    "oclob-r5-native-readback.json": "3b73ebba1452adca515b61613251468cb396b8900f770e73c67c0eb112ca3875",
+    "oclob-r5-browser-final.json": "cfe3f8f6a63f84467a5c7028df73f4347839d3c445e3c54b780441ddf86c84f8",
+    "oclob-r5-pending-privacy-confirmed.json": "fd322b351cefd68cbc3a42710471f6b5fa6a8bdc5a1679779785ac3afbaf3894",
+    "oclob-r5-joint-desktop.png": "1134b2ecca05ff0b0fafb4962f721d51595cf44856e14a1c4e3f0e1cd010874e",
+    "oclob-r5-pending-narrow.png": "ecd499c612e799d374b377c584da01c31b8a08761822990f148c849e934d72e4",
+    "oclob-r5-final-narrow.png": "935b26ad9a49f777f598df4e6a692accc5934e6f23650708696139197e2f615f"
+  },
+  "development_checks": {
+    "oclob": "make remote-test; real external MP-SPDZ service checks; node --check; existing React Flow tests, typecheck and build",
+    "qomm": "remote node --check and existing typecheck/build; package defines no npm test script"
+  },
+  "collector_correction": "An earlier collector used role instead of viewer and therefore read operator twice. It does not establish private-view acceptance. The viewer=taker/operator observation here checks both roles, private fills, and absent public provisional fields explicitly."
+}
