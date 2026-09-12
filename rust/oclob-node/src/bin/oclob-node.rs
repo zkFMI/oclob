@@ -26,6 +26,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 struct Config {
     recipient_opening_keys: Vec<zkpi_committee::proof_party::RecipientOpeningKey>,
     version: u16,
+    deployment_crypto_policy: zkfmi_crypto::mode::DeploymentCryptoPolicy,
     party: u16,
     listen: SocketAddr,
     tls_certificate: PathBuf,
@@ -76,9 +77,41 @@ fn main() {
 fn run() -> Result<(), String> {
     let path = parse_config_path()?;
     let config: Config = read_json(&path)?;
-    if config.version != 4 {
+    if config.version != 5 {
         return Err("unsupported node configuration version".into());
     }
+    let cluster: ClusterPublicConfig = read_json(&config.cluster_public_config)?;
+    cluster.validate().map_err(|error| error.to_string())?;
+    oclob_node::deployment_policy::require_same(
+        &cluster.deployment_crypto_policy,
+        &config.deployment_crypto_policy,
+    )?;
+    let store_marker = oclob_node::deployment_policy::marker_next_to(&config.share_store)?;
+    oclob_node::deployment_policy::initialize_fresh_state(
+        &store_marker,
+        &config.deployment_crypto_policy,
+        &[
+            &config.share_store,
+            &config.ready_file,
+            &config.mpc_work_root,
+        ],
+    )?;
+    let proof_marker = oclob_node::deployment_policy::marker_next_to(&config.proof_state_file)?;
+    if proof_marker != store_marker {
+        let proof_state_parent = config
+            .proof_state_file
+            .parent()
+            .ok_or("proof state file has no parent")?;
+        oclob_node::deployment_policy::initialize_fresh_state(
+            &proof_marker,
+            &config.deployment_crypto_policy,
+            &[&config.proof_state_file, proof_state_parent],
+        )?;
+    }
+    oclob_node::deployment_policy::require_proof_backend(
+        &config.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let share_key = NodeDecryptionKey::from_raw(
         load_hybrid_kem_seed(&config.share_private_key).map_err(|error| error.to_string())?,
     )
@@ -87,8 +120,6 @@ fn run() -> Result<(), String> {
         &load_application_signing_seed(&config.receipt_signing_key)
             .map_err(|error| error.to_string())?,
     );
-    let cluster: ClusterPublicConfig = read_json(&config.cluster_public_config)?;
-    cluster.validate().map_err(|error| error.to_string())?;
     let public_node = cluster
         .nodes
         .get(usize::from(config.party))
@@ -102,8 +133,13 @@ fn run() -> Result<(), String> {
     let ordering_keys = cluster
         .ordering_verifying_keys()
         .map_err(|error| error.to_string())?;
-    let mut store = NodeShareStore::open(&config.share_store, config.party, share_key)
-        .map_err(|error| error.to_string())?;
+    let mut store = NodeShareStore::open_policy_bound(
+        &config.share_store,
+        config.party,
+        share_key,
+        &config.deployment_crypto_policy,
+    )
+    .map_err(|error| error.to_string())?;
     let trusted_defmi_id = parse_hex_32(&config.trusted_defmi_id, "trusted DeFMI id")?;
     let trusted_venue_id = parse_hex_32(
         &config.trusted_reservation_venue_id,

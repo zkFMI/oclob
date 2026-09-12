@@ -2,7 +2,7 @@
 //! native Docker acceptance against actual financial state and validators.
 use crate::edge_client::{receipt_digest, EdgeAdmissionReceipt};
 use crate::market_journal::MarketJournal;
-use crate::market_network::MarketIngress;
+use crate::market_network::{MarketEndpoint, MarketIngress, MarketServiceConfig};
 use crate::network::{ClusterNodePublic, ClusterPublicConfig, NodeAdmissionReceipt};
 use curve25519_dalek::scalar::Scalar;
 use oclob_core::application_crypto::SigningKey;
@@ -10,10 +10,10 @@ use oclob_core::{SecretOrder, Side, TimeInForce};
 use oclob_edge::{
     ClaimAuthorizationEndpoint, EdgeOrderBundle, NodeDecryptionKey, NodeEncryptionKey,
 };
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::handles::Identity;
 use std::fs;
 use std::path::PathBuf;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::handles::Identity;
 use zkpi_defmi_sdk::admission::ReservationAdmission;
 use zkpi_defmi_sdk::reservation::{ReservationPermit, ReservationRole};
 
@@ -24,7 +24,8 @@ pub(crate) fn fixture() -> (ClusterPublicConfig, MarketIngress, SigningKey) {
     let signers: [SigningKey; 7] =
         std::array::from_fn(|i| SigningKey::from_bytes(&[i as u8 + 51; 64]));
     let cluster = ClusterPublicConfig {
-        version: 5,
+        version: 6,
+        deployment_crypto_policy: crate::deployment_policy::test_policy(),
         market_id: "JGB10Y-JPY".into(),
         program: "oclob_match_v1".into(),
         settlement_release_threshold: 3,
@@ -189,20 +190,38 @@ impl Drop for Files {
     }
 }
 
+fn market_config(path: PathBuf, cluster: &ClusterPublicConfig) -> MarketServiceConfig {
+    MarketServiceConfig {
+        deployment_crypto_policy: cluster.deployment_crypto_policy.clone(),
+        endpoint: MarketEndpoint {
+            host: "unit-market".into(),
+            port: 9445,
+            server_name: "unit-market".into(),
+            certificate_sha256: [99; 32],
+        },
+        participants: vec![[98; 32]],
+        journal: path,
+        journal_key: PathBuf::from("unused-unit-key"),
+        base_asset: [97; 32],
+        quote_asset: [96; 32],
+    }
+}
+
 #[test]
 fn exact_market_intake_survives_restart_and_late_ack_without_new_order() {
     let files = Files::new();
     let (cluster, input, _) = fixture();
+    let config = market_config(files.path(), &cluster);
     let at = crate::market_runtime::now().unwrap();
-    assert!(MarketJournal::open(&files.path(), &[31; 32], &cluster, false).is_err());
-    let journal = MarketJournal::open(&files.path(), &[31; 32], &cluster, true).unwrap();
+    assert!(MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, false).is_err());
+    let journal = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, true).unwrap();
     let sequence = journal.accept(&input, &cluster, at).unwrap();
     assert!(sequence > 0);
     let encrypted = fs::read(files.path()).unwrap();
     let signature = &input.signature;
     assert!(!encrypted.windows(signature.len()).any(|w| w == signature));
     drop(journal);
-    let reopened = MarketJournal::open(&files.path(), &[31; 32], &cluster, false).unwrap();
+    let reopened = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, false).unwrap();
     assert_eq!(
         reopened
             .accept(
@@ -218,17 +237,18 @@ fn exact_market_intake_survives_restart_and_late_ack_without_new_order() {
         input.digest().unwrap()
     );
     assert!(reopened.completed().unwrap().is_empty());
-    assert!(MarketJournal::open(&files.path(), &[32; 32], &cluster, false).is_err());
+    assert!(MarketJournal::open(&files.path(), &[32; 32], &config, &cluster, false).is_err());
     let mut other = cluster.clone();
     other.nodes[0].rpc_port += 1;
-    assert!(MarketJournal::open(&files.path(), &[31; 32], &other, false).is_err());
+    assert!(MarketJournal::open(&files.path(), &[31; 32], &config, &other, false).is_err());
 }
 #[test]
 fn market_intake_rejects_tampering_missing_node_and_fresh_expired_receipt() {
     let files = Files::new();
     let (cluster, input, signer) = fixture();
+    let config = market_config(files.path(), &cluster);
     let at = crate::market_runtime::now().unwrap();
-    let journal = MarketJournal::open(&files.path(), &[31; 32], &cluster, true).unwrap();
+    let journal = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, true).unwrap();
     let mut bad = input.clone();
     bad.signature[0] ^= 1;
     assert!(journal.accept(&bad, &cluster, at).is_err());
@@ -274,8 +294,9 @@ fn market_intake_rejects_tampering_missing_node_and_fresh_expired_receipt() {
 fn valid_order_key_cannot_replace_acknowledged_market_payload() {
     let files = Files::new();
     let (cluster, input, signer) = fixture();
+    let config = market_config(files.path(), &cluster);
     let at = crate::market_runtime::now().unwrap();
-    let journal = MarketJournal::open(&files.path(), &[31; 32], &cluster, true).unwrap();
+    let journal = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, true).unwrap();
     journal.accept(&input, &cluster, at).unwrap();
     let mut value = serde_json::to_value(&input.authority).unwrap();
     value["ciphertext"][0] = serde_json::json!(value["ciphertext"][0].as_u64().unwrap() ^ 1);
@@ -299,9 +320,10 @@ fn valid_order_key_cannot_replace_acknowledged_market_payload() {
 fn market_worker_lock_and_first_saved_signed_request_survive_reopen() {
     let files = Files::new();
     let (cluster, _, _) = fixture();
-    let first = MarketJournal::open(&files.path(), &[31; 32], &cluster, true).unwrap();
+    let config = market_config(files.path(), &cluster);
+    let first = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, true).unwrap();
     let lock = first.acquire_worker().unwrap();
-    let second = MarketJournal::open(&files.path(), &[31; 32], &cluster, false).unwrap();
+    let second = MarketJournal::open(&files.path(), &[31; 32], &config, &cluster, false).unwrap();
     assert!(second.acquire_worker().is_err());
     assert_eq!(
         first

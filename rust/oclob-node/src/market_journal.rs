@@ -1,7 +1,7 @@
 //! Resident market progress uses the pinned crash-atomic encrypted outbox.
 //! No participant signing key, credential or plaintext order belongs here.
 
-use crate::market_network::MarketIngress;
+use crate::market_network::{MarketIngress, MarketServiceConfig};
 use crate::network::ClusterPublicConfig;
 use oclob_core::OrderCommitment;
 use oclob_ordering::OrderCertificate;
@@ -43,16 +43,43 @@ pub struct MarketJournal {
 }
 
 impl MarketJournal {
+    /// Policy-only preflight used before the journal key is read.
+    pub fn preflight(
+        path: &Path,
+        config: &MarketServiceConfig,
+        cluster: &ClusterPublicConfig,
+        initialize: bool,
+    ) -> Result<(), String> {
+        config.require_deployment_policy(cluster)?;
+        if path != config.journal.as_path() {
+            return Err("market journal path differs from its policy-bound configuration".into());
+        }
+        let marker = crate::deployment_policy::marker_next_to(path)?;
+        if initialize {
+            crate::deployment_policy::initialize_fresh_state(
+                &marker,
+                &config.deployment_crypto_policy,
+                &[path],
+            )
+        } else {
+            crate::deployment_policy::require_existing_state(
+                &marker,
+                &config.deployment_crypto_policy,
+            )
+        }
+    }
+
     pub fn open(
         path: &Path,
         secret: &[u8; 32],
+        config: &MarketServiceConfig,
         cluster: &ClusterPublicConfig,
         initialize: bool,
     ) -> Result<Self, String> {
+        Self::preflight(path, config, cluster, initialize)?;
         if *secret == [0; 32] {
             return Err("empty market journal key".into());
         }
-        cluster.validate().map_err(err)?;
         let context = Sha256::new()
             .chain_update(b"OCLOB:MARKET-JOURNAL:v1")
             .chain_update(serde_json::to_vec(cluster).map_err(err)?)

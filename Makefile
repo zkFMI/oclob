@@ -6,6 +6,9 @@ REMOTE_TEST_IMAGE ?= oclob-test:rust-1.97.1-mpspdz-9d809599
 REMOTE_TEST_CARGO_JOBS ?= 16
 REMOTE_TEST_COMMAND ?= cargo test --workspace --release -j $(REMOTE_TEST_CARGO_JOBS)
 REMOTE_TEST_EXPORTS ?=
+OCLOB_DEPLOYMENT_ID ?=
+OCLOB_PQC_MODE ?=
+export OCLOB_DEPLOYMENT_ID OCLOB_PQC_MODE
 NATIVE_RECOVERY ?= 0
 NATIVE_WALLET ?= 0
 NATIVE_FINALITY ?= 0
@@ -33,7 +36,7 @@ PQC_NATIVE_CONTRACT ?=
 PQC_NATIVE_MANIFEST ?=
 PQC_NATIVE_ARTIFACT ?=
 
-.PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate
+.PHONY: remote-test remote-distributed-e2e remote-avalanche-e2e remote-integrated-e2e release-gate check-deployment-policy
 
 ifeq ($(PQC_INTEGRATION),1)
 remote-test:
@@ -78,7 +81,7 @@ remote-test:
 endif
 
 remote-distributed-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
-remote-distributed-e2e:
+remote-distributed-e2e: check-deployment-policy
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
 	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
@@ -102,7 +105,7 @@ remote-distributed-e2e:
 	    [ \"\$$build_attempt\" -eq 3 ] || sleep 3; \
 	  done; \
 	  [ \"\$$built\" -eq 1 ] || { echo 'OCLOB cluster image build failed after three attempts' >&2; exit 1; }; \
-	  docker run --rm --user \"\$$container_uid:\$$gid\" --mount type=bind,src=\"\$$runtime\",dst=/runtime '$$image' oclob-lab-provision --out /runtime/cluster; \
+	  docker run --rm --user \"\$$container_uid:\$$gid\" --mount type=bind,src=\"\$$runtime\",dst=/runtime '$$image' oclob-lab-provision --out /runtime/cluster --deployment-id '$(OCLOB_DEPLOYMENT_ID)' --pqc-mode '$(OCLOB_PQC_MODE)'; \
 	  export OCLOB_RUNTIME_DIR=\"\$$runtime\" OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$image' OCLOB_UID=\"\$$container_uid\" OCLOB_GID=\"\$$gid\"; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml'; \
 	  \$$compose config --quiet; \
@@ -156,7 +159,7 @@ remote-avalanche-e2e:
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/oclob/artifacts/oclob_avalanche_acceptance.json" artifacts/oclob_avalanche_acceptance.json
 
 remote-integrated-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
-remote-integrated-e2e:
+remote-integrated-e2e: check-deployment-policy
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in \
 	  *" $(REMOTE_TEST_HOST) "*) ;; \
 	  *) echo "REMOTE_TEST_HOST must be one of: $(REMOTE_TEST_ALLOWED_HOSTS)" >&2; exit 2 ;; \
@@ -187,7 +190,7 @@ remote-integrated-e2e:
 	    [ "\$$build_attempt" -eq 3 ] || sleep 3; \
 	  done; \
 	  [ "\$$avalanche_built" -eq 1 ] || { echo 'OCLOB integrated Avalanche image build failed after three attempts' >&2; exit 1; }; \
-	  docker run --rm --user \"\$$container_uid:\$$gid\" --mount type=bind,src=\"\$$runtime\",dst=/runtime '$$cluster_image' oclob-lab-provision --out /runtime/cluster; \
+	  docker run --rm --user \"\$$container_uid:\$$gid\" --mount type=bind,src=\"\$$runtime\",dst=/runtime '$$cluster_image' oclob-lab-provision --out /runtime/cluster --deployment-id '$(OCLOB_DEPLOYMENT_ID)' --pqc-mode '$(OCLOB_PQC_MODE)'; \
 	  export OCLOB_RUNTIME_DIR=\"\$$runtime\" OCLOB_SOURCE_DIR='$$remote_dir/oclob' OCLOB_CLUSTER_IMAGE='$$cluster_image' OCLOB_AVALANCHE_IMAGE='$$avalanche_image' OCLOB_UID=\"\$$container_uid\" OCLOB_GID=\"\$$gid\"; \
 	  compose='docker compose -f $$remote_dir/oclob/deploy/docker-compose.distributed.yml'; \
 	  \$$compose config --quiet; \
@@ -253,7 +256,7 @@ remote-native-recovery-e2e:
 	$(MAKE) remote-native-e2e NATIVE_RECOVERY=1
 
 remote-native-e2e: export RSYNC_RSH = ssh $(REMOTE_TEST_SSH_OPTIONS)
-remote-native-e2e:
+remote-native-e2e: check-deployment-policy
 	@case " $(REMOTE_TEST_ALLOWED_HOSTS) " in *" $(REMOTE_TEST_HOST) "*) ;; *) echo 'unapproved test host' >&2; exit 2 ;; esac
 	@case '$(NATIVE_RECOVERY)' in 0|1) ;; *) echo 'NATIVE_RECOVERY must be 0 or 1' >&2; exit 2 ;; esac
 	@case '$(NATIVE_HTTP):$(NATIVE_DEPTH)' in 0:*|1:1) ;; *) echo 'HTTP depth requires native depth' >&2; exit 2 ;; esac
@@ -312,7 +315,7 @@ remote-native-e2e:
 	  else \
 	    docker image inspect \"\$$OCLOB_CLUSTER_IMAGE\" \"\$$OCLOB_AVALANCHE_IMAGE\" >/dev/null; \
 	  fi; \
-	  docker run --rm --user \"\$$OCLOB_UID:\$$OCLOB_GID\" --mount type=bind,src=\"\$$runtime\",dst=/runtime \"\$$OCLOB_CLUSTER_IMAGE\" oclob-lab-provision --out /runtime/cluster; \
+	  docker run --rm --user \"\$$OCLOB_UID:\$$OCLOB_GID\" --mount type=bind,src=\"\$$runtime\",dst=/runtime \"\$$OCLOB_CLUSTER_IMAGE\" oclob-lab-provision --out /runtime/cluster --deployment-id '$(OCLOB_DEPLOYMENT_ID)' --pqc-mode '$(OCLOB_PQC_MODE)'; \
 	  \$$compose config --quiet; \
 	  \$$compose up -d --wait --wait-timeout 180 node-0 node-1 node-2 node-3 node-4 node-5 node-6; \
 	  \$$compose run --rm native-bootstrap; \
@@ -499,6 +502,11 @@ remote-native-e2e:
 	if [ -n '$(PQC_NATIVE_ARTIFACT)' ]; then artifact='$(PQC_NATIVE_ARTIFACT)'; fi; \
 	rsync -a --compress "$(REMOTE_TEST_HOST):$$remote_dir/runtime/out/oclob_native_notes.json" "$$artifact"; \
 	printf 'Native run evidence retained at %s\n' "$$remote_dir"
+
+check-deployment-policy:
+	@case "$$OCLOB_PQC_MODE" in on|off) ;; *) echo 'Set OCLOB_PQC_MODE explicitly to on or off' >&2; exit 2 ;; esac
+	@case "$$OCLOB_DEPLOYMENT_ID" in ''|*[!A-Za-z0-9._-]*) echo 'Set OCLOB_DEPLOYMENT_ID to an ASCII letter/digit/dot/underscore/hyphen identifier' >&2; exit 2 ;; esac
+	@test "$${#OCLOB_DEPLOYMENT_ID}" -le 255 || { echo 'OCLOB_DEPLOYMENT_ID is too long' >&2; exit 2; }
 
 release-gate:
 	$(MAKE) remote-test \

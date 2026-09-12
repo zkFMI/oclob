@@ -42,10 +42,17 @@ fn run() -> Result<(), String> {
     let cluster: ClusterPublicConfig = read("/public/cluster.json")?;
     let config: MarketServiceConfig = read("/public/market.json")?;
     let initialize = args.first().is_some_and(|a| a == "--initialize");
+    config.require_deployment_policy(&cluster)?;
+    MarketJournal::preflight(&config.journal, &config, &cluster, initialize)?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &config.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let key = load_secret_32(&config.journal_key).map_err(err)?;
     let journal = Arc::new(MarketJournal::open(
         &config.journal,
         &key,
+        &config,
         &cluster,
         initialize,
     )?);

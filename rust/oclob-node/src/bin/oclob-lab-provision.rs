@@ -33,6 +33,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use zkfmi_crypto::mode::{DeploymentCryptoPolicy, PqcMode, ProofSecurity};
+use zkfmi_crypto::suite::Version;
 use zkfmi_zk::pedersen::Pedersen;
 use zkpi::handles::Identity;
 
@@ -50,7 +53,7 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let output = parse_output()?;
+    let (output, policy) = parse_args()?;
     reject_existing(&output)?;
     let parent = output
         .parent()
@@ -66,7 +69,7 @@ fn run() -> Result<(), String> {
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))
         .map_err(|error| error.to_string())?;
     let cleanup = Cleanup(temporary.clone());
-    provision(&temporary)?;
+    provision(&temporary, &policy)?;
     fs::rename(&temporary, &output).map_err(|error| error.to_string())?;
     std::mem::forget(cleanup);
     println!(
@@ -76,6 +79,8 @@ fn run() -> Result<(), String> {
             "nodes": MPC_PARTIES,
             "market": MARKET,
             "program": PROGRAM,
+            "deployment_id": policy.deployment_id,
+            "pqc_mode": policy.mode,
             "output": output,
             "warning": "lab authority generated all keys; production operators must generate node keys independently"
         })
@@ -83,7 +88,16 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn provision(root: &Path) -> Result<(), String> {
+fn provision(root: &Path, policy: &DeploymentCryptoPolicy) -> Result<(), String> {
+    // Persist the operator's exact choice before this lab helper generates any
+    // secret.  `On` remains intentionally unavailable until its actual proof
+    // backend calls this gate with a reviewed PostQuantum classification.
+    oclob_node::deployment_policy::initialize_fresh_state(
+        &root.join(oclob_node::deployment_policy::STATE_POLICY_FILE),
+        policy,
+        &[],
+    )?;
+    oclob_node::deployment_policy::require_proof_backend(policy, ProofSecurity::Classical)?;
     let public_dir = create_private_dir(root.join("public"))?;
     let maker_dir = create_private_dir(root.join("maker"))?;
     let taker_dir = create_private_dir(root.join("taker"))?;
@@ -91,7 +105,12 @@ fn provision(root: &Path) -> Result<(), String> {
     let settlement_dir = create_private_dir(root.join("settlement"))?;
     let defmi_dir = create_private_dir(root.join("defmi"))?;
     let market_dir = create_private_dir(root.join("market"))?;
-    create_private_dir(market_dir.join("state"))?;
+    let market_state_dir = create_private_dir(market_dir.join("state"))?;
+    oclob_node::deployment_policy::initialize_fresh_state(
+        &market_state_dir.join(oclob_node::deployment_policy::STATE_POLICY_FILE),
+        policy,
+        &[&market_state_dir.join("state.enc")],
+    )?;
     create_private_dir(root.join("market-public"))?;
     let book_dir = create_private_dir(root.join("public-book"))?;
     let (ca_key, ca_cert) = create_ca()?;
@@ -218,6 +237,7 @@ fn provision(root: &Path) -> Result<(), String> {
     rand::rngs::OsRng.fill_bytes(&mut market_journal_key);
     write_private(&market_dir.join("journal-key.raw"), &market_journal_key)?;
     let market_config = oclob_node::market_network::MarketServiceConfig {
+        deployment_crypto_policy: policy.clone(),
         endpoint: oclob_node::market_network::MarketEndpoint {
             host: "oclob-market".into(),
             port: 9445,
@@ -324,6 +344,7 @@ fn provision(root: &Path) -> Result<(), String> {
             Sha256::digest([b"OCLOB:LAB:NATIVE-FACILITY:v1".as_slice(), label.as_bytes()].concat())
                 .into();
         let config = CorporateNativeConfig {
+            deployment_crypto_policy: policy.clone(),
             host: "oclob-defmi".into(),
             port: 9443,
             server_name: "oclob-defmi".into(),
@@ -554,7 +575,8 @@ fn provision(root: &Path) -> Result<(), String> {
         let trusted_defmi_id: [u8; 32] = Sha256::digest(b"oclob-integrated-defmi-v1").into();
         let trusted_venue_id: [u8; 32] = Sha256::digest(b"defmi:oclob:v1").into();
         let config = json!({
-            "version": 4,
+            "version": 5,
+            "deployment_crypto_policy": policy,
             "party": party,
             "listen": format!("0.0.0.0:{RPC_PORT}"),
             "tls_certificate": "/node/tls.pem",
@@ -602,7 +624,8 @@ fn provision(root: &Path) -> Result<(), String> {
         0o600,
     )?;
     let public = ClusterPublicConfig {
-        version: 5,
+        version: 6,
+        deployment_crypto_policy: policy.clone(),
         market_id: MARKET.into(),
         program: PROGRAM.into(),
         settlement_release_threshold: SETTLEMENT_KEY_THRESHOLD,
@@ -615,15 +638,15 @@ fn provision(root: &Path) -> Result<(), String> {
         0o644,
     )?;
     for (path, key, config, scope, credential, dispatch) in corporate_journals {
+        let journal = oclob_node::corporate_journal::NativeCorporateJournal::initialize(
+            &path, &key, &config, &public,
+        )?;
         if dispatch {
             oclob_node::corporate_dispatch::NativeCorporateDispatch::initialize(
                 path.with_file_name("dispatch.enc"),
                 &key,
             )?;
         }
-        let journal = oclob_node::corporate_journal::NativeCorporateJournal::initialize(
-            path, &key, &config, &public,
-        )?;
         journal.enroll_eligibility(&config, scope, &credential)?;
     }
     Ok(())
@@ -817,16 +840,43 @@ fn reject_existing(path: &Path) -> Result<(), String> {
     }
 }
 
-fn parse_output() -> Result<PathBuf, String> {
+fn parse_args() -> Result<(PathBuf, DeploymentCryptoPolicy), String> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if args.len() != 2 || args[0] != "--out" {
-        return Err("usage: oclob-lab-provision --out DIRECTORY".into());
+    if args.len() != 6 {
+        return Err(
+            "usage: oclob-lab-provision --out DIRECTORY --deployment-id ID --pqc-mode on|off"
+                .into(),
+        );
     }
-    let output = PathBuf::from(&args[1]);
+    let mut output = None;
+    let mut deployment_id = None;
+    let mut mode = None;
+    for pair in args.chunks_exact(2) {
+        let value = pair[1]
+            .to_str()
+            .ok_or("provisioning arguments must be valid UTF-8")?;
+        match pair[0].to_str() {
+            Some("--out") if output.is_none() => output = Some(PathBuf::from(&pair[1])),
+            Some("--deployment-id") if deployment_id.is_none() => {
+                deployment_id = Some(value.to_owned())
+            }
+            Some("--pqc-mode") if mode.is_none() => {
+                mode = Some(PqcMode::from_str(value).map_err(err)?)
+            }
+            _ => return Err("unknown or duplicate provisioning argument".into()),
+        }
+    }
+    let output = output.ok_or("provisioning output is missing")?;
     if !output.is_absolute() {
         return Err("provisioning output must be an absolute path".into());
     }
-    Ok(output)
+    let policy = DeploymentCryptoPolicy {
+        version: Version::V1,
+        deployment_id: deployment_id.ok_or("deployment id is missing")?,
+        mode: mode.ok_or("PQC mode is missing")?,
+    };
+    policy.validate().map_err(err)?;
+    Ok((output, policy))
 }
 
 fn err(error: impl std::fmt::Display) -> String {

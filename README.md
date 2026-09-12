@@ -138,8 +138,17 @@ This gate runs Rust formatting, Clippy, workspace tests, React Flow type checkin
 
 ### Native pretrade reservation and settlement
 
+Fresh provisioning requires an explicit deployment ID and PQC mode. The
+examples below select `off` because these operational venue paths still use
+the classical proof backend. `on` is rejected before secret generation or
+stored-state access until its real post-quantum backend is connected; it does
+not fall back to `off`. Reuse the same ID/mode for a restart, never to retrofit
+an existing policy-less state directory. Make targets accept IDs containing
+ASCII letters, digits, dots, underscores and hyphens, up to 255 bytes.
+
 ```bash
 make remote-native-e2e \
+  OCLOB_DEPLOYMENT_ID=oclob-native-lab OCLOB_PQC_MODE=off \
   REMOTE_TEST_HOST=softbank-l40s \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
 ```
@@ -150,6 +159,7 @@ The result is `artifacts/oclob_native_notes.json`. This scenario covers DeFMI st
 
 ```bash
 make remote-native-depth-e2e \
+  OCLOB_DEPLOYMENT_ID=oclob-depth-lab OCLOB_PQC_MODE=off \
   REMOTE_TEST_HOST=softbank-l40s \
   REMOTE_TEST_SSH_OPTIONS='-o BatchMode=yes -o ProxyJump=none'
 ```
@@ -164,6 +174,7 @@ Direct delivery of corporate-generated shares to seven separate MPC containers:
 
 ```bash
 make remote-distributed-e2e \
+  OCLOB_DEPLOYMENT_ID=oclob-distributed-lab OCLOB_PQC_MODE=off \
   REMOTE_TEST_HOST=omenx_ubuntu_zerotier
 ```
 
@@ -173,6 +184,7 @@ A continuous compatibility scenario binding corporate sharing, seven MPC nodes, 
 
 ```bash
 make remote-integrated-e2e \
+  OCLOB_DEPLOYMENT_ID=oclob-integrated-lab OCLOB_PQC_MODE=off \
   REMOTE_TEST_HOST=omenx_ubuntu_zerotier
 ```
 

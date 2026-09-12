@@ -32,6 +32,10 @@ fn run() -> Result<(), String> {
     let research = validate_research_binding(&paths.contract, &paths.manifest)?;
     let cluster: ClusterPublicConfig = read_json(&paths.cluster)?;
     cluster.validate().map_err(|error| error.to_string())?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &cluster.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let identity: ClientIdentityConfig = read_json(&paths.identity)?;
     identity.validate().map_err(|error| error.to_string())?;
     let maker: EdgeAdmissionReceipt = read_json(&paths.maker)?;

@@ -20,8 +20,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: oclob-native-bootstrap CLUSTER IDENTITY PUBLIC-OUTPUT".into());
     }
     let cluster: ClusterPublicConfig = serde_json::from_slice(&std::fs::read(&args[0])?)?;
-    let identity: ClientIdentityConfig = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     cluster.validate()?;
+    let output_path = std::path::Path::new(&args[2]);
+    let pq_output_path = output_path.with_extension("pq.json");
+    let marker = oclob_node::deployment_policy::marker_next_to(output_path)?;
+    oclob_node::deployment_policy::initialize_fresh_state(
+        &marker,
+        &cluster.deployment_crypto_policy,
+        &[output_path, &pq_output_path],
+    )?;
+    for path in [output_path, pq_output_path.as_path()] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(format!(
+                    "existing committee state at {}; explicit migration is required",
+                    path.display()
+                )
+                .into())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    oclob_node::deployment_policy::require_proof_backend(
+        &cluster.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
+    let identity: ClientIdentityConfig = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     identity.validate()?;
     let tls = client_ssl_context(
         identity.tls_certificate,
@@ -43,6 +68,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<_>>();
     let session: [u8; 32] = Sha256::new()
         .chain_update(b"OCLOB:NATIVE:DKG:v1")
+        .chain_update(cluster.deployment_crypto_policy.encode()?)
         .chain_update(cluster.market_id.as_bytes())
         .finalize()
         .into();
@@ -52,14 +78,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .create_new(true)
         .write(true)
         .mode(0o644)
-        .open(&args[2])?;
+        .open(output_path)?;
     output.write_all(&public.serialize()?)?;
     output.sync_all()?;
     let mut pq_output = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o644)
-        .open(std::path::Path::new(&args[2]).with_extension("pq.json"))?;
+        .open(pq_output_path)?;
     pq_output.write_all(&serde_json::to_vec(&pq_committee)?)?;
     pq_output.sync_all()?;
     println!("native committee established by seven resident proof nodes");

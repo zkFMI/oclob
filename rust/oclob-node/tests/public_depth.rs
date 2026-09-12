@@ -19,7 +19,12 @@ fn captured_book() -> FinalizedPublicBook {
 
 fn cluster_for(book: &FinalizedPublicBook) -> ClusterPublicConfig {
     ClusterPublicConfig {
-        version: 5,
+        version: 6,
+        deployment_crypto_policy: zkfmi_crypto::mode::DeploymentCryptoPolicy {
+            version: zkfmi_crypto::suite::Version::V1,
+            deployment_id: "public-depth-unit".into(),
+            mode: zkfmi_crypto::mode::PqcMode::Off,
+        },
         market_id: book.market_id.clone(),
         program: "oclob_match_v1".into(),
         settlement_release_threshold: 3,

@@ -17,7 +17,6 @@ use oclob_node::edge_client::{EdgeAdmissionReceipt, EdgeDistributor};
 use oclob_node::network::{
     client_tls_context, load_secret_32, ClientIdentityConfig, ClusterPublicConfig,
 };
-use zkpi::handles::Identity;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -28,6 +27,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zkpi::handles::Identity;
 
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const VENUE_DOMAIN: &[u8] = b"defmi:oclob:v1";
@@ -76,9 +76,23 @@ fn run() -> Result<(), String> {
         parse_args()?;
     let cluster: ClusterPublicConfig = read_json(&cluster_path)?;
     cluster.validate().map_err(|error| error.to_string())?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &cluster.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let identity: ClientIdentityConfig = read_json(&identity_path)?;
     identity.validate().map_err(|error| error.to_string())?;
-    let native = std::env::var_os("OCLOB_NATIVE_RESERVATION_CONFIG")
+    let native_config_path = std::env::var_os("OCLOB_NATIVE_RESERVATION_CONFIG");
+    if native_config_path.is_some() {
+        let journal_path = std::env::var_os("OCLOB_CORPORATE_JOURNAL")
+            .ok_or("native intake requires a durable corporate journal path")?;
+        let marker = oclob_node::deployment_policy::marker_next_to(Path::new(&journal_path))?;
+        oclob_node::deployment_policy::require_existing_state(
+            &marker,
+            &cluster.deployment_crypto_policy,
+        )?;
+    }
+    let native = native_config_path
         .map(|path| {
             let path = PathBuf::from(path);
             if fs::symlink_metadata(&path)
@@ -214,9 +228,15 @@ fn run_native(
         .ok_or("native intake requires a private corporate journal key file")?;
     let request_id = std::env::var("OCLOB_CORPORATE_REQUEST_ID")
         .map_err(|_| "native intake requires a stable corporate request ID")?;
+    let journal_path = PathBuf::from(journal_path);
+    config.require_deployment_policy(cluster)?;
+    NativeCorporateJournal::preflight_open(&journal_path, config, cluster)?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &config.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let secret = load_secret_32(PathBuf::from(journal_key)).map_err(|e| e.to_string())?;
-    let journal =
-        NativeCorporateJournal::open(PathBuf::from(journal_path), &secret, config, cluster)?;
+    let journal = NativeCorporateJournal::open(journal_path, &secret, config, cluster)?;
     if std::env::var("OCLOB_NATIVE_CACHE_SCOPE").ok().as_deref() == Some("1") {
         journal.authorization_scope(config, identity)?;
         println!("{}", json!({"status":"authorization_scope_cached"}));

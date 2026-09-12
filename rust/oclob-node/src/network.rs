@@ -793,8 +793,12 @@ impl ClusterNodePublic {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterPublicConfig {
     pub version: u16,
+    /// Operator-selected policy for this exact fresh deployment.  It is public
+    /// configuration, not a peer-negotiated capability.
+    pub deployment_crypto_policy: zkfmi_crypto::mode::DeploymentCryptoPolicy,
     pub market_id: String,
     pub program: String,
     pub settlement_release_threshold: usize,
@@ -803,7 +807,8 @@ pub struct ClusterPublicConfig {
 
 impl ClusterPublicConfig {
     pub fn validate(&self) -> Result<(), NetworkError> {
-        if self.version != 5
+        if self.version != 6
+            || self.deployment_crypto_policy.validate().is_err()
             || self.market_id.is_empty()
             || self.market_id.len() > 64
             || self.program.is_empty()
@@ -1710,6 +1715,7 @@ mod tests {
             // execution is claimed by this transport-only test.
             let cluster = ClusterPublicConfig {
                 version: 3,
+                deployment_crypto_policy: crate::deployment_policy::test_policy(),
                 market_id: "transport-test".into(),
                 program: "test".into(),
                 settlement_release_threshold: 3,
@@ -1869,11 +1875,9 @@ mod tests {
         let (cluster, input, _) = crate::market_tests::fixture();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let journal = Arc::new(
-            MarketJournal::open(&files.root.join("market.enc"), &[31; 32], &cluster, true).unwrap(),
-        );
         let tls = server_tls_context(&files.server_cert, &files.server_key, &files.ca).unwrap();
         let config = MarketServiceConfig {
+            deployment_crypto_policy: cluster.deployment_crypto_policy.clone(),
             endpoint: MarketEndpoint {
                 host: address.ip().to_string(),
                 port: address.port(),
@@ -1886,6 +1890,16 @@ mod tests {
             base_asset: [1; 32],
             quote_asset: [2; 32],
         };
+        let journal = Arc::new(
+            MarketJournal::open(
+                &files.root.join("market.enc"),
+                &[31; 32],
+                &config,
+                &cluster,
+                true,
+            )
+            .unwrap(),
+        );
         let identity = ClientIdentityConfig {
             version: 2,
             tls_certificate: files.participant_cert.clone(),

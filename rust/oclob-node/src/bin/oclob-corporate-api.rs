@@ -92,10 +92,21 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    let config: CorporateNativeConfig = read(&env_path("OCLOB_NATIVE_RESERVATION_CONFIG")?, true)?;
     let cluster: ClusterPublicConfig = read(Path::new("/public/cluster.json"), false)?;
     cluster.validate().map_err(|e| e.to_string())?;
     let journal_path = env_path("OCLOB_CORPORATE_JOURNAL")?;
+    let policy_marker = oclob_node::deployment_policy::marker_next_to(&journal_path)?;
+    oclob_node::deployment_policy::require_existing_state(
+        &policy_marker,
+        &cluster.deployment_crypto_policy,
+    )?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &cluster.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
+    let config: CorporateNativeConfig = read(&env_path("OCLOB_NATIVE_RESERVATION_CONFIG")?, true)?;
+    config.require_deployment_policy(&cluster)?;
+    NativeCorporateJournal::preflight_open(&journal_path, &config, &cluster)?;
     let secret =
         load_secret_32(env_path("OCLOB_CORPORATE_JOURNAL_KEY")?).map_err(|e| e.to_string())?;
     let journal = NativeCorporateJournal::open(&journal_path, &secret, &config, &cluster)?;

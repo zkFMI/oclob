@@ -30,6 +30,7 @@ use zkpi_defmi_sdk::reservation::order_authorization_commitment;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CorporateNativeConfig {
+    pub deployment_crypto_policy: zkfmi_crypto::mode::DeploymentCryptoPolicy,
     pub host: String,
     pub port: u16,
     pub server_name: String,
@@ -488,6 +489,19 @@ fn err(error: impl std::fmt::Display) -> String {
 }
 
 impl CorporateNativeConfig {
+    /// Compare the owner-private copy with the independently mounted public
+    /// cluster policy before opening any custody key or durable journal.
+    pub fn require_deployment_policy(
+        &self,
+        cluster: &crate::network::ClusterPublicConfig,
+    ) -> Result<(), String> {
+        cluster.validate().map_err(err)?;
+        crate::deployment_policy::require_same(
+            &cluster.deployment_crypto_policy,
+            &self.deployment_crypto_policy,
+        )
+    }
+
     pub fn credential_custody_key(
         &self,
     ) -> Result<zkfmi_crypto::hybrid::kem::HybridKemKey, String> {

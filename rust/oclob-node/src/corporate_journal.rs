@@ -16,7 +16,7 @@ use oclob_settlement::native::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zkpi_defmi_sdk::corporate::CorporateOutbox;
 
 const RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -263,6 +263,39 @@ pub struct EndedCorporateAuthorization {
 }
 
 impl NativeCorporateJournal {
+    /// Policy-only restart preflight.  Binaries call this before reading the
+    /// journal secret; `open` repeats it to keep the library API fail closed.
+    pub fn preflight_open(
+        path: &Path,
+        config: &CorporateNativeConfig,
+        cluster: &ClusterPublicConfig,
+    ) -> Result<(), String> {
+        Self::preflight(path, config, cluster, false)
+    }
+
+    fn preflight(
+        path: &Path,
+        config: &CorporateNativeConfig,
+        cluster: &ClusterPublicConfig,
+        initialize: bool,
+    ) -> Result<(), String> {
+        config.require_deployment_policy(cluster)?;
+        let marker = crate::deployment_policy::marker_next_to(path)?;
+        if initialize {
+            let dispatch = path.with_file_name("dispatch.enc");
+            crate::deployment_policy::initialize_fresh_state(
+                &marker,
+                &config.deployment_crypto_policy,
+                &[path, &dispatch],
+            )
+        } else {
+            crate::deployment_policy::require_existing_state(
+                &marker,
+                &config.deployment_crypto_policy,
+            )
+        }
+    }
+
     /// Explicit enrollment only. Normal CLI restart must recover the exact
     /// issued holder, never manufacture a new independent signing key.
     pub fn enroll_eligibility(
@@ -336,10 +369,10 @@ impl NativeCorporateJournal {
         cluster: &ClusterPublicConfig,
         initialize: bool,
     ) -> Result<Self, String> {
+        Self::preflight(&path, config, cluster, initialize)?;
         if *secret == [0; 32] {
             return Err("corporate journal key is empty".into());
         }
-        cluster.validate().map_err(err)?;
         let context: [u8; 32] = Sha256::new()
             .chain_update(b"OCLOB:NATIVE-JOURNAL-CONTEXT:v1")
             .chain_update(serde_json::to_vec(config).map_err(err)?)
@@ -1268,6 +1301,7 @@ mod tests {
 
     fn fixture() -> (CorporateNativeConfig, ClusterPublicConfig) {
         let config = CorporateNativeConfig {
+            deployment_crypto_policy: crate::deployment_policy::test_policy(),
             host: "unit-defmi".into(),
             port: 9443,
             server_name: "unit-defmi".into(),
@@ -1290,7 +1324,8 @@ mod tests {
             identity_seed: [11; 32],
         };
         let cluster = ClusterPublicConfig {
-            version: 5,
+            version: 6,
+            deployment_crypto_policy: config.deployment_crypto_policy.clone(),
             market_id: "CORPORATE-UNIT".into(),
             program: "oclob_match_v1".into(),
             settlement_release_threshold: 3,

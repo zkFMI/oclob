@@ -91,6 +91,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let cluster: ClusterPublicConfig = read("/public/cluster.json")?;
     cluster.validate()?;
+    oclob_node::deployment_policy::require_proof_backend(
+        &cluster.deployment_crypto_policy,
+        zkfmi_crypto::mode::ProofSecurity::Classical,
+    )?;
     let coordinator: ClientIdentityConfig = read("/identity/client.json")?;
     coordinator.validate()?;
     if matches!(

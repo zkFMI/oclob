@@ -32,12 +32,25 @@ pub struct MarketEndpoint {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarketServiceConfig {
+    pub deployment_crypto_policy: zkfmi_crypto::mode::DeploymentCryptoPolicy,
     pub endpoint: MarketEndpoint,
     pub participants: Vec<[u8; 32]>,
     pub journal: PathBuf,
     pub journal_key: PathBuf,
     pub base_asset: [u8; 32],
     pub quote_asset: [u8; 32],
+}
+
+impl MarketServiceConfig {
+    /// The market owns an independent copy so replacing either mounted config
+    /// cannot silently change the deployment's cryptographic mode.
+    pub fn require_deployment_policy(&self, cluster: &ClusterPublicConfig) -> Result<(), String> {
+        cluster.validate().map_err(err)?;
+        crate::deployment_policy::require_same(
+            &cluster.deployment_crypto_policy,
+            &self.deployment_crypto_policy,
+        )
+    }
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +185,7 @@ pub(crate) fn receive_connection(
     cluster: &ClusterPublicConfig,
     journal: &MarketJournal,
 ) -> Result<(), String> {
+    config.require_deployment_policy(cluster)?;
     tcp.set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(err)?;
     tcp.set_write_timeout(Some(Duration::from_secs(5)))
@@ -302,6 +316,7 @@ pub fn publish_corporate_admissions(
     }
     let config: MarketServiceConfig =
         serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)?;
+    config.require_deployment_policy(cluster)?;
     let endpoint_digest: [u8; 32] =
         Sha256::digest(serde_json::to_vec(&config.endpoint).map_err(err)?).into();
     for id in journal.admitted_request_ids()? {
@@ -409,6 +424,7 @@ mod tests {
         let path = files.path();
         let (cluster, fixture_input, signer) = crate::market_tests::fixture();
         let config = crate::corporate::CorporateNativeConfig {
+            deployment_crypto_policy: cluster.deployment_crypto_policy.clone(),
             host: "unit-defmi".into(),
             port: 9443,
             server_name: "unit-defmi".into(),

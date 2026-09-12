@@ -198,6 +198,7 @@ mod tests {
                 .unwrap();
             let cluster = ClusterPublicConfig {
                 version: 3,
+                deployment_crypto_policy: crate::deployment_policy::test_policy(),
                 market_id: "unit-only".into(),
                 program: "oclob_match_v1".into(),
                 settlement_release_threshold: 3,

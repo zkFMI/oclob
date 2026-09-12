@@ -14,6 +14,7 @@ pub mod corporate_dispatch;
 pub mod corporate_expiry;
 pub mod corporate_journal;
 pub mod corporate_submission;
+pub mod deployment_policy;
 pub mod market_journal;
 pub mod market_network;
 pub mod market_runtime;
@@ -48,9 +49,10 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use zkfmi_crypto::mode::DeploymentCryptoPolicy;
 
 const STORE_MAGIC: &[u8; 8] = b"OCLOBN01";
-const STORE_VERSION: u16 = 12;
+const STORE_VERSION: u16 = 13;
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -73,6 +75,9 @@ struct StoredOrderVote {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StoreState {
     version: u16,
+    /// Exact canonical policy bytes, included in every state digest and
+    /// compared before any stored share can be opened.
+    deployment_crypto_policy: Vec<u8>,
     party: u16,
     generation: u64,
     records: BTreeMap<String, StoredRecord>,
@@ -241,21 +246,44 @@ struct ReservationTrust {
 }
 
 impl NodeShareStore {
+    #[cfg(test)]
     pub fn open(
         path: impl Into<PathBuf>,
         party: u16,
         key: NodeDecryptionKey,
     ) -> Result<Self, NodeError> {
+        let path = path.into();
+        let policy = crate::deployment_policy::test_policy();
+        let marker = crate::deployment_policy::marker_next_to(&path).map_err(NodeError::State)?;
+        crate::deployment_policy::initialize_fresh_state(&marker, &policy, &[&path])
+            .map_err(NodeError::State)?;
+        Self::open_policy_bound(path, party, key, &policy)
+    }
+
+    /// Production entrypoint: the caller-supplied deployment policy must
+    /// already have been persisted at this state boundary before key loading.
+    pub fn open_policy_bound(
+        path: impl Into<PathBuf>,
+        party: u16,
+        key: NodeDecryptionKey,
+        policy: &DeploymentCryptoPolicy,
+    ) -> Result<Self, NodeError> {
         if usize::from(party) >= MPC_PARTIES {
             return Err(NodeError::Party);
         }
         let path = path.into();
+        let marker = crate::deployment_policy::marker_next_to(&path).map_err(NodeError::State)?;
+        crate::deployment_policy::require_existing_state(&marker, policy)
+            .map_err(NodeError::State)?;
+        let policy_bytes = policy
+            .encode()
+            .map_err(|_| NodeError::State("deployment cryptographic policy is invalid".into()))?;
         reject_symlink(&path)?;
         let existed = path.exists();
         let (state, migrated) = if existed {
-            read_state(&path, party)?
+            read_state(&path, party, &policy_bytes)?
         } else {
-            (empty_state(party), false)
+            (empty_state(party, policy_bytes), false)
         };
         let mut store = Self {
             path,
@@ -1339,9 +1367,10 @@ impl NodeShareStore {
     }
 }
 
-fn empty_state(party: u16) -> StoreState {
+fn empty_state(party: u16, deployment_crypto_policy: Vec<u8>) -> StoreState {
     StoreState {
         version: STORE_VERSION,
+        deployment_crypto_policy,
         party,
         generation: 0,
         records: BTreeMap::new(),
@@ -1358,7 +1387,11 @@ fn empty_state(party: u16) -> StoreState {
     }
 }
 
-fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), NodeError> {
+fn read_state(
+    path: &Path,
+    expected_party: u16,
+    expected_policy: &[u8],
+) -> Result<(StoreState, bool), NodeError> {
     reject_symlink(path)?;
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() as usize > MAX_STORE_BYTES + 48 {
@@ -1392,10 +1425,18 @@ fn read_state(path: &Path, expected_party: u16) -> Result<(StoreState, bool), No
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| NodeError::State("node share store version is invalid".into()))?;
     if version != STORE_VERSION {
-        return Err(NodeError::State("classical node store requires explicit authenticated PQC migration; existing state is preserved".into()));
+        return Err(NodeError::State(
+            "policy-less node store requires explicit authenticated migration; existing state is preserved"
+                .into(),
+        ));
     }
     let state: StoreState = serde_json::from_value(value)
         .map_err(|_| NodeError::State("node share store payload is invalid".into()))?;
+    if state.deployment_crypto_policy.as_slice() != expected_policy {
+        return Err(NodeError::State(
+            "node share store belongs to another deployment cryptographic policy".into(),
+        ));
+    }
     if state.party != expected_party
         || (state.ordering_sequence == 0) != (state.ordering_head == [0; 32])
         || u64::try_from(state.ordered_commitments.len()).ok() != Some(state.ordering_sequence)
