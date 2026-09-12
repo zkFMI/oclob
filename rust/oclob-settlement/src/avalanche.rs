@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 const ROOT_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
+mod optimistic;
+pub use optimistic::OptimisticAvalancheGateway;
+
 /// Live canonical gateway. The private committee keys are accepted only as a
 /// reference so production callers can place each signer in its own process
 /// and replace this laboratory provider without changing the settlement plan.
@@ -82,6 +85,9 @@ impl<'a, C: AvalancheClient> AvalancheCanonicalGateway<'a, C> {
         prepared: &PreparedCanonicalTransition,
         now: u64,
     ) -> Result<CanonicalSettlementAcceptance, SettlementError> {
+        if prepared.optimistic_reference().is_some() {
+            return Err(SettlementError::Finality("optimistic transitions require OptimisticAvalancheGateway and its native finality gate".into()));
+        }
         if now > prepared.deadline() {
             return Err(SettlementError::Finality(
                 "prepared canonical settlement expired".into(),

@@ -332,7 +332,7 @@ pub fn setup_frost<T: ProofPartyRpc>(
     distributed_frost_setup(parties, session)
 }
 
-pub fn prove_fill<T: ProofPartyRpc>(
+pub fn prove_fill<T: ProofPartyRpc + Send>(
     parties: &mut [T],
     frost_public: frost::keys::PublicKeyPackage,
     request: CollaborativeFillRequest,

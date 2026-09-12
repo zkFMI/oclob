@@ -384,6 +384,7 @@ impl Fixture {
             committee_public: public.serialize().unwrap(),
             signature: vec![],
             batch: None,
+            optimistic: None,
         };
         Self {
             request: NativeFillAuthorizationRequest {

@@ -23,6 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod native;
+
 const MARKET: &str = "JGB10Y-JPY";
 const MAX_HTTP_BYTES: usize = 1 << 20;
 const EVENT_LIMIT: usize = 80;
@@ -96,6 +98,8 @@ struct PublicEvent {
 }
 
 struct DemoRuntime {
+    native: native::NativeSettlement,
+    views: Arc<Mutex<BTreeMap<String, Value>>>,
     service: OclobService,
     participants: BTreeMap<String, Participant>,
     mpc_nodes: [bool; 7],
@@ -103,7 +107,7 @@ struct DemoRuntime {
     phase: String,
     event_sequence: u64,
     events: VecDeque<PublicEvent>,
-    last_execution: Option<OclobExecutionReceipt>,
+    last_execution: Option<OclobExecutionReceipt<Value>>,
 }
 
 #[derive(Deserialize)]
@@ -166,7 +170,10 @@ impl DemoRuntime {
         service
             .participant_portfolio(taker_handle)
             .map_err(|error| error.to_string())?;
+        let native = native::NativeSettlement::new(state_dir, passphrase)?;
         let mut runtime = Self {
+            native,
+            views: Arc::new(Mutex::new(BTreeMap::new())),
             service,
             participants: BTreeMap::from([
                 (maker.role.to_string(), maker),
@@ -182,13 +189,16 @@ impl DemoRuntime {
         runtime.event(
             "ready",
             "市場を開始",
-            "研究用の7プロセスMPC構成と5確認ノードの状態表示を初期化しました",
+            "7プロセスMPCと5台のAvalanche検証ノードへ接続しました",
             "ok",
         );
         Ok(runtime)
     }
 
     fn place_order(&mut self, request: PlaceOrderRequest) -> Result<Value, String> {
+        if self.native.progress.lock().map_err(|e| e.to_string())?["stage"] == "failed" {
+            return Err("前のネイティブ決済が未確定です。台帳との照合が終わるまで新しい注文は送信できません".into());
+        }
         let now = unix_now()?;
         if request.price == 0 || request.quantity == 0 {
             return Err("価格と数量は1以上で指定してください".into());
@@ -257,11 +267,17 @@ impl DemoRuntime {
             "active",
         );
         let role = request.actor;
+        self.publish_views()?;
         let worker = self.pump_role(&role, now)?;
         Ok(json!({ "queued": queued, "worker": worker_projection(&worker) }))
     }
 
-    fn pump_role(&mut self, role: &str, now: u64) -> Result<QueueWorkerResult, String> {
+    fn pump_role(&mut self, role: &str, now: u64) -> Result<QueueWorkerResult<Value>, String> {
+        if self.native.progress.lock().map_err(|e| e.to_string())?["stage"] == "failed" {
+            return Err(
+                "前のネイティブ決済が未確定です。台帳との照合が終わるまで再送できません".into(),
+            );
+        }
         let mpc_healthy = self.mpc_nodes.iter().all(|healthy| *healthy);
         let validators_healthy = self.validators.iter().filter(|healthy| **healthy).count() >= 3;
         if !validators_healthy {
@@ -277,7 +293,10 @@ impl DemoRuntime {
             .ok_or_else(|| "unknown participant".to_string())?;
         let result = participant
             .queue
-            .pump(&mut self.service, now, mpc_healthy)
+            .pump_with(now, mpc_healthy, |order, authority, eligibility, now| {
+                self.native
+                    .execute(role, &mut self.service, order, authority, eligibility, now)
+            })
             .map_err(|error| error.to_string())?;
         match &result {
             QueueWorkerResult::WaitingForMpc => {
@@ -318,8 +337,23 @@ impl DemoRuntime {
             }
             QueueWorkerResult::Rejected { request_id, .. }
             | QueueWorkerResult::Expired { request_id } => {
-                self.mark_order(role, request_id, "rejected");
-                self.phase = "rejected".into();
+                let uncertain =
+                    self.native.progress.lock().map_err(|e| e.to_string())?["stage"] == "failed";
+                self.mark_order(
+                    role,
+                    request_id,
+                    if uncertain {
+                        "manual_review"
+                    } else {
+                        "rejected"
+                    },
+                );
+                self.phase = if uncertain {
+                    "manual_review"
+                } else {
+                    "rejected"
+                }
+                .into();
             }
             QueueWorkerResult::Idle | QueueWorkerResult::DummyCover { .. } => {}
         }
@@ -388,7 +422,7 @@ impl DemoRuntime {
                 "mpc_parties": receipt.mpc.parties,
                 "mpc_protocol": receipt.mpc.protocol,
                 "mpc_execution_ms": receipt.mpc.execution_ms,
-                "transition_attestations": receipt.transition_proof.attestations.len(),
+                "transition_attestations": receipt.transition_proof["attestations"].as_array().map(Vec::len).unwrap_or(0),
                 "fills": receipt.book_transition.fills,
                 "threshold_zkpi": receipt.settlement.as_ref().is_some_and(|value| value.amount_range_is_threshold && value.price_range_is_threshold),
                 "settlement_authorization_quorum": receipt.settlement.as_ref().map(|value| value.settlement_authorization_quorum),
@@ -399,6 +433,8 @@ impl DemoRuntime {
         });
         Ok(json!({
             "market": MARKET,
+            "assurance_mode":self.native.mode,
+            "native_progress":self.native.progress.lock().map_err(|e|e.to_string())?.clone(),
             "phase": self.phase,
             "viewer": viewer,
             "privacy": {
@@ -409,7 +445,7 @@ impl DemoRuntime {
                 "post_match_participant_signature_required": false,
                 "deployment_mode": "single_process_research_mvp",
                 "mpc_topology": "seven_processes_on_one_host",
-                "defmi_topology": "in_process_state_machine"
+                "defmi_topology": "five_native_avalanche_validators"
             },
             "book": book,
             "own": own,
@@ -424,6 +460,15 @@ impl DemoRuntime {
             "last_execution": last,
             "events": self.events,
         }))
+    }
+
+    fn publish_views(&self) -> Result<(), String> {
+        let values = ["operator", "maker", "taker"]
+            .into_iter()
+            .map(|viewer| Ok((viewer.to_string(), self.state(viewer)?)))
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        *self.views.lock().map_err(|e| e.to_string())? = values;
+        Ok(())
     }
 
     fn mark_order(&mut self, role: &str, request_id: &str, status: &str) {
@@ -454,7 +499,7 @@ impl DemoRuntime {
 /// Build the only HTTP-safe view of a queue result. In particular, the full
 /// execution receipt contains the DeKYX subject nullifier and reservation
 /// records and therefore must never be serialized by the demo HTTP layer.
-fn worker_projection(result: &QueueWorkerResult) -> Value {
+fn worker_projection(result: &QueueWorkerResult<Value>) -> Value {
     match result {
         QueueWorkerResult::Idle => json!({ "status": "idle" }),
         QueueWorkerResult::WaitingForMpc => json!({ "status": "waiting_for_mpc" }),
@@ -572,14 +617,32 @@ fn unix_now() -> Result<u64, String> {
 
 fn serve(host: &str, port: u16, runtime: DemoRuntime) -> Result<(), String> {
     let listener = TcpListener::bind((host, port)).map_err(|error| error.to_string())?;
+    runtime.publish_views()?;
+    let views = runtime.views.clone();
+    let progress = runtime.native.progress.clone();
+    let private_progress = runtime.native.private_progress.clone();
+    let clients = runtime.native.clients.clone();
     let runtime = Arc::new(Mutex::new(runtime));
     println!("OCLOB demo listening on http://{host}:{port}");
     for connection in listener.incoming() {
         let runtime = Arc::clone(&runtime);
+        let (views, progress, clients, private_progress) = (
+            views.clone(),
+            progress.clone(),
+            clients.clone(),
+            private_progress.clone(),
+        );
         match connection {
             Ok(stream) => {
                 thread::spawn(move || {
-                    if let Err(error) = handle_connection(stream, &runtime) {
+                    if let Err(error) = handle_connection(
+                        stream,
+                        &runtime,
+                        &views,
+                        &progress,
+                        &clients,
+                        &private_progress,
+                    ) {
                         eprintln!("OCLOB HTTP request rejected: {error}");
                     }
                 });
@@ -593,6 +656,10 @@ fn serve(host: &str, port: u16, runtime: DemoRuntime) -> Result<(), String> {
 fn handle_connection(
     mut stream: TcpStream,
     runtime: &Arc<Mutex<DemoRuntime>>,
+    views: &Arc<Mutex<BTreeMap<String, Value>>>,
+    progress: &Arc<Mutex<Value>>,
+    clients: &Arc<Vec<defmi::avalanche::AvalancheRpcClient>>,
+    private_progress: &Arc<Mutex<BTreeMap<String, Value>>>,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(15)))
@@ -606,37 +673,113 @@ fn handle_connection(
         ("GET", "/health") => json_response("200 OK", &json!({ "status": "ok" }))?,
         ("GET", "/api/state") => {
             let viewer = query_value(query, "viewer").unwrap_or("operator");
-            let state = runtime
+            let mut state = views
                 .lock()
-                .map_err(|_| "demo state lock was poisoned".to_string())?
-                .state(viewer);
-            result_response(state)?
+                .map_err(|e| e.to_string())?
+                .get(viewer)
+                .cloned()
+                .ok_or("unknown viewer")?;
+            state["native_progress"] = progress.lock().map_err(|e| e.to_string())?.clone();
+            if state["native_progress"]["active"] == true {
+                if let Some(value) = private_progress
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .get(viewer)
+                    .cloned()
+                {
+                    state["provisional"] = value;
+                }
+            }
+            json_response("200 OK", &state)?
+        }
+        ("POST", "/api/assurance") => {
+            let value: Value = serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
+            let result = (|| -> Result<Value, String> {
+                let mut state = runtime
+                    .try_lock()
+                    .map_err(|_| "wait for the active settlement")?;
+                for participant in state.participants.values() {
+                    let metrics = participant
+                        .queue
+                        .metrics(unix_now()?)
+                        .map_err(|e| e.to_string())?;
+                    if metrics.queued
+                        + metrics.dispatching
+                        + metrics.mpc_admitted
+                        + metrics.release_pending
+                        + metrics.manual_review
+                        > 0
+                    {
+                        return Err("finish queued orders before changing assurance".into());
+                    }
+                }
+                state
+                    .native
+                    .set_mode(value["mode"].as_str().ok_or("mode required")?)?;
+                state.publish_views()?;
+                Ok(json!({"mode":state.native.mode}))
+            })();
+            result_response(result)?
+        }
+        ("POST", "/api/challenge") => {
+            let value: Value = serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
+            let result = (|| -> Result<Value, String> {
+                use zkpi_committee::optimistic::Challenge;
+                let id = value["claim_id"].as_str().ok_or("claim ID required")?;
+                let current = progress.lock().map_err(|e| e.to_string())?.clone();
+                if current["active"] != true || current["claim_id"] != id {
+                    return Err("only the active claim can be challenged".into());
+                }
+                let claim = hex::decode(id)
+                    .map_err(|e| e.to_string())?
+                    .try_into()
+                    .map_err(|_| "invalid claim ID")?;
+                let client = zkpi_defmi_sdk::optimistic::OptimisticClient { rpc: &clients[0] };
+                let key = zkpi_committee::application_crypto::SigningKey::from_bytes(&[91; 64]);
+                let receipt = client.challenge(&Challenge::signed(claim, &key)?)?;
+                Ok(
+                    json!({"claim_id":id,"tx_id":receipt.tx_id,"height":receipt.height,"after_root":hex::encode(receipt.after_root)}),
+                )
+            })();
+            result_response(result)?
         }
         ("POST", "/api/order") => {
             let request: PlaceOrderRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| "order request is malformed".to_string())?;
-            let result = runtime
-                .lock()
-                .map_err(|_| "demo state lock was poisoned".to_string())?
-                .place_order(request);
+            let result = (|| -> Result<Value, String> {
+                let mut runtime = runtime
+                    .try_lock()
+                    .map_err(|_| "a settlement is already running")?;
+                let result = runtime.place_order(request);
+                runtime.publish_views()?;
+                result
+            })();
             result_response(result)?
         }
         ("POST", "/api/nodes/toggle") => {
             let request: ToggleNodeRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| "node request is malformed".to_string())?;
-            let result = runtime
-                .lock()
-                .map_err(|_| "demo state lock was poisoned".to_string())?
-                .toggle_node(request);
+            let result = (|| -> Result<Value, String> {
+                let mut runtime = runtime
+                    .try_lock()
+                    .map_err(|_| "a settlement is already running")?;
+                let result = runtime.toggle_node(request);
+                runtime.publish_views()?;
+                result
+            })();
             result_response(result)?
         }
         ("POST", "/api/queue/pump") => {
             let request: PumpRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| "queue request is malformed".to_string())?;
-            let result = runtime
-                .lock()
-                .map_err(|_| "demo state lock was poisoned".to_string())?
-                .pump(request);
+            let result = (|| -> Result<Value, String> {
+                let mut runtime = runtime
+                    .try_lock()
+                    .map_err(|_| "a settlement is already running")?;
+                let result = runtime.pump(request);
+                runtime.publish_views()?;
+                result
+            })();
             result_response(result)?
         }
         ("GET", "/" | "/index.html") => static_response(
@@ -787,7 +930,9 @@ mod tests {
         assert!(operator.contains("own = if let Some(participant)"));
         assert!(operator.contains("else {\n            None"));
         assert!(!production_source.contains("serde_json::to_value(result)"));
-        assert!(production_source.contains("fn worker_projection(result: &QueueWorkerResult)"));
+        assert!(
+            production_source.contains("fn worker_projection(result: &QueueWorkerResult<Value>)")
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ oclob-proofs.workspace = true
 oclob-service.workspace = true
 oclob-settlement.workspace = true
 defmi.workspace = true
+defmi-avalanche-vm.workspace = true
 zkpi-proofs.workspace = true
 zkpi-committee.workspace = true
 zkfmi-zk.workspace = true

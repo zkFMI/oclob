@@ -4,8 +4,8 @@ ARG RUST_VERSION=1.97.1
 ARG NODE_VERSION=20.19.2
 ARG MP_SPDZ_COMMIT=9d809599ea6ce627216a389ca7d984fbb75d0cb9
 # zkpi carries the MP-SPDZ patches, including the mandatory hybrid TLS one.
-ARG ZKPI_COMMIT=cc9cfa9c65ff3e065b926abdb08d0b7bfebb666c
-ARG DEFMI_COMMIT=bc543696c7504b332735c14ed2e5c33267848e78
+ARG ZKPI_COMMIT=6218468eaee792d66399b46d9eadae8be9229922
+ARG DEFMI_COMMIT=7f8b031fdcd41da76301c72046b48971562b0372
 ARG BUILD_JOBS=16
 # OpenSSL 3.5 is the first release with X25519MLKEM768. The engine is compiled
 # against its headers and resolves libssl.so.3 from /opt/pqc-openssl at run time

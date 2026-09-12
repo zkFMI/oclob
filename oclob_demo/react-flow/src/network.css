@@ -83,11 +83,22 @@
 .qrf-node.is-named { border-color: #ffb354; }
 
 .qrf-node { border-top-color: #a7b2c8; }
-.qrf-taker { border-top: 3px solid #45d7c8; }
+/* Both trading companies share one colour: the legend lists them as a single
+   kind (参加企業); which one is "you" is shown by the badge, not the colour. */
+.qrf-taker { border-top: 3px solid #8aa8ff; }
 .qrf-maker { border-top: 3px solid #8aa8ff; }
 .qrf-matcher { border-top: 3px solid #ffd166; }
 .qrf-zkpi { border-top: 3px solid #bd9cff; }
 .qrf-ledger { border-top: 3px solid #69a7ff; }
+.qrf-book { border-top: 3px solid #45d7c8; }
+
+/* Interactive cards (graph-first page): the card is the button. */
+.qrf-node.is-interactive { cursor: pointer; pointer-events: auto; }
+.qrf-node.is-interactive:hover { border-color: #8fa8d8; box-shadow: 0 12px 30px rgba(0, 0, 0, .34), inset 0 1px rgba(255, 255, 255, .06); }
+.qrf-node.is-interactive:focus-visible { outline: 3px solid #f2bd54; outline-offset: 3px; }
+.qrf-node.is-selected,
+.qrf-node.is-interactive.is-selected:hover { border-color: #ffd166; box-shadow: 0 0 0 3px rgba(255, 209, 102, .3), 0 12px 30px rgba(0, 0, 0, .35); }
+.qrf-node.is-mini.is-selected { border-style: solid; }
 
 .qrf-node-header { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .qrf-node-kind { min-width: 0; flex: 1; font-size: 14px; font-weight: 780; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -145,11 +156,12 @@
 .qrf-legend-panel { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 520px; }
 .qrf-legend { padding: 4px 7px; border-radius: 999px; background: rgba(255, 255, 255, .05); font-size: 11px; }
 .qrf-legend::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: #8793a8; }
-.qrf-legend-taker::before { background: #45d7c8; }
+.qrf-legend-taker::before { background: #8aa8ff; }
 .qrf-legend-maker::before { background: #8aa8ff; }
 .qrf-legend-matcher::before { background: #ffd166; }
 .qrf-legend-zkpi::before { background: #bd9cff; }
 .qrf-legend-ledger::before { background: #69a7ff; }
+.qrf-legend-book::before { background: #45d7c8; }
 .qrf-notes { display: flex; flex-direction: column; gap: 3px; max-width: 86%; color: #9eabc0; font-size: 11px; line-height: 1.4; }
 .qrf-empty { flex: none; max-width: 28%; color: #bdc9da; font-size: 12px; line-height: 1.35; }
 
@@ -158,6 +170,14 @@
 #network-graph .react-flow__controls-button:hover { background: #1b2a40; }
 #network-graph .react-flow__controls-button svg { fill: currentColor; }
 #network-graph .react-flow__attribution { color: #66758b; background: rgba(7, 14, 25, .7); }
+
+/* ---- overlay chrome (graph-first page) -------------------------------- */
+/* No bars: the page's own top bar carries the phase, and the legend floats
+   inside the canvas. Square corners because the canvas is the whole stage. */
+.qrf-shell.qrf-overlay { border-radius: 0; background: transparent; }
+#network-graph .qrf-overlay .react-flow__panel { margin: 10px; }
+#network-graph .qrf-legend-float { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; max-width: min(640px, calc(100% - 200px)); padding: 4px 6px; border: 1px solid rgba(89, 112, 148, .35); border-radius: 999px; background: rgba(7, 14, 25, .86); pointer-events: none; }
+#network-graph .qrf-legend-float .qrf-legend { background: transparent; }
 
 @media (max-width: 700px) {
   .qrf-legend-panel { display: none; }
@@ -169,6 +189,15 @@
   .qrf-node-kind { font-size: 13px; }
   .qrf-node-status { font-size: 11px; }
   .qrf-badge { font-size: 10px; }
+  /* The whole vertical flow is fitted into one phone screen (about 0.75x),
+     so the overlay page keeps its card type a little larger than the framed
+     (scrolling) layout does. */
+  .qrf-overlay .qrf-node-kind { font-size: 15px; }
+  .qrf-overlay .qrf-node-status { font-size: 12px; }
+  .qrf-overlay .qrf-badge { font-size: 11px; }
+  .qrf-overlay .qrf-node.is-mini .qrf-node-kind { font-size: 13px; }
+  #network-graph .qrf-legend-float { display: none; }
+  #network-graph .qrf-overlay .react-flow__panel { margin: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

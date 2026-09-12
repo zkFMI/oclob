@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod optimistic;
+
 use oclob_core::{
     expiry_commitment, BookTransition, CancellationTransition, Digest32, ExpiryTransition,
     OrderAuthority, PrivateBook, PublicBookSnapshot, SecretCancellation, SecretOrder,
@@ -35,14 +37,14 @@ const QUEUED_SUBMISSION_VERSION: u16 = 1;
 const DEFAULT_MAX_QUEUED_SUBMISSION_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct OclobExecutionReceipt {
+pub struct OclobExecutionReceipt<A = TransitionProof> {
     pub expired_before: Option<OclobExpiryReceipt>,
     pub certificate: OrderCertificate,
     pub reservation: ReservationReceipt,
     pub eligibility: VerifiedOrderEligibility,
     pub mpc: MpcBatchReceipt,
     pub book_transition: BookTransition,
-    pub transition_proof: TransitionProof,
+    pub transition_proof: A,
     pub settlement: Option<OclobSettlementReceipt>,
     pub reservation_release: Option<ReservationReleaseReceipt>,
 }
@@ -51,7 +53,7 @@ pub struct OclobExecutionReceipt {
 /// have not yet changed. The object cannot be serialized or cloned: it carries
 /// the staged private book and can be consumed only after the exact DeFMI
 /// transition reaches canonical finality.
-pub struct PreparedOclobSubmission {
+pub struct PreparedOclobSubmission<A = TransitionProof> {
     base_book_root: Digest32,
     base_settlement: SettlementStateSnapshot,
     staged_book: PrivateBook,
@@ -63,11 +65,11 @@ pub struct PreparedOclobSubmission {
     eligibility: VerifiedOrderEligibility,
     mpc: MpcBatchReceipt,
     book_transition: BookTransition,
-    transition_proof: TransitionProof,
+    transition_proof: A,
     canonical: PreparedCanonicalTransition,
 }
 
-impl PreparedOclobSubmission {
+impl<A> PreparedOclobSubmission<A> {
     pub fn certificate(&self) -> &OrderCertificate {
         &self.certificate
     }
@@ -80,7 +82,7 @@ impl PreparedOclobSubmission {
         &self.book_transition
     }
 
-    pub fn transition_proof(&self) -> &TransitionProof {
+    pub fn transition_proof(&self) -> &A {
         &self.transition_proof
     }
 
@@ -95,7 +97,7 @@ impl PreparedOclobSubmission {
         self,
         service: &mut OclobService,
         acceptance: CanonicalSettlementAcceptance,
-    ) -> Result<OclobExecutionReceipt, ServiceError> {
+    ) -> Result<OclobExecutionReceipt<A>, ServiceError> {
         if service.book.public_snapshot().state_root != self.base_book_root
             || service.settlement.state_snapshot() != self.base_settlement
         {
@@ -186,7 +188,7 @@ pub struct QueuedSubmissionReceipt {
 /// committee is unavailable and never allows a later request to overtake the
 /// oldest eligible entry.
 #[derive(Clone, Debug)]
-pub enum QueueWorkerResult {
+pub enum QueueWorkerResult<A = TransitionProof> {
     Idle,
     WaitingForMpc,
     DummyCover {
@@ -198,7 +200,7 @@ pub enum QueueWorkerResult {
     },
     Executed {
         request_id: String,
-        receipt: Box<OclobExecutionReceipt>,
+        receipt: Box<OclobExecutionReceipt<A>>,
     },
     RetryableFailure {
         request_id: String,
@@ -334,6 +336,24 @@ impl DurableOclobQueue {
         now: u64,
         mpc_quorum_healthy: bool,
     ) -> Result<QueueWorkerResult, ServiceError> {
+        self.pump_with(
+            now,
+            mpc_quorum_healthy,
+            |order, authority, eligibility, now| service.submit(order, authority, eligibility, now),
+        )
+    }
+
+    pub fn pump_with<A>(
+        &self,
+        now: u64,
+        mpc_quorum_healthy: bool,
+        execute: impl FnOnce(
+            SecretOrder,
+            OrderAuthority,
+            AnonymousPresentation,
+            u64,
+        ) -> Result<OclobExecutionReceipt<A>, ServiceError>,
+    ) -> Result<QueueWorkerResult<A>, ServiceError> {
         let action = self
             .outbox
             .claim_next(now, mpc_quorum_healthy, self.retry_after_seconds)
@@ -350,8 +370,8 @@ impl DurableOclobQueue {
                     .map_err(ServiceError::Queue)?;
                 Ok(QueueWorkerResult::Expired { request_id })
             }
-            Some(QueueAction::Dispatch(claimed)) => self.dispatch_claimed(
-                service,
+            Some(QueueAction::Dispatch(claimed)) => self.dispatch_with(
+                execute,
                 claimed.request_id,
                 claimed.request_digest,
                 &claimed.signed_request,
@@ -423,6 +443,28 @@ impl DurableOclobQueue {
         signed_request: &[u8],
         now: u64,
     ) -> Result<QueueWorkerResult, ServiceError> {
+        self.dispatch_with(
+            |order, authority, eligibility, now| service.submit(order, authority, eligibility, now),
+            request_id,
+            request_digest,
+            signed_request,
+            now,
+        )
+    }
+
+    fn dispatch_with<A>(
+        &self,
+        execute: impl FnOnce(
+            SecretOrder,
+            OrderAuthority,
+            AnonymousPresentation,
+            u64,
+        ) -> Result<OclobExecutionReceipt<A>, ServiceError>,
+        request_id: String,
+        request_digest: Digest32,
+        signed_request: &[u8],
+        now: u64,
+    ) -> Result<QueueWorkerResult<A>, ServiceError> {
         let (order, authority, eligibility) = match QueuedSubmissionEnvelope::decode(signed_request)
         {
             Ok(decoded) => decoded,
@@ -433,7 +475,7 @@ impl DurableOclobQueue {
                 return Ok(QueueWorkerResult::Rejected { request_id, reason });
             }
         };
-        match service.submit(order, authority, eligibility, now) {
+        match execute(order, authority, eligibility, now) {
             Ok(receipt) => {
                 let (transaction_digest, height) = canonical_result(&receipt);
                 self.outbox
@@ -454,6 +496,12 @@ impl DurableOclobQueue {
                     receipt: Box::new(receipt),
                 })
             }
+            Err(ServiceError::CanonicalUncertain(reason)) => {
+                self.outbox
+                    .mark_manual_review(&request_id, request_digest, now, &reason)
+                    .map_err(ServiceError::Queue)?;
+                Ok(QueueWorkerResult::Rejected { request_id, reason })
+            }
             Err(error) if error.retryable() => Ok(QueueWorkerResult::RetryableFailure {
                 request_id,
                 reason: error.to_string(),
@@ -469,7 +517,7 @@ impl DurableOclobQueue {
     }
 }
 
-struct StagedSubmission {
+struct StagedSubmission<P = TransitionProof, V = VerifiedTransitionProof> {
     settlement_order: SecretOrder,
     staged_book: PrivateBook,
     staged_ordering: OrderingCommittee,
@@ -480,8 +528,8 @@ struct StagedSubmission {
     eligibility: VerifiedOrderEligibility,
     mpc: MpcBatchReceipt,
     book_transition: BookTransition,
-    transition_proof: TransitionProof,
-    verified_transition: VerifiedTransitionProof,
+    transition_proof: P,
+    verified_transition: V,
 }
 
 pub struct OclobService {
@@ -636,9 +684,17 @@ impl OclobService {
                 "expired reservations must reach canonical finality before a new execution".into(),
             ));
         }
+        let staged = self.stage_submission(order, authority, eligibility_evidence, now)?;
+        self.prepare_staged(staged, now)
+    }
+
+    fn prepare_staged<P, V: oclob_proofs::optimistic::TransitionAuthorization>(
+        &self,
+        staged: StagedSubmission<P, V>,
+        now: u64,
+    ) -> Result<PreparedOclobSubmission<P>, ServiceError> {
         let base_book_root = self.book.public_snapshot().state_root;
         let base_settlement = self.settlement.state_snapshot();
-        let staged = self.stage_submission(order, authority, eligibility_evidence, now)?;
         if staged.book_transition.fills.is_empty()
             && staged.settlement_order.time_in_force() == oclob_core::TimeInForce::ImmediateOrCancel
         {
@@ -699,6 +755,38 @@ impl OclobService {
         eligibility_evidence: AnonymousPresentation,
         now: u64,
     ) -> Result<StagedSubmission, ServiceError> {
+        self.stage_with_assurance(
+            order,
+            authority,
+            eligibility_evidence,
+            now,
+            |statement, ordering| {
+                let transition_proof = TransitionProof::attest(
+                    statement,
+                    &ordering.transition_signers(),
+                    ordering.policy(),
+                )
+                .map_err(|error| ServiceError::Proof(error.to_string()))?;
+                transition_proof
+                    .verify(&ordering.verifying_keys(), ordering.policy())
+                    .map_err(|error| ServiceError::Proof(error.to_string()))?;
+                let verified_transition = transition_proof
+                    .clone()
+                    .into_verified(&ordering.verifying_keys(), ordering.policy())
+                    .map_err(|error| ServiceError::Proof(error.to_string()))?;
+                Ok((transition_proof, verified_transition))
+            },
+        )
+    }
+
+    fn stage_with_assurance<P, V>(
+        &mut self,
+        order: SecretOrder,
+        authority: OrderAuthority,
+        eligibility_evidence: AnonymousPresentation,
+        now: u64,
+        assure: impl FnOnce(TransitionStatement, &OrderingCommittee) -> Result<(P, V), ServiceError>,
+    ) -> Result<StagedSubmission<P, V>, ServiceError> {
         self.check_eligibility(&order)?;
         authority
             .verify(&order, now)
@@ -771,19 +859,7 @@ impl OclobService {
             verified_eligibility.proof_digest,
         )
         .map_err(|error| ServiceError::Proof(error.to_string()))?;
-        let transition_proof = TransitionProof::attest(
-            statement,
-            &staged_ordering.transition_signers(),
-            staged_ordering.policy(),
-        )
-        .map_err(|error| ServiceError::Proof(error.to_string()))?;
-        transition_proof
-            .verify(&staged_ordering.verifying_keys(), staged_ordering.policy())
-            .map_err(|error| ServiceError::Proof(error.to_string()))?;
-        let verified_transition = transition_proof
-            .clone()
-            .into_verified(&staged_ordering.verifying_keys(), staged_ordering.policy())
-            .map_err(|error| ServiceError::Proof(error.to_string()))?;
+        let (transition_proof, verified_transition) = assure(statement, &staged_ordering)?;
         Ok(StagedSubmission {
             settlement_order,
             staged_book,
@@ -896,7 +972,7 @@ impl OclobService {
     }
 }
 
-fn canonical_result(receipt: &OclobExecutionReceipt) -> (Digest32, u64) {
+fn canonical_result<A>(receipt: &OclobExecutionReceipt<A>) -> (Digest32, u64) {
     if let Some(settlement) = &receipt.settlement {
         return (
             settlement.canonical_receipt_digest,
@@ -926,6 +1002,8 @@ pub enum ServiceError {
     Proof(String),
     #[error("zkPI/DeFMI settlement failed: {0}")]
     Settlement(String),
+    #[error("native settlement requires canonical reconciliation: {0}")]
+    CanonicalUncertain(String),
     #[error("durable OCLOB queue failed: {0}")]
     Queue(String),
 }

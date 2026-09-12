@@ -78,3 +78,15 @@ chain `bavr1tZbx6fZB3aptF1hYaT9T1JvBazjARY4mb11UftK9VKo4` の5台全てから、
 Pending中に実際のAPIパラメータ viewer=taker / viewer=operator で読み分け、買い手だけに100円×20口のprovisionalがあり、運営者にはprovisionalフィールドも私有残高もないことを照合した。従来のroleパラメータによる取得はoperatorへ既定化されるため、私有ビューの確認には使用しない。画面でも390px幅でchallengeを送り、決済後の資金・在庫を確認した。
 
 最終receiptは0f4663b2e4f24cbfabce7eab4e71c63007db4c668d6210678bb229bf02b0819a、claimは13dc2dae2e1d7c06ca63e83e9012fdc9fddba3cabbef14f12d1bfc0bf511e78e。[r5の観測記録](verification/OPTIMISTIC_BROWSER_R5_20260912.json) にバイナリhash、入力、保留中と確定後の残高、5台のreadbackを記録した。不確実なnativeエラーからの手動復旧運用は別の未確認事項である。
+
+## 公開依存から再実行した確認（2026-09-13 JST）
+
+一時的な隣接checkoutのpatchを削除し、公開済みGit revisionだけでserverとVMを再構築した。暗号ポリシーAPIとDeKYXの型が揃うrevisionへ更新している。Cargo.lockを含めて固定し、nativeブラウザ経路を再実行した。過去のr4/r5観測と今回の配布候補の観測は別記録として残す。
+
+1. 売り100口・100円を登録し、共同証明で20口を101円上限で購入。約定100円、残高99,998,000円・10,020口。
+2. 暫定方式で40口を購入。Pending時は注文者だけに100円×40口を表示し、残高は前の確定値を維持。公開ビューにはprovisionalフィールドがなくownはnull。期限後は99,994,000円・10,060口。
+3. 390px幅で20口を購入し、challengeボタンを押した。元の照合証明が検証され、99,992,000円・10,080口へ反映。5台すべてheight 26、root a42a02e2ffc74b988b56b9fda0fd126a10beceb6089d294f1fbcc2ab4b6da735を返した。
+
+最終receiptは ac72603a93307fd9562d82da0e533587eee8da2d0efab17f3da9494d41806588。サーバー、VMのSHA-256、各入力、ポートフォリオ、claim、validator readbackは[公開依存版の検証記録](verification/OPTIMISTIC_BROWSER_RELEASE_20260913.json)に収録した。開発チェックの合格を動作確認の代わりにしていない。
+
+画面は1981px幅と390px幅で操作した。方式変更、入力ラベル、処理中の送信抑止、未決済の表示、challenge、確定後の資金・在庫を確認。狭い画面はパネル内を縦スクロールして操作する。キーボード全操作やスクリーンリーダー全体の適合性は、この観測の判定範囲に含めない。

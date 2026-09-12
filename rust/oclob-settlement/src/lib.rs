@@ -16,7 +16,8 @@ use defmi::settlement::{
 use oclob_core::{Digest32, OrderCommitment, PublicFill, SecretOrder, Side, TimeInForce};
 use oclob_edge::VerifiedSettlementCapability;
 use oclob_ordering::{CommitteePolicy, OrderCertificate, OrderingCommittee};
-use oclob_proofs::{committee_trust_root, VerifiedTransitionProof};
+use oclob_proofs::committee_trust_root;
+use oclob_proofs::optimistic::TransitionAuthorization;
 use rand::rngs::OsRng;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -281,6 +282,7 @@ impl CanonicalSettlementAcceptance {
 /// serializable nor clonable: callers may inspect only public commitments and
 /// can apply it exactly once after canonical finality is proven.
 pub struct PreparedCanonicalBatch {
+    optimistic: Option<defmi::application_settlement::OptimisticSettlementReference>,
     candidate: SettlementEngine,
     base_snapshot: SettlementStateSnapshot,
     receipt: OclobSettlementReceipt,
@@ -364,6 +366,7 @@ impl PreparedCanonicalBatch {
 /// so concurrent admissions are serialized by the same compare-and-swap rule
 /// as cash and securities settlement.
 pub struct PreparedCanonicalReservation {
+    optimistic: Option<defmi::application_settlement::OptimisticSettlementReference>,
     candidate: SettlementEngine,
     base_snapshot: SettlementStateSnapshot,
     receipt: ReservationReceipt,
@@ -418,7 +421,7 @@ pub struct CanonicalAdmissionBatch<'a, O: SettlementOrderView + ?Sized> {
     pub reserved_candidate: SettlementEngine,
     pub reservation_receipt: &'a ReservationReceipt,
     pub fills: &'a [PublicFill],
-    pub transition: &'a VerifiedTransitionProof,
+    pub transition: &'a dyn TransitionAuthorization,
     pub certificate: &'a OrderCertificate,
     pub arriving: &'a O,
     pub arriving_remaining: u64,
@@ -434,7 +437,7 @@ pub struct CollaborativeCanonicalAdmissionBatch<'a, O: SettlementOrderView + ?Si
     pub fills: &'a [PublicFill],
     pub proofs: &'a [collaborative::CollaborativeFillProof],
     pub round_id: Digest32,
-    pub transition: &'a VerifiedTransitionProof,
+    pub transition: &'a dyn TransitionAuthorization,
     pub certificate: &'a OrderCertificate,
     pub arriving: &'a O,
     pub arriving_remaining: u64,
@@ -442,6 +445,9 @@ pub struct CollaborativeCanonicalAdmissionBatch<'a, O: SettlementOrderView + ?Si
 }
 
 impl PreparedCanonicalTransition {
+    pub fn optimistic_reference(&self) -> Option<&defmi::application_settlement::OptimisticSettlementReference> {
+        match self { Self::Reservation(v)=>v.optimistic.as_ref(), Self::Settlement(v)=>v.optimistic.as_ref() }
+    }
     pub fn market_id(&self) -> &str {
         match self {
             Self::Reservation(value) => &value.market_id,
@@ -1585,7 +1591,7 @@ impl SettlementEngine {
         mut receipt: ReservationReceipt,
         order: &O,
         certificate: &OrderCertificate,
-        transition: &VerifiedTransitionProof,
+        transition: &dyn TransitionAuthorization,
         now: u64,
     ) -> Result<PreparedCanonicalTransition, SettlementError> {
         transition
@@ -1625,8 +1631,7 @@ impl SettlementEngine {
             &[
                 transition_digest.as_slice(),
                 transition
-                    .proof()
-                    .statement
+                    .statement()
                     .eligibility_proof_digest
                     .as_slice(),
                 range_proof_digest.as_slice(),
@@ -1652,6 +1657,7 @@ impl SettlementEngine {
         receipt.proof_digest = Some(proof_digest);
         Ok(PreparedCanonicalTransition::Reservation(
             PreparedCanonicalReservation {
+                optimistic: transition.optimistic_reference().cloned(),
                 candidate,
                 base_snapshot,
                 receipt,
@@ -1781,7 +1787,7 @@ impl SettlementEngine {
         fills: &[PublicFill],
         proofs: &[collaborative::CollaborativeFillProof],
         round_id: Digest32,
-        transition: &VerifiedTransitionProof,
+        transition: &dyn TransitionAuthorization,
         arriving: &O,
         arriving_remaining: u64,
         now: u64,
@@ -1830,6 +1836,7 @@ impl SettlementEngine {
             &account_deltas,
         );
         Ok(PreparedCanonicalBatch {
+            optimistic: transition.optimistic_reference().cloned(),
             candidate,
             base_snapshot,
             receipt,
@@ -1851,7 +1858,7 @@ impl SettlementEngine {
     pub fn prepare_canonical_batch<O: SettlementOrderView + ?Sized>(
         &self,
         fills: &[PublicFill],
-        transition: &VerifiedTransitionProof,
+        transition: &dyn TransitionAuthorization,
         arriving: &O,
         arriving_remaining: u64,
         now: u64,
@@ -1893,6 +1900,7 @@ impl SettlementEngine {
             &account_deltas,
         );
         Ok(PreparedCanonicalBatch {
+            optimistic: transition.optimistic_reference().cloned(),
             candidate,
             base_snapshot,
             receipt,
@@ -1976,8 +1984,7 @@ impl SettlementEngine {
                 transition_digest.as_slice(),
                 certificate.digest().as_slice(),
                 transition
-                    .proof()
-                    .statement
+                    .statement()
                     .eligibility_proof_digest
                     .as_slice(),
                 reservation_range_digest.as_slice(),
@@ -2112,8 +2119,7 @@ impl SettlementEngine {
                 transition_digest.as_slice(),
                 certificate.digest().as_slice(),
                 transition
-                    .proof()
-                    .statement
+                    .statement()
                     .eligibility_proof_digest
                     .as_slice(),
                 reservation_range_digest.as_slice(),
@@ -2194,7 +2200,7 @@ impl SettlementEngine {
         fills: &[PublicFill],
         proofs: &[collaborative::CollaborativeFillProof],
         round_id: Digest32,
-        transition: &VerifiedTransitionProof,
+        transition: &dyn TransitionAuthorization,
         arriving: OrderCommitment,
         arriving_remaining: u64,
         now: u64,
@@ -2255,7 +2261,7 @@ impl SettlementEngine {
                 self.transition_committee_trust_root,
             )
             .map_err(|error| SettlementError::Proof(error.to_string()))?;
-        let market_proof_digest = transition.proof().statement.mpc_output_digest;
+        let market_proof_digest = transition.statement().mpc_output_digest;
         if market_proof_digest == [0; 32] {
             return Err(SettlementError::Proof(
                 "transition omitted the MPC public-output digest".into(),
@@ -2496,7 +2502,7 @@ impl SettlementEngine {
     pub fn settle_batch<O: SettlementOrderView + ?Sized>(
         &mut self,
         fills: &[PublicFill],
-        transition: &VerifiedTransitionProof,
+        transition: &dyn TransitionAuthorization,
         arriving: &O,
         arriving_remaining: u64,
         now: u64,

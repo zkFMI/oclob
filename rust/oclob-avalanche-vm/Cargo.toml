@@ -1,0 +1,30 @@
+[package]
+name = "oclob-avalanche-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeFMI host with the OCLOB optimistic challenge verifier"
+
+[dependencies]
+defmi-avalanche-vm.workspace = true
+defmi.workspace = true
+oclob-core.workspace = true
+oclob-ordering.workspace = true
+oclob-proofs.workspace = true
+zkpi-committee.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+oclob-service.workspace = true
+oclob-dekyx.workspace = true
+oclob-settlement.workspace = true
+zkpi-proofs.workspace = true
+zkpi-defmi-sdk.workspace = true
+zkfmi-zk.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
+curve25519-dalek.workspace = true
+sha2.workspace = true
+base64.workspace = true

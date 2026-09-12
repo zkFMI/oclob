@@ -1193,7 +1193,27 @@ pub fn prepare_native_fill(
             .map_err(|error| error.to_string())?,
         signature: Vec::new(),
         batch: None,
+        optimistic: None,
     })
+}
+
+/// Bind the optional mode before collecting the normal monetary certificate.
+/// The signed reference makes stripping the finality gate invalidate that
+/// certificate, and the canonical VM rechecks the claim independently.
+pub fn bind_optimistic_finality(
+    fill: &mut ApplicationNoteFill,
+    transition: &oclob_proofs::optimistic::FinalizedOptimisticTransition,
+) -> Result<(), String> {
+    use oclob_proofs::optimistic::TransitionAuthorization;
+    if !fill.signature.is_empty() || fill.pq_authorization.is_some() || fill.optimistic.is_some() {
+        return Err("optimistic finality must be bound before the fill is certified".into());
+    }
+    if fill.mpc_result_digest != transition.statement().mpc_output_digest {
+        return Err("optimistic transition belongs to another MPC result".into());
+    }
+    fill.optimistic = Some(transition.reference().clone());
+    fill.signing_message()?;
+    Ok(())
 }
 
 /// Call only after `complete` has persisted the signing parties' local proof

@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod optimistic;
+
 use oclob_core::application_crypto::{Signature, Signer, SigningKey, VerifyingKey};
 use oclob_core::{BookTransition, CancellationTransition, Digest32, ExpiryTransition, PublicFill};
 use oclob_mpc::{MpcBatchReceipt, MpcReceipt};

@@ -1,26 +1,53 @@
 (() => {
   'use strict';
 
-  const state = { viewer: 'operator', snapshot: null, busy: false, offline: false, failures: 0 };
+  // The page is the graph. Everything else (a company's balances and order
+  // form, the public book, the history, the technical details) opens in one
+  // panel over the graph: a side drawer on a desktop, a bottom sheet on a
+  // phone. `panel` names what the drawer shows: a graph card id (maker,
+  // taker, ordering, mpc, zkpi, defmi, book) or a dock view (history,
+  // details). Nothing here changes what the server returns per viewer: the
+  // company sections only exist for the viewer whose data the server sent.
+  const state = {
+    viewer: 'operator',
+    snapshot: null,
+    busy: false,
+    offline: false,
+    failures: 0,
+    sideTouched: false,
+    panel: null,
+    focusNode: null,
+    highlight: null,
+    returnTo: null,
+    hintDismissed: false,
+    expanded: false,
+    viewerRevision: 0,
+  };
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const number = (value) => new Intl.NumberFormat('ja-JP').format(value ?? 0);
   const yen = (value) => `${number(value)} 円`;
   const lots = (value) => `${number(value)} 口`;
   const clock = (seconds) => seconds ? new Date(seconds * 1000).toLocaleTimeString('ja-JP', { hour12: false }) : '';
+  const sheetLayout = () => window.matchMedia('(max-width: 700px)').matches;
+
+  const NODE_PANELS = ['maker', 'taker', 'ordering', 'mpc', 'zkpi', 'defmi', 'book'];
+  const VIEW_PANELS = ['history', 'details'];
+  const PARTICIPANTS = { maker: '売り手企業', taker: '買い手企業' };
 
   // Server phases, in the words a person at the desk would use. "Queued" is a
   // holding state: the order is stored, not admitted, matched or settled.
   const phases = {
-    ready: { label: '注文を受け付けています', note: '新しい注文を出せます。', tone: 'ok' },
+    ready: { label: '注文を受け付け中', note: '新しい注文を出せます。', tone: 'ok' },
     queued: { label: '注文を暗号化して保管中', note: 'まだ成立していません。順番が来たら秘密計算へ進みます。', tone: 'active' },
     waiting_for_mpc: { label: '計算ノードの復旧待ち', note: '注文は暗号化したまま保管しています。成立はしていません。', tone: 'warn' },
     waiting_for_defmi: { label: 'DeFMI 台帳の復旧待ち', note: '注文は保管したままです。台帳が戻れば同じ順番で続けます。', tone: 'warn' },
-    retrying: { label: '同じ受付順で再送しています', note: '順番は変わりません。', tone: 'active' },
+    retrying: { label: '同じ受付順で再送中', note: '順番は変わりません。', tone: 'active' },
     // No fill happened. Whether the rest stayed on the book or was cancelled
     // (IOC) is not in this state, so only the certain facts are stated.
-    book_updated: { label: '公開板を更新しました', note: '約定はありませんでした。板の内容を更新しました。', tone: 'ok' },
+    book_updated: { label: '公開板を更新しました', note: '約定はなく、板の合計を更新しました。', tone: 'ok' },
     settled: { label: '約定し、決済が完了しました', note: '証券と資金を同時に引き渡しました。', tone: 'ok' },
+    manual_review: {label:'台帳との照合が必要です',note:'決済結果が不明なため新規注文と再送を停止しています。',tone:'bad'},
     rejected: { label: '注文を受け付けませんでした', note: '資金や在庫が足りないなど、条件を満たしていません。', tone: 'bad' },
   };
   const phaseInfo = (phase) => phases[phase] || { label: phase, note: '', tone: 'active' };
@@ -46,10 +73,11 @@
     manual_review: '要確認', aborted_before_reserve: '確保前に中止',
   };
 
-  const roleHints = {
-    operator: '市場運営者の画面です。公開板と処理の進み方だけが見え、どの企業の注文かは見えません。',
-    maker: '売り手企業（Maker）の画面です。板に気配を出して取引相手になる側の例で、このデモでは売り・買いどちらの注文も出せます。自社の資金・在庫・注文が見えます。',
-    taker: '買い手企業（Taker）の画面です。板の気配に対して注文を出す側の例で、売り・買いどちらの注文も出せます。自社の資金・在庫・注文が見えます。',
+  // One line per viewpoint, shown until the first card is opened.
+  const hints = {
+    operator: ['市場運営者の視点', '公開板と処理の進み方が見えます。どの企業の注文かは見えません。図の箱を選ぶと、その内容と操作が開きます。'],
+    maker: ['売り手企業の視点', '「売り手企業」の箱を選ぶと、自社の資金・在庫の確認と注文ができます。他の箱は処理の内容を示します。'],
+    taker: ['買い手企業の視点', '「買い手企業」の箱を選ぶと、自社の資金・在庫の確認と注文ができます。他の箱は処理の内容を示します。'],
   };
 
   // Timeline entries arrive from the server with implementation wording
@@ -59,7 +87,7 @@
     const detail = event.detail || '';
     switch (event.kind) {
       case 'ready':
-        return ['市場を開始しました', '研究用の構成（計算プロセス 7 つ・台帳の確認ノード 5 つ）を用意しました。'];
+        return ['市場を開始しました', '研究用の構成（計算プロセス 7 つ・台帳の確認ノード 5 台）を用意しました。'];
       case 'order_queued':
         return ['注文を受け付けて保管', '中身を公開せずに暗号化して保管しました。まだ成立していません。'];
       case 'mpc_wait':
@@ -115,102 +143,234 @@
   }
 
   async function refresh() {
+    const viewer = state.viewer;
+    const revision = state.viewerRevision;
     try {
-      state.snapshot = await api(`/api/state?viewer=${encodeURIComponent(state.viewer)}`);
+      const snapshot = await api(`/api/state?viewer=${encodeURIComponent(viewer)}`);
+      if (revision !== state.viewerRevision) return;
+      state.snapshot = snapshot;
       state.failures = 0;
       setConnection(true);
       render();
     } catch (error) {
+      if (revision !== state.viewerRevision) return;
       state.failures += 1;
       if (state.failures >= 2 || !state.snapshot) setConnection(false, error.message);
       if (!state.snapshot) renderEmpty();
     }
   }
 
+  function renderAssurance(data) {
+    const progress = data.native_progress || {}, status = progress.status?.status;
+    const select = $('#assurance-mode');
+    select.value = data.assurance_mode || 'joint_proof';
+    select.disabled = state.busy || !!progress.active;
+    const box = $('#assurance-status'), button = $('#challenge-claim');
+    box.hidden = !progress.active && !progress.claim_id && progress.stage !== 'failed';
+    const remaining = Math.max(0, Math.ceil((progress.challenge_deadline || 0) - Date.now()/1000));
+    const names = {pending:'暫定結果を受理・未決済', challenged:'challenge中・元の証拠を検証', proven:'証拠を確認・確定期限待ち', finalized:progress.settled ? '台帳への決済確定を確認' : '検証確定・DvP決済中', rejected:'暫定結果を棄却・決済不可'};
+    $('#assurance-message').textContent = progress.stage === 'failed' ? '決済未完了・台帳状態の確認が必要' : (names[status] || '秘密計算と共同証明を実行中') + (status === 'pending' || status === 'proven' ? '（残り約'+remaining+'秒）' : '');
+    if (data.provisional?.fills?.length) $('#assurance-message').textContent += ' · 暫定約定 ' + data.provisional.fills.map(fill=>yen(fill.price)+' × '+lots(fill.quantity)).join(' / ');
+    button.hidden = status !== 'pending'  || !progress.active || remaining === 0;
+  }
+  $('#assurance-mode').addEventListener('change', async event => {
+    if (state.busy) return;
+    state.busy = true; event.target.disabled = true; $('#submit-order').disabled = true;
+    try { await api('/api/assurance', {method:'POST',body:JSON.stringify({mode:event.target.value})}); await refresh(); }
+    catch (error) {toast(error.message,true);}
+    finally {state.busy = false; $('#submit-order').disabled = false; await refresh();}
+  });
+  $('#challenge-claim').addEventListener('click', async event => {
+    event.target.disabled = true;
+    try {
+      await api('/api/challenge', {method:'POST',body:JSON.stringify({claim_id:state.snapshot?.native_progress?.claim_id})});
+      toast('challengeを台帳で受理しました。元の証拠による応答を待っています。'); await refresh();
+    } catch(error) {toast(error.message,true);}
+    finally {event.target.disabled = false;}
+  });
+
   function renderEmpty() {
-    $('#summary-phase').textContent = '接続できません';
-    $('#summary-phase-note').textContent = 'サーバーが応答したら自動で表示します。';
     $('#empty-book').textContent = 'サーバーに接続できないため、板を表示できません。';
     $('#timeline').replaceChildren(item('li', 'loading', 'サーバーに接続できないため、履歴を表示できません。'));
+    renderHint();
+    renderDrawer();
   }
 
   function render() {
     const data = state.snapshot;
     if (!data) return;
+    renderAssurance(data);
     const info = phaseInfo(data.phase);
     $('#market-label').textContent = data.market;
     $('#phase-label').textContent = info.label;
+    $('#phase-label').title = info.note;
     $('#status-dot').className = `status-dot ${info.tone}`;
     document.body.className = `viewer-${state.viewer}${state.offline ? ' offline' : ''}`;
-    renderSummary(data, info);
-    renderRole(data);
     renderPortfolio(data.own);
     renderOrders(data.own);
+    renderOrderForm(data.own);
     renderNodes(data);
+    renderProcess(data);
     renderBook(data);
     renderTimeline(data.events);
     renderDiagnostics(data);
-    renderReceipt(data.last_execution);
+    renderHint();
+    renderDrawer();
     renderGraph(data);
   }
 
-  function renderSummary(data, info) {
-    $('#summary-phase').textContent = info.label;
-    $('#summary-phase-note').textContent = info.note;
-    $('#summary-book').textContent = `${number(data.book.sequence)} 回`;
-    const levels = data.book.levels.length;
-    $('#summary-book-note').textContent = levels ? `${levels} つの価格帯に注文が残っています。` : '板に残っている注文はありません。';
-    const last = data.last_execution;
-    const fills = last?.fills?.length ? last.fills.reduce((sum, fill) => sum + fill.quantity, 0) : 0;
-    if (last && fills) {
-      $('#summary-settlement').textContent = `${number(fills)} 口が約定`;
-      $('#summary-settlement-note').textContent = `${last.fills.map((fill) => `${number(fill.price)} 円`).join('・')}。証券と資金を同時に引き渡し済み。`;
-    } else if (last) {
-      $('#summary-settlement').textContent = '約定なし';
-      $('#summary-settlement-note').textContent = '最後の注文では約定がなく、板の内容を更新しました。';
-    } else {
-      $('#summary-settlement').textContent = '—';
-      $('#summary-settlement-note').textContent = 'まだ決済はありません。';
+  // ---- panel (drawer / bottom sheet) -----------------------------------
+
+  function panelMeta(panel, data) {
+    const own = data?.own;
+    switch (panel) {
+      case 'maker':
+      case 'taker': {
+        const mine = own && own.role === state.viewer && own.role === panel;
+        return {
+          kicker: '参加企業',
+          title: PARTICIPANTS[panel],
+          lead: mine
+            ? '自社だけに見える資金・在庫と、自社が出した注文です。'
+            : `${PARTICIPANTS[panel]}の資金・在庫・注文は、${PARTICIPANTS[panel]}として表示したときだけ見えます。`,
+        };
+      }
+      case 'ordering':
+        return { kicker: '処理', title: '受付順の確定', lead: '5 台の署名で受付順を固定します。順番が決まってから秘密計算へ渡します。' };
+      case 'mpc':
+        return { kicker: '処理', title: '秘密計算で照合', lead: '注文の中身を開かずに、7 つの計算プロセスで板と照合します。' };
+      case 'zkpi':
+        return { kicker: '処理', title: '決済の証明（zkPI）', lead: '約定の数量と価格が確保した範囲に収まることを、中身を明かさずに証明します。' };
+      case 'defmi':
+        return { kicker: '台帳', title: 'DeFMI 台帳', lead: '証券と資金を同時に引き渡して確定します（DvP）。確定した内容だけが公開板に載ります。' };
+      case 'book':
+        return { kicker: '全員に公開', title: '公開板', lead: '確定した注文を価格ごとに合計した数量です。個々の注文は載りません。' };
+      case 'history':
+        return { kicker: '公開してよい記録だけ', title: '処理の履歴', lead: '' };
+      case 'details':
+        return { kicker: '技術的な詳細', title: '識別値・処理の内訳・この環境の制約', lead: '' };
+      default:
+        return { kicker: '', title: '', lead: '' };
     }
-    const mpcUp = data.mpc_nodes.filter(Boolean).length;
-    const valUp = data.defmi_validators.filter(Boolean).length;
-    $('#summary-nodes').textContent = `計算 ${mpcUp}/${data.mpc_nodes.length}・台帳 ${valUp}/${data.defmi_validators.length}`;
-    const degraded = mpcUp < data.mpc_nodes.length || valUp < data.defmi_validators.length;
-    $('#summary-nodes-note').textContent = degraded
-      ? '一部のノードを停止として模擬しています。安全な数を割ると処理は待機します。'
-      : 'すべて利用できます（研究用の1台構成）。';
   }
 
-  function renderRole(data) {
-    const privateView = Boolean(data.own);
-    $('#portfolio-panel').classList.toggle('hidden', !privateView);
-    $('#order-panel').classList.toggle('hidden', !privateView);
-    $('#orders-panel').classList.toggle('hidden', !privateView);
-    $('#role-hint').textContent = roleHints[state.viewer] || '';
-    $('#projection-badge').textContent = privateView ? '自社の表示' : '運営者の表示';
-    $('#projection-badge').classList.toggle('own', privateView);
-    const list = $('#visibility-list');
-    list.replaceChildren();
-    const rows = privateView ? [
-      ['yes', '自社の資金・在庫と、自社が出した注文の状況'],
-      ['yes', '確定した価格ごとの合計数量（公開板）'],
-      ['no', '他社の注文の中身や残高'],
-      ['no', '受付待ちの注文の中身は、運営者向けの表示には含まれません（出した企業の画面には表示されます）'],
-    ] : [
-      ['yes', '確定した価格ごとの合計数量（公開板）'],
-      ['yes', '処理の進み方と決済の結果'],
-      ['no', '受付待ちの注文の中身（価格・数量・売買）。出した企業の画面にだけ表示されます'],
-      ['no', 'どの企業がいくら持っているか'],
-    ];
-    rows.forEach(([cls, text]) => list.append(item('li', cls, text)));
-    if (privateView) {
-      $('#order-eyebrow').textContent = `${data.own.display_name}として注文を出す`;
-      const side = data.own.role === 'maker' ? 'sell' : 'buy';
-      const radio = document.querySelector(`input[name="side"][value="${side}"]`);
-      if (radio && !state.busy && !state.sideTouched) radio.checked = true;
-      renderOrderPreview();
-    }
+  function renderDrawer() {
+    const drawer = $('#drawer');
+    const open = Boolean(state.panel);
+    drawer.hidden = !open;
+    $('#stage').classList.toggle('drawer-open', open);
+    drawer.classList.toggle('expanded', state.expanded);
+    $('#drawer-expand').setAttribute('aria-expanded', String(state.expanded));
+    $$('.dock-button').forEach((button) => {
+      const active = button.dataset.panel === state.panel;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    if (!open) return;
+    const data = state.snapshot;
+    const meta = panelMeta(state.panel, data);
+    $('#drawer-kicker').textContent = meta.kicker;
+    $('#drawer-title').textContent = meta.title;
+    $('#drawer-lead').textContent = meta.lead;
+    $('#drawer-lead').classList.toggle('hidden', !meta.lead);
+
+    const participant = Boolean(PARTICIPANTS[state.panel]);
+    const mine = participant && Boolean(data?.own) && data.own.role === state.viewer && data.own.role === state.panel;
+    show('#participant-gate', participant && !mine);
+    show('#portfolio-panel', mine);
+    show('#order-panel', mine);
+    show('#orders-panel', mine);
+    show('#ordering-panel', state.panel === 'ordering');
+    show('#mpc-panel', state.panel === 'mpc');
+    show('#zkpi-panel', state.panel === 'zkpi');
+    show('#defmi-panel', state.panel === 'defmi');
+    show('#book-panel', state.panel === 'book');
+    show('#history-panel', state.panel === 'history');
+    show('#details-panel', state.panel === 'details');
+    if (participant && !mine) renderGate(state.panel);
+    $$('.node-row').forEach((row) => {
+      const focus = Boolean(state.highlight) && row.dataset.group === state.highlight.group && Number(row.dataset.index) === state.highlight.index;
+      row.classList.toggle('is-focus', focus);
+    });
   }
+
+  function show(selector, visible) {
+    $(selector).classList.toggle('hidden', !visible);
+  }
+
+  function renderGate(panel) {
+    const name = PARTICIPANTS[panel];
+    const text = state.viewer === 'operator'
+      ? `市場運営者には、${name}の資金・在庫・注文は見えません。公開板の合計と処理の進み方だけが見えます。`
+      : `${PARTICIPANTS[state.viewer]}の画面からは、${name}の資金・在庫・注文は見えません。各社に見えるのは自社の情報だけです。`;
+    $('#gate-text').textContent = text;
+    $('#gate-switch').textContent = `${name}として表示する`;
+  }
+
+  function openPanel(panel, origin = {}) {
+    state.panel = panel;
+    state.focusNode = origin.node || (NODE_PANELS.includes(panel) ? panel : null);
+    state.highlight = origin.highlight || null;
+    state.returnTo = origin.node || null;
+    state.hintDismissed = true;
+    renderHint();
+    renderDrawer();
+    if (state.snapshot) renderGraph(state.snapshot);
+    window.requestAnimationFrame(() => {
+      const body = $('#drawer-body');
+      const row = state.highlight ? body.querySelector('.node-row.is-focus button') : null;
+      if (row) {
+        row.focus({ preventScroll: true });
+        row.scrollIntoView({ block: 'nearest' });
+      } else {
+        body.scrollTop = 0;
+        $('#drawer-title').focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function closeDrawer() {
+    if (!state.panel) return;
+    const returnTo = state.returnTo;
+    state.panel = null;
+    state.focusNode = null;
+    state.highlight = null;
+    state.returnTo = null;
+    state.expanded = false;
+    renderHint();
+    renderDrawer();
+    if (state.snapshot) renderGraph(state.snapshot);
+    const card = returnTo ? document.querySelector(`#network-graph [data-node-id="${returnTo}"]`) : null;
+    if (card) card.focus({ preventScroll: true });
+  }
+
+  // A card on the graph was chosen (click, Enter or Space).
+  function activateNode(id) {
+    let panel = id;
+    let highlight = null;
+    if (id.startsWith('mpc-')) { panel = 'mpc'; highlight = { group: 'mpc', index: Number(id.slice(4)) }; }
+    if (id.startsWith('val-')) { panel = 'defmi'; highlight = { group: 'defmi', index: Number(id.slice(4)) }; }
+    if (!NODE_PANELS.includes(panel)) return;
+    if (state.panel === panel && state.returnTo === id) { closeDrawer(); return; }
+    openPanel(panel, { node: id, highlight });
+  }
+
+  function togglePanel(panel) {
+    if (state.panel === panel) closeDrawer();
+    else openPanel(panel);
+  }
+
+  function renderHint() {
+    const [title, body] = hints[state.viewer] || hints.operator;
+    $('#hint-title').textContent = title;
+    $('#hint-body').textContent = body;
+    const action = $('#hint-action');
+    action.classList.toggle('hidden', !PARTICIPANTS[state.viewer]);
+    action.textContent = `${PARTICIPANTS[state.viewer] || ''}の資金・在庫と注文を開く`;
+    $('#hint').classList.toggle('hidden', state.hintDismissed || Boolean(state.panel));
+  }
+
+  // ---- sections --------------------------------------------------------
 
   function renderPortfolio(own) {
     const root = $('#portfolio-cards');
@@ -262,24 +422,96 @@
     $('#retry-queue').classList.toggle('hidden', waiting === 0);
   }
 
-  function renderNodes(data) {
-    nodeButtons($('#mpc-controls'), 'mpc', data.mpc_nodes, '計算ノード');
-    nodeButtons($('#defmi-controls'), 'defmi', data.defmi_validators, '台帳の確認ノード');
+  function renderOrderForm(own) {
+    if (!own) return;
+    // A seller starts on "sell", a buyer on "buy"; either can be changed.
+    const side = own.role === 'maker' ? 'sell' : 'buy';
+    const radio = document.querySelector(`input[name="side"][value="${side}"]`);
+    if (radio && !state.busy && !state.sideTouched) radio.checked = true;
+    renderOrderPreview();
   }
 
-  function nodeButtons(root, group, values, groupLabel) {
+  function renderNodes(data) {
+    const mpcUp = data.mpc_nodes.filter(Boolean).length;
+    const valUp = data.defmi_validators.filter(Boolean).length;
+    $('#mpc-count').textContent = `${mpcUp}/${data.mpc_nodes.length} 利用可`;
+    $('#defmi-count').textContent = `${valUp}/${data.defmi_validators.length} 利用可`;
+    nodeList($('#mpc-controls'), 'mpc', data.mpc_nodes, '計算ノード');
+    nodeList($('#defmi-controls'), 'defmi', data.defmi_validators, '台帳の確認ノード');
+  }
+
+  function nodeList(root, group, values, groupLabel) {
     root.replaceChildren();
     values.forEach((online, index) => {
+      const row = item('li', `node-row${online ? '' : ' off'}`);
+      row.dataset.group = group;
+      row.dataset.index = String(index);
+      const focus = Boolean(state.highlight) && state.highlight.group === group && state.highlight.index === index;
+      row.classList.toggle('is-focus', focus);
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = online ? '' : 'off';
-      button.textContent = String(index + 1);
-      button.title = `${groupLabel} ${index + 1}：${online ? '利用できます' : '停止を模擬中'}。押すと表示上の状態を切り替えます。`;
-      button.setAttribute('aria-label', button.title);
-      button.setAttribute('aria-pressed', String(!online));
+      button.textContent = online ? '停止を模擬' : '停止を解除';
+      button.setAttribute('aria-label', `${groupLabel} ${index + 1} の${online ? '停止を模擬する' : '停止模擬を解除する'}（表示だけ）`);
       button.addEventListener('click', () => toggleNode(group, index));
-      root.append(button);
+      row.append(
+        item('span', 'node-name', `${groupLabel} ${index + 1}`),
+        item('span', 'node-state', online ? '利用可' : '停止を模擬中'),
+        button,
+      );
+      root.append(row);
     });
+  }
+
+  function renderProcess(data) {
+    const last = data.last_execution;
+    const fills = last?.fills?.length ? last.fills : [];
+    const filled = fills.reduce((sum, fill) => sum + fill.quantity, 0);
+
+    fillValues($('#ordering-values'), [
+      ['次の受付番号', `#${data.book.sequence + 1}`],
+      ['署名するノード', '5 台（研究用の模擬ノード）'],
+      ['最後の受付', last ? `#${last.sequence}（署名 ${last.ordering_signers} 台）` : 'まだ注文はありません'],
+      ['いまの段階', phaseInfo(data.phase).label],
+    ]);
+
+    fillValues($('#mpc-values'), last ? [
+      ['受付番号', `#${last.sequence}`],
+      ['計算プロセス', `${last.mpc_parties} プロセス`],
+      ['プロトコル', last.mpc_protocol],
+      ['実行時間', `${Math.round(last.mpc_execution_ms)} ミリ秒`],
+      ['結果', fills.length ? `約定 ${number(filled)} 口` : '約定なし（板の合計を更新）'],
+    ] : [['状態', 'まだ照合はありません']]);
+
+    fillValues($('#zkpi-values'), last ? [
+      ['受付番号', `#${last.sequence}`],
+      ['証明', last.threshold_zkpi ? '作成済み' : '作成なし（約定がないため不要）', last.threshold_zkpi ? 'ok' : ''],
+      ['決済の承認', last.threshold_zkpi ? `${last.settlement_authorization_quorum} 台` : '—'],
+      ['約定', fills.length ? fills.map((fill) => `${number(fill.quantity)} 口 @ ${number(fill.price)} 円`).join('、') : 'なし'],
+      ['約定後の企業の署名', `${last.post_match_signatures ?? 0} 回（不要）`],
+    ] : [['状態', 'まだ処理はありません']]);
+
+    $('#defmi-height').textContent = `更新 ${number(data.defmi.height)} 回`;
+    fillValues($('#defmi-values'), last ? [
+      ['最後の反映', fills.length ? `決済（受付番号 #${last.sequence}）` : `板の更新（受付番号 #${last.sequence}）`],
+      ['市場遷移の証拠', last.transition_attestations ? `${last.transition_attestations} 台の署名` : '暫定方式の確定参照'],
+      ['台帳の受付記録', last.canonical_receipt, 'mono'],
+    ] : [['最後の反映', 'まだ処理はありません']]);
+    const roots = $('#root-values');
+    roots.replaceChildren();
+    [['証券残高の識別値', data.defmi.securities_root], ['資金残高の識別値', data.defmi.cash_root], ['確保枠の識別値', data.defmi.reservation_root]]
+      .forEach(([label, value]) => roots.append(pair(label, value, true)));
+
+    fillValues($('#book-values'), [
+      ['価格帯', data.book.levels.length ? `${data.book.levels.length} つ` : 'なし'],
+      ['最後の決済', last && fills.length
+        ? `${number(filled)} 口が約定（${fills.map((fill) => `${number(fill.price)} 円`).join('・')}）`
+        : last ? '最後の処理では約定なし' : 'まだ決済はありません'],
+    ]);
+  }
+
+  function fillValues(root, rows) {
+    root.replaceChildren();
+    rows.forEach(([label, value, tone]) => root.append(pair(label, value, tone === 'mono', tone && tone !== 'mono' ? tone : '')));
   }
 
   function renderBook(data) {
@@ -304,7 +536,7 @@
   function renderTimeline(events) {
     const root = $('#timeline'); root.replaceChildren();
     if (!events.length) { root.append(item('li', 'loading', 'まだ記録はありません。')); return; }
-    events.slice(0, 12).forEach((event) => {
+    events.slice(0, 20).forEach((event) => {
       const [title, detail] = eventText(event);
       const li = item('li', event.tone);
       li.title = `サーバーの原文：${event.title} — ${event.detail}`;
@@ -314,18 +546,11 @@
       root.append(li);
     });
     const raw = $('#raw-timeline');
-    if (raw) {
-      raw.replaceChildren();
-      events.slice(0, 12).forEach((event) => raw.append(item('li', '', `${clock(event.at)} [${event.kind}] ${event.title} — ${event.detail}`)));
-    }
+    raw.replaceChildren();
+    events.slice(0, 20).forEach((event) => raw.append(item('li', '', `${clock(event.at)} [${event.kind}] ${event.title} — ${event.detail}`)));
   }
 
   function renderDiagnostics(data) {
-    $('#defmi-height').textContent = `更新 ${number(data.defmi.height)} 回`;
-    const roots = $('#root-values'); roots.replaceChildren();
-    [['証券残高の識別値', data.defmi.securities_root], ['資金残高の識別値', data.defmi.cash_root], ['確保枠の識別値', data.defmi.reservation_root]]
-      .forEach(([label, value]) => roots.append(pair(label, value, true)));
-
     const exec = $('#execution-values'); exec.replaceChildren();
     const last = data.last_execution;
     if (!last) { exec.append(pair('状態', 'まだ処理はありません')); }
@@ -336,12 +561,28 @@
         ['秘密計算', `${last.mpc_parties} プロセス・${Math.round(last.mpc_execution_ms)} ミリ秒（${last.mpc_protocol}）`],
         ['約定', last.fills?.length ? last.fills.map((fill) => `${number(fill.quantity)} 口 @ ${number(fill.price)} 円`).join('、') : 'なし'],
         ['決済の証明（zkPI）', last.threshold_zkpi ? `作成済み・承認 ${last.settlement_authorization_quorum} 台` : '作成なし（板の更新のみ）'],
-        ['台帳への反映', `${last.transition_attestations} 台が確認・更新 ${number(last.canonical_height)} 回目`],
+        ['台帳への反映', `ネイティブ台帳の高さ ${number(last.canonical_height)} で確定`],
         ['約定後に企業が署名した回数', String(last.post_match_signatures ?? 0)],
         ['注文の識別値', last.order_commitment, true],
         ['台帳の受付記録', last.canonical_receipt, true],
       ].forEach(([label, value, mono]) => exec.append(pair(label, value, mono)));
     }
+
+    const privateView = Boolean(data.own);
+    const list = $('#visibility-list');
+    list.replaceChildren();
+    const rows = privateView ? [
+      ['yes', '自社の資金・在庫と、自社が出した注文の状況'],
+      ['yes', '確定した価格ごとの合計数量（公開板）'],
+      ['no', '他社の注文の中身や残高'],
+      ['no', '受付待ちの注文の中身は、運営者向けの表示には含まれません（出した企業の画面には表示されます）'],
+    ] : [
+      ['yes', '確定した価格ごとの合計数量（公開板）'],
+      ['yes', '処理の進み方と決済の結果'],
+      ['no', '受付待ちの注文の中身（価格・数量・売買）。出した企業の画面にだけ表示されます'],
+      ['no', 'どの企業がいくら持っているか'],
+    ];
+    rows.forEach(([cls, text]) => list.append(item('li', cls, text)));
 
     const facts = $('#privacy-facts'); facts.replaceChildren();
     const p = data.privacy || {};
@@ -354,26 +595,23 @@
       ['企業向けの表示には、その企業自身の注文だけを含めます。', p.participant_projection_contains_only_own_orders],
       ['公開板は価格ごとの合計数量だけです。', p.public_book_is_price_level_aggregate],
       ['約定後に企業が追加で署名する必要はありません。', p.post_match_participant_signature_required === false],
+      ['画面ごとの表示の絞り込みはこの研究用サーバーが行っています。分散した秘匿の保証は実サービス側の設計です。', true],
     ];
-    factRows.filter(([, show]) => show).forEach(([text]) => facts.append(item('li', '', text)));
+    factRows.filter(([, display]) => display).forEach(([text]) => facts.append(item('li', '', text)));
+
+    const notes = $('#graph-notes'); notes.replaceChildren();
+    graphNotes(data).forEach((text) => notes.append(item('li', '', text)));
   }
 
-  function renderReceipt(receipt) {
-    const root = $('#receipt-steps'); root.replaceChildren();
-    const fills = receipt?.fills?.length || 0;
-    const steps = receipt ? [
-      ['受付', `受付番号 #${receipt.sequence}`, true],
-      ['秘密計算で照合', `${receipt.mpc_parties} プロセスで ${Math.round(receipt.mpc_execution_ms)} ミリ秒`, true],
-      ['決済の証明（zkPI）', receipt.threshold_zkpi ? '作成済み' : '不要（約定なし）', receipt.threshold_zkpi],
-      ['DeFMI 台帳', fills ? `決済を反映（${number(receipt.canonical_height)} 回目の更新）` : `板を反映（${number(receipt.canonical_height)} 回目の更新）`, true],
-    ] : [
-      ['受付', 'まだ注文はありません', false], ['秘密計算で照合', '—', false], ['決済の証明（zkPI）', '—', false], ['DeFMI 台帳', '—', false],
+  function graphNotes(data) {
+    const anyOff = data.mpc_nodes.some((on) => !on) || data.defmi_validators.some((on) => !on);
+    const notes = [
+      '線は注文がたどる経路です。通信の実況や生存監視ではありません。線の色は、その経路の処理が最後にどこまで進んだかを示します。',
+      '研究用の 1 台構成です。計算プロセス 7 つと台帳の確認ノード 5 台は同じサーバー内で動いています。',
+      '箱を選ぶと内容と操作が開きます。個別の注文や残高は、その企業として表示したときだけ開きます。',
     ];
-    steps.forEach(([label, value, done]) => {
-      const step = item('div', `receipt-step${done ? ' done' : ''}`);
-      step.append(item('span', '', label), item('strong', '', value));
-      root.append(step);
-    });
+    if (anyOff) notes.push('赤い破線は、障害の模擬で停止扱いにしたノードです。');
+    return notes;
   }
 
   function renderOrderPreview() {
@@ -388,45 +626,59 @@
     // The amount is what the displayed limit × full quantity would come to. A
     // fill can be partial or at a better price, so it is not a promised receipt.
     preview.textContent = side === 'sell'
-      ? `送信時に在庫 ${number(quantity)} 口を確保します。表示の指値 ${number(price)} 円 × ${number(quantity)} 口がすべて成立した場合の受取額は ${number(price * quantity)} 円です。一部だけ、または指値より有利な価格で成立することがあります。`
-      : `送信時に資金 ${number(price * quantity)} 円（指値 ${number(price)} 円 × ${number(quantity)} 口）を確保します。すべて成立した場合に ${number(quantity)} 口を受け取ります。一部だけ、または指値より有利な価格で成立することがあります。`;
+      ? `必要な在庫は ${number(quantity)} 口です。指値 ${number(price)} 円 × ${number(quantity)} 口がすべて成立した場合の受取額は ${number(price * quantity)} 円です。一部だけ、または指値より有利な価格で成立することがあります。`
+      : `必要な資金は ${number(price * quantity)} 円（指値 ${number(price)} 円 × ${number(quantity)} 口）です。すべて成立した場合に ${number(quantity)} 口を受け取ります。一部だけ、または指値より有利な価格で成立することがあります。`;
   }
 
   // ---- graph -------------------------------------------------------------
 
+  function selectedGraphNode() {
+    if (state.highlight) return `${state.highlight.group === 'mpc' ? 'mpc' : 'val'}-${state.highlight.index}`;
+    return NODE_PANELS.includes(state.panel) ? state.panel : null;
+  }
+
   function renderGraph(data) {
-    if (!window.OclobNetworkGraph) return;
+    if (!window.OclobNetworkGraph || !data) return;
+    const container = $('#network-graph');
     const phase = data.phase;
     const inFlight = ['queued', 'waiting_for_mpc', 'waiting_for_defmi', 'retrying'].includes(phase);
     const hasResult = Boolean(data.last_execution);
     const settled = Boolean(data.last_execution?.fills?.length);
-    const narrow = $('#network-graph').clientWidth < 560;
+    const narrow = container.clientWidth < 560;
+    const sheet = sheetLayout();
     const ctx = { data, phase, inFlight, hasResult, settled, viewer: state.viewer };
     const model = narrow ? narrowGraph(ctx) : wideGraph(ctx);
-    const anyOff = data.mpc_nodes.some((on) => !on) || data.defmi_validators.some((on) => !on);
-    const notes = [
-      '線は注文がたどる経路です。通信の実況や生存監視ではありません。',
-      '研究用の 1 台構成：計算プロセス 7 つと台帳の確認ノード 5 つは同じサーバー内で動いています。',
-    ];
-    if (anyOff) notes.push('赤い破線は、障害の模擬で停止扱いにしたノードです。');
-    window.OclobNetworkGraph.render($('#network-graph'), model, {
-      ariaLabel: 'OCLOBの参加企業、受付、秘密計算、決済の証明、DeFMI台帳を結ぶ処理の流れ',
+    // On a phone the graph already stops above the dock; only the open sheet
+    // covers part of it.
+    const obscuredBottom = sheet && state.panel ? $('#drawer').offsetHeight : 0;
+    window.OclobNetworkGraph.render(container, model, {
+      ariaLabel: '参加企業、受付順の確定、秘密計算、決済の証明、DeFMI 台帳、公開板を結ぶ処理の流れ。各箱はボタンで、選ぶと内容と操作が開きます',
       phase, phaseLabel: phaseInfo(phase).label, noRoundText: '',
       legend: [
         { type: 'maker', label: '参加企業' }, { type: 'matcher', label: '受付・秘密計算' },
-        { type: 'zkpi', label: '決済の証明' }, { type: 'ledger', label: 'DeFMI 台帳' },
+        { type: 'zkpi', label: '決済の証明' }, { type: 'ledger', label: 'DeFMI 台帳' }, { type: 'book', label: '公開板' },
       ],
-      legendNotes: notes,
+      legendNotes: graphNotes(data),
       reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      chrome: 'overlay',
+      fill: true,
+      interactive: true,
+      selectedNodeId: selectedGraphNode(),
+      focusNodeId: state.focusNode,
+      obscuredBottom,
+      controlsPosition: sheet ? 'top-right' : 'bottom-right',
+      onNodeActivate: (id) => activateNode(id),
+      onDismiss: () => closeDrawer(),
     });
   }
 
   function participantNodes(ctx, makerPos, takerPos, w, h) {
-    const { data, viewer } = ctx;
+    const { data } = ctx;
     const mine = (role) => data.own?.role === role;
+    const sub = (role, mineText) => mine(role) ? mineText : '注文の中身は本人以外に非公開';
     return [
-      graphNode('maker', 'maker', makerPos[0], makerPos[1], w, h, '売り手企業', viewer === 'maker' ? '自社の注文と在庫を表示中' : '注文の中身は非公開', mine('maker') ? '表示中' : '', mine('maker') ? ['is-me'] : []),
-      graphNode('taker', 'taker', takerPos[0], takerPos[1], w, h, '買い手企業', viewer === 'taker' ? '自社の注文と資金を表示中' : '注文の中身は非公開', mine('taker') ? '表示中' : '', mine('taker') ? ['is-me'] : []),
+      graphNode('maker', 'maker', makerPos[0], makerPos[1], w, h, '売り手企業', sub('maker', '資金・在庫・注文を確認できます'), mine('maker') ? '自社' : '', mine('maker') ? ['is-me'] : []),
+      graphNode('taker', 'taker', takerPos[0], takerPos[1], w, h, '買い手企業', sub('taker', '資金・在庫・注文を確認できます'), mine('taker') ? '自社' : '', mine('taker') ? ['is-me'] : []),
     ];
   }
 
@@ -434,12 +686,22 @@
     const { data, phase, hasResult } = ctx;
     const active = (names) => names.includes(phase);
     const mpcUp = data.mpc_nodes.filter(Boolean).length;
+    const valUp = data.defmi_validators.filter(Boolean).length;
+    const levels = data.book.levels.length;
     return [
-      graphNode('ordering', 'matcher', ...pos.ordering, '受付順を決める', '5 台の署名で順番を固定（模擬ノード）', `次は #${data.book.sequence + 1}`, active(['queued']) ? ['is-active'] : []),
-      graphNode('mpc', 'matcher', ...pos.mpc, '秘密計算で照合', '注文を開かずに 7 プロセスで照合', `${mpcUp}/7 利用可`, active(['waiting_for_mpc', 'retrying']) ? ['is-active'] : mpcUp < 5 ? ['is-stopped'] : []),
-      graphNode('zkpi', 'zkpi', ...pos.zkpi, '決済の証明（zkPI）', '約定と確保枠が正しいことを証明', hasResult ? (data.last_execution.threshold_zkpi ? '作成済み' : '今回は不要') : '待機中', active(['settled']) ? ['is-active'] : []),
-      graphNode('defmi', 'ledger', ...pos.defmi, 'DeFMI 台帳', '証券と資金を同時に引き渡し', `更新 ${data.defmi.height} 回`, active(['settled', 'waiting_for_defmi']) ? ['is-active'] : []),
+      graphNode('ordering', 'matcher', ...pos.ordering, '受付順の確定', '5 台の署名で順番を固定', `次は #${data.book.sequence + 1}`, active(['queued']) ? ['is-active'] : []),
+      graphNode('mpc', 'matcher', ...pos.mpc, '秘密計算で照合', '注文を開かずに 7 プロセスで照合', `${mpcUp}/${data.mpc_nodes.length} 利用可`, active(['waiting_for_mpc', 'retrying']) ? ['is-active'] : mpcUp < data.mpc_nodes.length ? ['is-stopped'] : []),
+      graphNode('zkpi', 'zkpi', ...pos.zkpi, '決済の証明（zkPI）', '約定と確保枠の正しさを証明', hasResult ? (data.last_execution.threshold_zkpi ? '作成済み' : '今回は不要') : '待機中', active(['settled']) ? ['is-active'] : []),
+      graphNode('defmi', 'ledger', ...pos.defmi, 'DeFMI 台帳', '証券と資金を同時に引き渡し', `更新 ${number(data.defmi.height)} 回`, active(['settled', 'waiting_for_defmi']) ? ['is-active'] : valUp < 3 ? ['is-stopped'] : []),
+      graphNode('book', 'book', ...pos.book, '公開板', '価格ごとの合計だけを公開', levels ? `${levels} 価格帯` : '注文なし', active(['book_updated']) ? ['is-active'] : []),
     ];
+  }
+
+  function memberNode(id, type, x, y, w, h, title, groupLabel, index, online) {
+    const node = graphNode(id, type, x, y, w, h, title, '', '', online ? ['is-mini'] : ['is-mini', 'is-stopped']);
+    node.focusable = false;
+    node.ariaLabel = `${groupLabel} ${index + 1}：${online ? '利用可' : '停止を模擬中'}。選ぶと停止の模擬を切り替える一覧を開きます`;
+    return node;
   }
 
   function flowEdges(ctx, paths) {
@@ -447,12 +709,14 @@
     const orderState = inFlight ? 'flow' : hasResult ? 'done' : 'idle';
     const mpcState = phase === 'queued' || phase === 'retrying' ? 'flow' : hasResult ? 'done' : 'idle';
     const settleState = settled ? 'done' : 'idle';
+    const publishState = hasResult ? 'done' : 'idle';
     return [
       edge('maker-order', 'maker', 'ordering', paths.makerOrder, orderState, 'teal'),
       edge('taker-order', 'taker', 'ordering', paths.takerOrder, orderState, 'teal'),
       edge('ordered-mpc', 'ordering', 'mpc', paths.orderedMpc, mpcState, 'amber'),
       edge('mpc-zkpi', 'mpc', 'zkpi', paths.mpcZkpi, settleState, 'amber'),
       edge('zkpi-defmi', 'zkpi', 'defmi', paths.zkpiDefmi, settleState, 'blue'),
+      edge('defmi-book', 'defmi', 'book', paths.defmiBook, publishState, 'blue'),
     ];
   }
 
@@ -460,54 +724,63 @@
     const { data } = ctx;
     const nodes = [
       ...participantNodes(ctx, [100, 150], [100, 400], 156, 96),
-      ...coreNodes(ctx, { ordering: [300, 275, 142, 104], mpc: [512, 275, 156, 110], zkpi: [720, 175, 150, 96], defmi: [720, 385, 150, 104] }),
+      ...coreNodes(ctx, {
+        ordering: [300, 275, 142, 104], mpc: [512, 275, 156, 110],
+        zkpi: [720, 175, 150, 96], defmi: [720, 385, 150, 104], book: [930, 385, 150, 104],
+      }),
     ];
     const mpcPositions = [[440, 68], [488, 68], [536, 68], [584, 68], [464, 482], [512, 482], [560, 482]];
     data.mpc_nodes.forEach((online, index) => {
       const [x, y] = mpcPositions[index];
-      nodes.push(graphNode(`mpc-${index}`, 'matcher', x, y, 42, 40, `M${index + 1}`, '', '', online ? ['is-mini'] : ['is-mini', 'is-stopped']));
+      nodes.push(memberNode(`mpc-${index}`, 'matcher', x, y, 42, 40, `M${index + 1}`, '計算ノード', index, online));
     });
-    data.defmi_validators.forEach((online, index) => nodes.push(graphNode(`val-${index}`, 'ledger', 648 + index * 36, 545, 32, 36, `D${index + 1}`, '', '', online ? ['is-mini'] : ['is-mini', 'is-stopped'])));
+    data.defmi_validators.forEach((online, index) => nodes.push(memberNode(`val-${index}`, 'ledger', 648 + index * 36, 545, 32, 36, `D${index + 1}`, '台帳の確認ノード', index, online)));
     const edges = flowEdges(ctx, {
       makerOrder: curve(178, 150, 229, 260),
       takerOrder: curve(178, 400, 229, 290),
       orderedMpc: curve(371, 275, 434, 275),
       mpcZkpi: curve(590, 265, 645, 175),
       zkpiDefmi: curveVertical(720, 223, 720, 333),
+      defmiBook: curve(795, 385, 855, 385),
     });
     data.mpc_nodes.forEach((online, index) => {
       const [x, y] = mpcPositions[index];
       edges.push(edge(`mpc-link-${index}`, `mpc-${index}`, 'mpc', curveVertical(x, y < 275 ? y + 20 : y - 20, 512 + (x - 512) * 0.3, y < 275 ? 220 : 330), online ? 'done' : 'cut', 'amber'));
     });
     data.defmi_validators.forEach((online, index) => edges.push(edge(`val-link-${index}`, 'defmi', `val-${index}`, curveVertical(720, 437, 648 + index * 36, 527), online ? 'done' : 'cut', 'blue')));
-    return { nodes, edges, labels: [{ x: 790, y: 278, text: '企業の追加署名なし' }], W: 820, H: 600 };
+    return { nodes, edges, labels: [{ x: 790, y: 278, text: '企業の追加署名なし' }], W: 1040, H: 600 };
   }
 
+  // Phones: one column, top to bottom, fitted into the screen as a whole.
   function narrowGraph(ctx) {
     const { data } = ctx;
     const nodes = [
-      ...participantNodes(ctx, [96, 80], [264, 80], 152, 96),
-      ...coreNodes(ctx, { ordering: [180, 250, 240, 100], mpc: [180, 420, 240, 110], zkpi: [180, 740, 240, 96], defmi: [180, 905, 240, 104] }),
+      ...participantNodes(ctx, [96, 70], [284, 70], 150, 84),
+      ...coreNodes(ctx, {
+        ordering: [190, 210, 230, 84], mpc: [190, 350, 230, 96],
+        zkpi: [190, 580, 230, 84], defmi: [190, 715, 230, 90], book: [190, 920, 230, 84],
+      }),
     ];
-    const mpcPositions = [[66, 545], [142, 545], [218, 545], [294, 545], [104, 600], [180, 600], [256, 600]];
+    const mpcPositions = Array.from({ length: 7 }, (_, index) => [34 + index * 48, 455]);
     data.mpc_nodes.forEach((online, index) => {
       const [x, y] = mpcPositions[index];
-      nodes.push(graphNode(`mpc-${index}`, 'matcher', x, y, 60, 40, `M${index + 1}`, '', '', online ? ['is-mini'] : ['is-mini', 'is-stopped']));
+      nodes.push(memberNode(`mpc-${index}`, 'matcher', x, y, 42, 34, `M${index + 1}`, '計算ノード', index, online));
     });
-    data.defmi_validators.forEach((online, index) => nodes.push(graphNode(`val-${index}`, 'ledger', 60 + index * 60, 1020, 48, 36, `D${index + 1}`, '', '', online ? ['is-mini'] : ['is-mini', 'is-stopped'])));
+    data.defmi_validators.forEach((online, index) => nodes.push(memberNode(`val-${index}`, 'ledger', 70 + index * 60, 815, 52, 34, `D${index + 1}`, '台帳の確認ノード', index, online)));
     const edges = flowEdges(ctx, {
-      makerOrder: curveVertical(96, 128, 130, 200),
-      takerOrder: curveVertical(264, 128, 230, 200),
-      orderedMpc: curveVertical(180, 300, 180, 365),
-      mpcZkpi: sideCurve(300, 420, 300, 740, 346),
-      zkpiDefmi: curveVertical(180, 788, 180, 853),
+      makerOrder: curveVertical(96, 112, 140, 168),
+      takerOrder: curveVertical(284, 112, 240, 168),
+      orderedMpc: curveVertical(190, 252, 190, 302),
+      mpcZkpi: sideCurve(305, 350, 305, 580, 362),
+      zkpiDefmi: curveVertical(190, 622, 190, 670),
+      defmiBook: sideCurve(305, 715, 305, 920, 362),
     });
     data.mpc_nodes.forEach((online, index) => {
       const [x, y] = mpcPositions[index];
-      edges.push(edge(`mpc-link-${index}`, `mpc-${index}`, 'mpc', curveVertical(x, y - 20, 180 + (x - 180) * 0.4, 475), online ? 'done' : 'cut', 'amber'));
+      edges.push(edge(`mpc-link-${index}`, `mpc-${index}`, 'mpc', curveVertical(x, y - 17, 190 + (x - 190) * 0.4, 398), online ? 'done' : 'cut', 'amber'));
     });
-    data.defmi_validators.forEach((online, index) => edges.push(edge(`val-link-${index}`, 'defmi', `val-${index}`, curveVertical(180, 957, 60 + index * 60, 1002), online ? 'done' : 'cut', 'blue')));
-    return { nodes, edges, labels: [{ x: 270, y: 820, text: '企業の追加署名なし' }], W: 360, H: 1060 };
+    data.defmi_validators.forEach((online, index) => edges.push(edge(`val-link-${index}`, 'defmi', `val-${index}`, curveVertical(190, 760, 70 + index * 60, 798), online ? 'done' : 'cut', 'blue')));
+    return { nodes, edges, labels: [{ x: 190, y: 646, text: '企業の追加署名なし' }], W: 380, H: 1000 };
   }
 
   function graphNode(id, type, x, y, w, h, title, sub, badge, classes) {
@@ -536,9 +809,9 @@
     if (text !== undefined) element.textContent = text;
     return element;
   }
-  function pair(label, value, mono = false) {
+  function pair(label, value, mono = false, tone = '') {
     const row = item('div');
-    const dd = item('dd', mono ? 'mono' : '', value ?? '—');
+    const dd = item('dd', [mono ? 'mono' : '', tone].filter(Boolean).join(' '), value ?? '—');
     if (mono && value) dd.title = value;
     row.append(item('dt', '', label), dd);
     return row;
@@ -551,19 +824,64 @@
     try {
       await api('/api/nodes/toggle', { method: 'POST', body: JSON.stringify({ group, index }) });
       await refresh();
+      // The list is rebuilt on refresh; keep the keyboard on the same row.
+      const button = document.querySelector(`.node-row[data-group="${group}"][data-index="${index}"] button`);
+      if (button) button.focus({ preventScroll: true });
     } catch (error) { toast(error.message, true); }
   }
 
-  $$('.role-tab').forEach((button) => button.addEventListener('click', async () => {
-    state.viewer = button.dataset.viewer;
+  async function switchViewer(viewer) {
+    if (!['operator', 'maker', 'taker'].includes(viewer)) return;
+    state.viewer = viewer;
+    state.viewerRevision += 1;
+    // Retain the last public graph while fetching the new viewpoint, but
+    // remove the previous company's data immediately, including on errors.
+    if (state.snapshot) state.snapshot = { ...state.snapshot, viewer, own: null };
     state.sideTouched = false;
+    // Show the one-line guidance for the new viewpoint, unless a panel is
+    // already open (then the user has found the cards).
+    state.hintDismissed = Boolean(state.panel);
     $$('.role-tab').forEach((tab) => {
-      const active = tab === button; tab.classList.toggle('active', active); tab.setAttribute('aria-pressed', String(active));
+      const active = tab.dataset.viewer === viewer;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-pressed', String(active));
     });
     document.body.className = `viewer-${state.viewer}${state.offline ? ' offline' : ''}`;
-    $('#role-hint').textContent = roleHints[state.viewer] || '';
+    renderHint();
+    if (state.snapshot) render();
+    else renderDrawer();
     await refresh();
-  }));
+  }
+
+  $$('.role-tab').forEach((button) => button.addEventListener('click', () => { void switchViewer(button.dataset.viewer); }));
+
+  $$('.dock-button').forEach((button) => button.addEventListener('click', () => togglePanel(button.dataset.panel)));
+
+  $('#drawer-close').addEventListener('click', () => closeDrawer());
+
+  $('#drawer-expand').addEventListener('click', () => {
+    state.expanded = !state.expanded;
+    renderDrawer();
+    if (state.snapshot) renderGraph(state.snapshot);
+  });
+
+  $('#hint-close').addEventListener('click', () => { state.hintDismissed = true; renderHint(); });
+
+  $('#hint-action').addEventListener('click', () => {
+    if (PARTICIPANTS[state.viewer]) openPanel(state.viewer, { node: state.viewer });
+  });
+
+  $('#gate-switch').addEventListener('click', () => {
+    if (PARTICIPANTS[state.panel]) void switchViewer(state.panel);
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !state.panel) return;
+    // Escape inside a <select> is closing its own list, not the panel.
+    if (event.target instanceof HTMLSelectElement) return;
+    event.preventDefault();
+    closeDrawer();
+  });
 
   $('#order-form').addEventListener('input', (event) => {
     if (event.target.name === 'side') state.sideTouched = true;
@@ -610,8 +928,9 @@
     finally { state.busy = false; }
   });
 
+  renderHint();
   refresh();
-  window.setInterval(() => { if (!state.busy) refresh(); }, 2500);
+  window.setInterval(() => { refresh(); }, 1000);
   let resizeTimer = null;
   window.addEventListener('resize', () => {
     window.clearTimeout(resizeTimer);

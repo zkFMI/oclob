@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>OCLOB — 秘密注文市場デモ</title>
   <link rel="icon" href="data:,">
@@ -10,190 +10,199 @@
   <link rel="stylesheet" href="/app.css">
 </head>
 <body class="viewer-operator">
-  <a class="skip-link" href="#main">操作画面へ移動</a>
+  <a class="skip-link" href="#network-graph">処理の流れの図へ移動</a>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">O</span>
       <div>
         <strong>OCLOB</strong>
-        <span>注文の中身を隠したまま照合する研究用の取引市場</span>
+        <span>秘密注文市場 · 研究用デモ</span>
       </div>
     </div>
+    <label class="assurance-control">検証方式<select id="assurance-mode"><option value="joint_proof">共同証明</option><option value="optimistic">暫定方式</option></select></label>
+    <nav class="role-bar" aria-label="視点">
+      <div class="role-tabs" role="group" aria-label="どの立場で見るか">
+        <button class="role-tab active" data-viewer="operator" aria-pressed="true">市場運営者</button>
+        <button class="role-tab" data-viewer="maker" aria-pressed="false">売り手企業</button>
+        <button class="role-tab" data-viewer="taker" aria-pressed="false">買い手企業</button>
+      </div>
+    </nav>
     <div class="market-status" role="status" aria-live="polite">
       <span id="status-dot" class="status-dot" aria-hidden="true"></span>
-      <span id="market-label">—</span>
       <strong id="phase-label">サーバーに接続しています…</strong>
+      <span id="market-label">—</span>
     </div>
   </header>
 
-  <nav class="role-bar" aria-label="表示する立場">
-    <div class="role-tabs">
-      <button class="role-tab active" data-viewer="operator" aria-pressed="true">市場運営者</button>
-      <button class="role-tab" data-viewer="maker" aria-pressed="false">売り手企業</button>
-      <button class="role-tab" data-viewer="taker" aria-pressed="false">買い手企業</button>
+  <div id="assurance-status" class="assurance-status" role="status" aria-live="polite" hidden><span id="assurance-message"></span><button id="challenge-claim" type="button" hidden>challengeを送信</button></div>
+  <main id="stage" class="stage">
+    <div id="network-graph" tabindex="-1" aria-label="参加企業、受付順の確定、秘密計算、決済の証明、DeFMI 台帳、公開板を結ぶ処理の流れ"></div>
+
+    <div id="connection-banner" class="connection-banner hidden" role="alert"></div>
+
+    <div id="hint" class="hint" role="note">
+      <div class="hint-text">
+        <strong id="hint-title">市場運営者の視点</strong>
+        <span id="hint-body">図の箱を選ぶと、その参加者や処理の内容と操作が開きます。</span>
+      </div>
+      <button id="hint-action" class="hint-action hidden" type="button">資金・在庫と注文を開く</button>
+      <button id="hint-close" class="icon-button" type="button" aria-label="この案内を閉じる">×</button>
     </div>
-    <p id="role-hint" class="role-hint">市場運営者の画面です。公開板と処理の進み方だけが見え、どの企業の注文かは見えません。</p>
-  </nav>
 
-  <div id="connection-banner" class="connection-banner hidden" role="alert"></div>
+    <nav class="dock" aria-label="一覧を開く">
+      <button class="dock-button" data-panel="book" type="button" aria-pressed="false">公開板</button>
+      <button class="dock-button" data-panel="history" type="button" aria-pressed="false">履歴</button>
+      <button class="dock-button" data-panel="details" type="button" aria-pressed="false">技術的な詳細</button>
+    </nav>
 
-  <main id="main" class="workspace">
-    <section class="summary-strip" aria-label="現在の状態">
-      <div class="summary-item">
-        <span>いまの段階</span>
-        <strong id="summary-phase">接続中…</strong>
-        <small id="summary-phase-note">サーバーの状態を確認しています。</small>
-      </div>
-      <div class="summary-item">
-        <span>公開板の更新</span>
-        <strong id="summary-book">—</strong>
-        <small id="summary-book-note">確定した注文だけが板に載ります。</small>
-      </div>
-      <div class="summary-item">
-        <span>最後の決済</span>
-        <strong id="summary-settlement">—</strong>
-        <small id="summary-settlement-note">まだ決済はありません。</small>
-      </div>
-      <div class="summary-item">
-        <span>処理の構成</span>
-        <strong id="summary-nodes">—</strong>
-        <small id="summary-nodes-note">計算ノードと台帳の確認ノードの数です。</small>
-      </div>
-    </section>
-
-    <aside class="left-column">
-      <section id="portfolio-panel" class="panel hidden" aria-labelledby="portfolio-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow">自社だけに見える</p><h2 id="portfolio-title">資金と在庫</h2></div>
-          <span class="shield own">自社情報</span>
+    <aside id="drawer" class="drawer" role="dialog" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-head">
+        <button id="drawer-expand" class="drawer-handle" type="button" aria-label="パネルの高さを切り替える" aria-expanded="false"><span></span></button>
+        <div class="drawer-heading">
+          <p id="drawer-kicker" class="eyebrow"></p>
+          <h2 id="drawer-title" tabindex="-1"></h2>
+          <p id="drawer-lead" class="drawer-lead"></p>
         </div>
-        <div id="portfolio-cards" class="portfolio-cards"></div>
-        <p class="form-note">「確保中」は、出した注文のために取り置いている分です。注文が成立するか取り消されるまで他の注文には使えません。</p>
-      </section>
+        <button id="drawer-close" class="icon-button" type="button" aria-label="閉じる">×</button>
+      </div>
 
-      <section id="order-panel" class="panel hidden" aria-labelledby="order-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow" id="order-eyebrow">注文を出す</p><h2 id="order-title">指値注文</h2></div>
-        </div>
-        <form id="order-form">
-          <fieldset class="segmented">
-            <legend>売買</legend>
-            <label><input type="radio" name="side" value="sell" checked><span>売る</span></label>
-            <label><input type="radio" name="side" value="buy"><span>買う</span></label>
-          </fieldset>
-          <div class="field-row">
-            <label>価格 <input name="price" inputmode="numeric" type="number" min="1" step="1" value="100" required><small>円 / 1口</small></label>
-            <label>数量 <input name="quantity" inputmode="numeric" type="number" min="1" step="1" value="40" required><small>口</small></label>
+      <div id="drawer-body" class="drawer-body">
+        <!-- 参加企業: 選んだ企業と表示中の立場が違うとき -->
+        <section id="participant-gate" class="block hidden" aria-label="この企業の情報を見るには">
+          <p id="gate-text" class="note"></p>
+          <button id="gate-switch" class="secondary" type="button"></button>
+        </section>
+
+        <!-- 参加企業: 自社として表示しているとき -->
+        <section id="portfolio-panel" class="block hidden" aria-labelledby="portfolio-title">
+          <div class="block-heading">
+            <h3 id="portfolio-title">資金と在庫</h3>
+            <span class="shield own">自社だけに表示</span>
           </div>
-          <label class="select-field">成立しなかった分の扱い
-            <select name="time_in_force">
-              <option value="good_til_cancelled">板に残して相手を待つ</option>
-              <option value="immediate_or_cancel">すぐ照合し、残りは取り消す</option>
-            </select>
-          </label>
-          <p id="order-preview" class="order-preview" aria-live="polite"></p>
-          <button id="submit-order" class="primary" type="submit">この内容で注文を出す</button>
-          <p class="form-note">送信すると、必要な資金または在庫を確保してから、注文の中身を暗号化して受け付けます。注文の中身は運営者向けの表示には含まれません。この研究用デモでは、サーバーが注文を受け取ってから暗号化しています。</p>
-        </form>
-      </section>
-
-      <section id="orders-panel" class="panel hidden" aria-labelledby="orders-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow">自社が出した注文</p><h2 id="orders-title">注文の状況</h2></div>
-          <span id="orders-count" class="sequence">0 件</span>
-        </div>
-        <div id="queue-summary" class="queue-summary"></div>
-        <div id="own-orders" class="own-orders"></div>
-        <p id="own-orders-empty" class="empty-note">まだ注文はありません。上のフォームから出せます。</p>
-        <button id="retry-queue" class="secondary hidden" type="button">保管中の注文をもう一度送る</button>
-      </section>
-
-      <section id="visibility-panel" class="panel" aria-labelledby="visibility-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow">この画面で見えるもの</p><h2 id="visibility-title">見える情報・見えない情報</h2></div>
-          <span id="projection-badge" class="shield">運営者の表示</span>
-        </div>
-        <ul id="visibility-list" class="visibility-list">
-          <li class="yes">確定した価格ごとの合計数量（公開板）</li>
-          <li class="yes">処理の進み方と決済の結果</li>
-          <li class="no">受付待ちの注文の中身（価格・数量・売買）。出した企業の画面にだけ表示されます</li>
-          <li class="no">どの企業がいくら持っているか</li>
-        </ul>
-        <p class="form-note">これは研究用デモの、画面ごとの表示の絞り込みです。このサーバーは注文を受け取ってから暗号化しており、分散した秘匿の保証は実サービス側の設計です。</p>
-      </section>
-
-      <details id="failure-panel" class="panel details-panel">
-        <summary>
-          <span class="eyebrow">動作確認用</span>
-          <span class="summary-title">障害を模擬する（表示だけ）</span>
-        </summary>
-        <p class="form-note">ボタンを押すと、そのノードが止まったときの待機動作を画面上で再現します。実際のプロセスやコンテナは止めません。</p>
-        <div class="node-control-group"><h3>計算ノード（7台）</h3><div id="mpc-controls" class="node-buttons"></div></div>
-        <div class="node-control-group"><h3>DeFMI 台帳の確認ノード（5台）</h3><div id="defmi-controls" class="node-buttons"></div></div>
-      </details>
-    </aside>
-
-    <section class="book-column">
-      <section class="panel book-panel" aria-labelledby="book-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow">確定後に全員へ公開</p><h2 id="book-title">公開板</h2></div>
-          <span id="book-sequence" class="sequence">更新 0 回</span>
-        </div>
-        <div class="mid-price"><span>銘柄</span><strong id="book-market">—</strong><small>価格は円、数量は口</small></div>
-        <div class="book-head"><span>売買</span><span>価格</span><span>合計数量</span></div>
-        <div id="book-levels" class="book-levels"></div>
-        <p class="empty-note" id="empty-book">読み込み中…</p>
-        <p class="form-note">個々の注文は載りません。同じ価格の注文を合計した数量だけを公開します。</p>
-      </section>
-    </section>
-
-    <section class="center-column">
-      <div class="section-title">
-        <div><p class="eyebrow">注文がたどる経路</p><h2>処理の流れ</h2></div>
-        <p>線の色は、その経路の処理が最後にどこまで進んだかを示します。</p>
-      </div>
-      <div id="network-graph" aria-label="OCLOBの参加企業、受付、秘密計算、決済証明、台帳を結ぶ処理の流れ"></div>
-      <section class="panel receipt-strip" aria-labelledby="receipt-title">
-        <div><p class="eyebrow">最後に処理した注文</p><h2 id="receipt-title">受付から決済まで</h2></div>
-        <div id="receipt-steps" class="receipt-steps"></div>
-      </section>
-    </section>
-
-    <section class="timeline-column">
-      <section class="panel timeline-panel" aria-labelledby="timeline-title">
-        <div class="panel-heading compact">
-          <div><p class="eyebrow">公開してよい記録だけ</p><h2 id="timeline-title">処理の履歴</h2></div>
-        </div>
-        <ol id="timeline" class="timeline" aria-live="polite"><li class="loading">読み込み中…</li></ol>
-      </section>
-    </section>
-
-    <details id="diagnostics" class="panel details-panel diagnostics">
-      <summary>
-        <span class="eyebrow">技術的な詳細</span>
-        <span class="summary-title">台帳の識別値・処理の内訳・この環境の制約</span>
-      </summary>
-      <div class="diagnostics-grid">
-        <section aria-labelledby="roots-title">
-          <h3 id="roots-title">DeFMI 台帳の状態 <span id="defmi-height" class="sequence">更新 0 回</span></h3>
-          <p class="form-note">台帳の内容をまとめた識別値です。値が変わると台帳が更新されたことが分かります。</p>
-          <dl id="root-values" class="root-values"></dl>
+          <div id="portfolio-cards" class="portfolio-cards"></div>
+          <p class="note">「確保中」は、出した注文のために取り置いている分です。成立するか取り消されるまで、他の注文には使えません。</p>
         </section>
-        <section aria-labelledby="execution-title">
-          <h3 id="execution-title">最後の処理の内訳</h3>
-          <dl id="execution-values" class="root-values"></dl>
+
+        <section id="order-panel" class="block hidden" aria-labelledby="order-title">
+          <div class="block-heading">
+            <h3 id="order-title">指値注文を出す</h3>
+          </div>
+          <form id="order-form">
+            <fieldset class="segmented">
+              <legend>売買</legend>
+              <label><input type="radio" name="side" value="sell" checked><span>売る</span></label>
+              <label><input type="radio" name="side" value="buy"><span>買う</span></label>
+            </fieldset>
+            <div class="field-row">
+              <label>価格 <input name="price" inputmode="numeric" type="number" min="1" step="1" value="100" required><small>円 / 1口</small></label>
+              <label>数量 <input name="quantity" inputmode="numeric" type="number" min="1" step="1" value="40" required><small>口</small></label>
+            </div>
+            <label class="select-field">成立しなかった分の扱い
+              <select name="time_in_force">
+                <option value="good_til_cancelled">板に残して相手を待つ</option>
+                <option value="immediate_or_cancel">すぐ照合し、残りは取り消す</option>
+              </select>
+            </label>
+            <p id="order-preview" class="order-preview" aria-live="polite"></p>
+            <button id="submit-order" class="primary" type="submit">この内容で注文を出す</button>
+            <p class="note">送信すると注文を暗号化キューに保存し、照合・検証後に台帳上の資金と在庫を更新します。暫定結果が表示されても、確定までは決済されません。中身は運営者向けの表示には含まれません。この研究用デモでは、サーバーが注文を受け取ってから暗号化しています。</p>
+          </form>
         </section>
-        <section aria-labelledby="privacy-title">
-          <h3 id="privacy-title">この環境の構成と制約</h3>
+
+        <section id="orders-panel" class="block hidden" aria-labelledby="orders-title">
+          <div class="block-heading">
+            <h3 id="orders-title">自社が出した注文</h3>
+            <span id="orders-count" class="count">0 件</span>
+          </div>
+          <div id="queue-summary" class="queue-summary"></div>
+          <div id="own-orders" class="own-orders"></div>
+          <p id="own-orders-empty" class="empty-note">まだ注文はありません。上のフォームから出せます。</p>
+          <button id="retry-queue" class="secondary hidden" type="button">保管中の注文をもう一度送る</button>
+        </section>
+
+        <!-- 受付順の確定 -->
+        <section id="ordering-panel" class="block hidden" aria-label="受付順の確定">
+          <dl id="ordering-values" class="values"></dl>
+          <p class="note">受付順が決まるまで注文の中身は開きません。受付待ちの注文の中身は、出した企業の画面にだけ表示されます。署名するノードは研究用の模擬ノードです。</p>
+        </section>
+
+        <!-- 秘密計算 -->
+        <section id="mpc-panel" class="block hidden" aria-label="秘密計算で照合">
+          <div class="block-heading">
+            <h3>計算ノード（7 プロセス）</h3>
+            <span id="mpc-count" class="count"></span>
+          </div>
+          <ul id="mpc-controls" class="node-list"></ul>
+          <p class="note">「停止を模擬」は表示だけの操作で、実際のプロセスやコンテナは止めません。1 台でも停止扱いの間は、注文を暗号化したまま保管して照合を待ちます。別の経路で照合することはありません。</p>
+          <div class="block-heading">
+            <h3>最後の照合</h3>
+          </div>
+          <dl id="mpc-values" class="values"></dl>
+        </section>
+
+        <!-- 決済の証明 -->
+        <section id="zkpi-panel" class="block hidden" aria-label="決済の証明">
+          <dl id="zkpi-values" class="values"></dl>
+          <p class="note">証明は、約定した数量と価格が事前に確保した範囲に収まっていることを、注文の中身を明かさずに示します。約定後に企業が追加で署名する必要はありません。約定がなかった処理では作成しません。</p>
+        </section>
+
+        <!-- DeFMI 台帳 -->
+        <section id="defmi-panel" class="block hidden" aria-label="DeFMI 台帳">
+          <div class="block-heading">
+            <h3>台帳の確認ノード（5 台）</h3>
+            <span id="defmi-count" class="count"></span>
+          </div>
+          <ul id="defmi-controls" class="node-list"></ul>
+          <p class="note">5 台のうち 3 台以上が利用できるときに台帳を更新します。「停止を模擬」は表示だけの操作です。</p>
+          <div class="block-heading">
+            <h3>台帳の状態</h3>
+            <span id="defmi-height" class="count">更新 0 回</span>
+          </div>
+          <dl id="defmi-values" class="values"></dl>
+          <dl id="root-values" class="values"></dl>
+          <p class="note">識別値は台帳の内容をまとめた値で、変わると台帳が更新されたことが分かります。この台帳は同じプロセス内で動く研究用の状態機械で、Avalanche 上の DeFMI ではありません。</p>
+        </section>
+
+        <!-- 公開板 -->
+        <section id="book-panel" class="block hidden" aria-label="公開板">
+          <div class="mid-price">
+            <span>銘柄</span>
+            <strong id="book-market">—</strong>
+            <small>価格は円、数量は口</small>
+          </div>
+          <div class="block-heading">
+            <h3>板に残っている注文</h3>
+            <span id="book-sequence" class="count">更新 0 回</span>
+          </div>
+          <div class="book-head"><span>売買</span><span>価格</span><span>合計数量</span></div>
+          <div id="book-levels" class="book-levels"></div>
+          <p class="empty-note" id="empty-book">読み込み中…</p>
+          <dl id="book-values" class="values"></dl>
+          <p class="note">同じ価格の注文を合計した数量だけを公開します。個々の注文や、どの企業の注文かは載りません。</p>
+        </section>
+
+        <!-- 処理の履歴 -->
+        <section id="history-panel" class="block hidden" aria-label="処理の履歴">
+          <ol id="timeline" class="timeline"><li class="loading">読み込み中…</li></ol>
+          <p class="note">サーバーの記録を平易な言い方に置き換えて表示しています。原文は「技術的な詳細」にあります。</p>
+        </section>
+
+        <!-- 技術的な詳細 -->
+        <section id="details-panel" class="block hidden" aria-label="技術的な詳細">
+          <h3>最後の処理の内訳</h3>
+          <dl id="execution-values" class="values"></dl>
+          <h3>この画面で見える情報</h3>
+          <ul id="visibility-list" class="visibility-list"></ul>
+          <h3>この環境の構成と制約</h3>
           <ul id="privacy-facts" class="fact-list"></ul>
-        </section>
-        <section aria-labelledby="raw-timeline-title">
-          <h3 id="raw-timeline-title">処理の履歴（サーバーの原文）</h3>
-          <p class="form-note">上の「処理の履歴」は、この原文を平易な言い方に置き換えて表示しています。</p>
+          <h3>図の見方</h3>
+          <ul id="graph-notes" class="fact-list"></ul>
+          <h3>処理の履歴（サーバーの原文）</h3>
           <ol id="raw-timeline" class="fact-list mono-list"></ol>
         </section>
       </div>
-    </details>
+    </aside>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
